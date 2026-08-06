@@ -1,0 +1,30 @@
+[
+  {
+    "key": "GHOST-AAFUS-6UAAW-JNRAC-CMVZC",
+    "tier": "PRO",
+    "created": "2026-08-01",
+    "expiry": "2027-08-01",
+    "note": ""
+  },
+  {
+    "key": "GHOST-AAFUS-6UAAW-JNRAA-GVQAO",
+    "tier": "TRIAL",
+    "created": "2026-08-01",
+    "expiry": "2027-08-01",
+    "note": ""
+  },
+  {
+    "key": "GHOST-AAFUS-6UAAW-JH6AA-XYWDA",
+    "tier": "TRIAL",
+    "created": "2026-08-01",
+    "expiry": "2026-08-08",
+    "note": ""
+  },
+  {
+    "key": "GHOST-AAFUS-7IAAW-JNTQC-7ZLPI",
+    "tier": "PRO",
+    "created": "2026-08-06",
+    "expiry": "2027-08-06",
+    "note": ""
+  }
+]

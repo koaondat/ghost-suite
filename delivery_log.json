@@ -1,0 +1,8 @@
+[
+  {
+    "order_id": "GHOST-ORD-NOPAY",
+    "timestamp": "2026-08-06T21:45:23.442661Z",
+    "reason": "payment_verification_failed",
+    "detail": "Token rejected by provider"
+  }
+]

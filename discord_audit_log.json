@@ -1,0 +1,34 @@
+[
+  {
+    "timestamp": "2026-08-06T20:29:31.640316+00:00",
+    "admin_id": 845115525893849130,
+    "admin_name": "miquuui",
+    "action": "generate_key",
+    "target": "GHOST-AAFUS-7IAAW-JIMAA-GGGB6",
+    "details": "tier=TRIAL; days=30; note="
+  },
+  {
+    "timestamp": "2026-08-06T20:30:26.041830+00:00",
+    "admin_id": 845115525893849130,
+    "admin_name": "miquuui",
+    "action": "generate_key",
+    "target": "GHOST-AAFUS-7IAAW-JIBQA-B7Y3O",
+    "details": "tier=TRIAL; days=9; note="
+  },
+  {
+    "timestamp": "2026-08-06T20:34:22.350919+00:00",
+    "admin_id": 845115525893849130,
+    "admin_name": "miquuui",
+    "action": "generate_key",
+    "target": "GHOST-AAFUS-7IAAW-JH5QA-GUMFW",
+    "details": "tier=TRIAL; days=1; note="
+  },
+  {
+    "timestamp": "2026-08-06T20:34:41.129505+00:00",
+    "admin_id": 845115525893849130,
+    "admin_name": "miquuui",
+    "action": "delete_key_record",
+    "target": "GHOST-AAFUS-7IAAW-JH5QA-GUMFW",
+    "details": "via license card button"
+  }
+]

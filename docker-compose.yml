@@ -1,0 +1,95 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Ghost — docker-compose.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Starts three services from a single shared image:
+#   api   — Ghost Python backend  (Flask / gunicorn, port 5056)
+#   web   — Ghost Node.js website (Express, port 3000)
+#   bot   — Ghost Discord bot     (no exposed port)
+#
+# Usage:
+#   docker compose up --build -d          # build & start all three
+#   docker compose logs -f api            # tail API logs
+#   docker compose restart bot            # restart just the bot
+#
+# Secrets:
+#   Copy .env.example → .env and fill in real values before starting.
+#   The .env file is read by every service via env_file.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+# ── Named volumes ──────────────────────────────────────────────────────────────
+volumes:
+  ghost-data:
+    driver: local
+
+# ── Shared base config (YAML anchor) ──────────────────────────────────────────
+x-ghost-base: &ghost-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  volumes:
+    - ghost-data:/app/data
+  restart: unless-stopped
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+# ── Services ──────────────────────────────────────────────────────────────────
+services:
+
+  # ── Python API (api.py via gunicorn) ────────────────────────────────────────
+  api:
+    <<: *ghost-base
+    container_name: ghost-api
+    command: ["/app/deploy/start-api.sh"]
+    ports:
+      - "5056:5056"
+    environment:
+      GHOST_API_PORT: "5056"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5056/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Node.js web server (web/server.js) ──────────────────────────────────────
+  web:
+    <<: *ghost-base
+    container_name: ghost-web
+    command: ["/app/deploy/start-web.sh"]
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      # Override with the internal Docker service URL so the web server
+      # proxies to the api container over the Docker network, not localhost.
+      GHOST_API_URL: "http://api:5056"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ── Discord bot (bot.py) ─────────────────────────────────────────────────────
+  bot:
+    <<: *ghost-base
+    container_name: ghost-bot
+    command: ["/app/deploy/start-bot.sh"]
+    environment:
+      # Override with the internal Docker service URL so the bot calls
+      # the api container directly over the Docker network.
+      GHOST_API_URL: "http://api:5056"
+    depends_on:
+      api:
+        condition: service_healthy
+    # No ports exposed — the bot initiates outbound WebSocket only.

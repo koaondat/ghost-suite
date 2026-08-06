@@ -1,0 +1,18 @@
+[
+  {
+    "username": "GHOST-AAFUS-6UAAA-AAAAE-5IHP2",
+    "salt": "3b027bcc6e80c180c8244bbc0202bb7f",
+    "pw_hash": "b164e6a1f7a2451752de935ef6838fccf63d5ed197acc09b002f933b571f10e4",
+    "key": "GHOST-AAFUS-6UAAA-AAAAE-5IHP2",
+    "tier": "ADMIN",
+    "created": "2026-08-01"
+  },
+  {
+    "username": "nus",
+    "salt": "639697b6fe39b74afe727a2af94ae7f0",
+    "pw_hash": "58506040919532d90228c5a3105e9dded23328c4a7a7fcd7937ea3797f8d4a4b",
+    "key": "GHOST-AAFUS-7IAAW-JH6QA-KJ74U",
+    "tier": "TRIAL",
+    "created": "2026-08-06"
+  }
+]

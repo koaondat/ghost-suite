@@ -1,0 +1,25 @@
+# Ghost — Python dependencies
+# ============================
+# Install: pip install -r requirements.txt
+
+# ── Discord bot ────────────────────────────────────────────────
+discord.py>=2.5,<3
+
+# ── Async HTTP client (bot → API) ──────────────────────────────
+aiohttp>=3.9,<4
+
+# ── Flask API (api.py) ─────────────────────────────────────────
+flask>=3.0,<4
+flask-limiter>=3.5,<4
+
+# ── JWT auth ───────────────────────────────────────────────────
+PyJWT>=2.8,<3
+
+# ── Environment variables ──────────────────────────────────────
+python-dotenv>=1.0,<2
+
+# ── Production WSGI server (api.py in prod) ────────────────────
+gunicorn>=22.0,<24
+
+# ── Structured / rotating log support ─────────────────────────
+# (stdlib logging is used; no extra dep needed)

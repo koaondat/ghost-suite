@@ -1,0 +1,344 @@
+[
+  {
+    "timestamp": "2026-08-06T23:01:49.333239+00:00",
+    "action": "register",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.340282+00:00",
+    "action": "login",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.347159+00:00",
+    "action": "register",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.350163+00:00",
+    "action": "login",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "Incorrect password.",
+    "ok": false,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.373197+00:00",
+    "action": "register",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.382014+00:00",
+    "action": "login",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.413199+00:00",
+    "action": "register",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.418968+00:00",
+    "action": "login",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.442021+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.459147+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "5 key(s)",
+    "details": "tier=TRIAL days=7 note= keys=GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.472168+00:00",
+    "action": "ban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "test",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.474167+00:00",
+    "action": "unban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.481486+00:00",
+    "action": "delete_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.498465+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.500466+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.502466+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.504466+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.512212+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:01:49.522873+00:00",
+    "action": "reset_activation",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:33.987907+00:00",
+    "action": "register",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:33.994385+00:00",
+    "action": "login",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:33.997528+00:00",
+    "action": "register",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:33.997528+00:00",
+    "action": "login",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "Incorrect password.",
+    "ok": false,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.012361+00:00",
+    "action": "register",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.012361+00:00",
+    "action": "login",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.057344+00:00",
+    "action": "register",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.066399+00:00",
+    "action": "login",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.079479+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.104836+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "5 key(s)",
+    "details": "tier=TRIAL days=7 note= keys=GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.126580+00:00",
+    "action": "ban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "test",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.126580+00:00",
+    "action": "unban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.126580+00:00",
+    "action": "delete_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.143302+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.152362+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.152362+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.152362+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.161642+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-06T23:02:34.168247+00:00",
+    "action": "reset_activation",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  }
+]

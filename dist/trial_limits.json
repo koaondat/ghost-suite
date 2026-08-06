@@ -1,0 +1,12 @@
+{
+    "_comment": "GhostConfig Trial license limits — edit these values to reconfigure Trial restrictions.",
+    "max_saved_profiles": 2,
+    "max_exports_per_day": 1,
+    "allow_advanced_backup": false,
+    "allow_restore": false,
+    "allow_custom_presets": false,
+    "allow_admin_panel": false,
+    "allow_bulk_actions": false,
+    "allow_pro_settings": false,
+    "allow_premium_tools": false
+}

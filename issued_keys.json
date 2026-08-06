@@ -1,0 +1,30 @@
+[
+  {
+    "key": "GHOST-AAFUS-7IAAW-JIMAA-GGGB6",
+    "tier": "TRIAL",
+    "created": "2026-08-06",
+    "expiry": "2026-09-05",
+    "note": ""
+  },
+  {
+    "key": "GHOST-AAFUS-7IAAW-JIBQA-B7Y3O",
+    "tier": "TRIAL",
+    "created": "2026-08-06",
+    "expiry": "2026-08-15",
+    "note": ""
+  },
+  {
+    "key": "GHOST-AAFUS-7IAAW-JIMAC-AKLJK",
+    "tier": "PRO",
+    "created": "2026-08-06",
+    "expiry": "2026-09-05",
+    "note": "order:GHOST-ORD-TEST0001 plan:pro email:test@ghost.gg discord:phantomUser#1234"
+  },
+  {
+    "key": "GHOST-AAFUS-7IAAA-AAAAC-SSBQI",
+    "tier": "PRO",
+    "created": "2026-08-06",
+    "expiry": "None",
+    "note": "order:GHOST-ORD-LIFETIME01 plan:lifetime email:vip@ghost.gg discord:vipGhost"
+  }
+]

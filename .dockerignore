@@ -1,0 +1,40 @@
+# .dockerignore — exclude files from the Docker build context
+
+# Local secrets (never bake into image)
+.env
+*.env.local
+
+# Python byte-code and build artefacts
+__pycache__/
+*.py[cod]
+*.pyo
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Node dev deps (installed fresh in the Docker build)
+web/node_modules/
+
+# Runtime data files (mounted as a Docker volume at /app/data)
+issued_keys.json
+users.json
+banned_keys.json
+blacklist.json
+whitelist.json
+orders.json
+trial_limits.json
+delivery_log.json
+activity_log.json
+api_audit.json
+discord_audit_log.json
+
+# Logs
+*.log
+
+# Git
+.git/
+.gitignore
+
+# Docs
+*.md

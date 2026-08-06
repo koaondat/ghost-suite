@@ -1,0 +1,9 @@
+GhostConfig crash — 2026-08-06 12:11:23.107701
+
+Traceback (most recent call last):
+  File "tkinter\__init__.py", line 1968, in __call__
+  File "tkinter\__init__.py", line 862, in callit
+  File "gui.py", line 1876, in _run_auth
+  File "tkinter\__init__.py", line 2390, in destroy
+_tkinter.TclError: can't invoke "destroy" command: application has been destroyed
+

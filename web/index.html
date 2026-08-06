@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ghost — QA System Configuration Utility</title>
+  <meta name="description" content="Ghost is a powerful Windows QA environment utility. Rotate MachineGUIDs, spoof MAC addresses, manage licenses — all offline, all fast." />
+
+  <!-- Preconnect for Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="assets/css/ghost.css" />
+
+  <!-- Favicon placeholder: swap with real .ico -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/><text y='24' x='4' font-size='22' font-family='sans-serif'>👻</text></svg>" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     NAVIGATION
+════════════════════════════════════════════════════════════ -->
+<header class="nav" role="banner">
+  <div class="container">
+    <nav class="nav-inner" aria-label="Primary navigation">
+
+      <!-- Logo -->
+      <a href="index.html" class="nav-logo" aria-label="Ghost home">
+        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
+          <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
+          <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
+          <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+        </svg>
+        Ghost
+      </a>
+
+      <!-- Desktop links -->
+      <ul class="nav-links" role="list">
+        <li><a href="index.html" class="active">Home</a></li>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#pricing">Pricing</a></li>
+        <li><a href="#faq">FAQ</a></li>
+        <li><a href="#support">Support</a></li>
+      </ul>
+
+      <!-- Desktop CTA -->
+      <div class="nav-cta">
+        <a href="login.html" class="btn btn-ghost">Login</a>
+        <a href="dashboard.html" class="btn btn-ghost">Dashboard</a>
+        <a href="#download" class="btn btn-primary">Download</a>
+      </div>
+
+      <!-- Mobile hamburger -->
+      <button class="nav-toggle" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+
+    </nav><!-- /nav-inner -->
+
+    <!-- Mobile drawer -->
+    <div class="nav-mobile" role="navigation" aria-label="Mobile navigation">
+      <a href="index.html">Home</a>
+      <a href="#features">Features</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+      <a href="#support">Support</a>
+      <div class="mobile-cta">
+        <a href="login.html"     class="btn btn-ghost">Login</a>
+        <a href="dashboard.html" class="btn btn-ghost">Dashboard</a>
+        <a href="#download"      class="btn btn-primary">Download</a>
+      </div>
+    </div>
+
+  </div>
+</header>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     HERO
+════════════════════════════════════════════════════════════ -->
+<main>
+<section class="hero" aria-label="Hero">
+  <div class="hero-glow" aria-hidden="true"></div>
+  <div class="container">
+    <div class="hero-inner">
+
+      <!-- Copy -->
+      <div class="hero-copy">
+        <div class="hero-badge animate-up">
+          <span class="hero-badge-dot"></span>
+          Now with offline key validation
+        </div>
+
+        <h1 class="animate-up delay-1">
+          Take full control of your<br>
+          <span>QA environment</span>
+        </h1>
+
+        <p class="hero-desc animate-up delay-2">
+          Ghost is a Windows system configuration utility for QA engineers.
+          Rotate MachineGUIDs, spoof MAC addresses, manage license keys,
+          and lock down profiles — all offline, all in seconds.
+        </p>
+
+        <div class="hero-actions animate-up delay-2">
+          <a href="#download" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Start Free Trial
+          </a>
+          <a href="#pricing" class="btn btn-secondary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+            Get Pro License
+          </a>
+        </div>
+
+        <p class="hero-note animate-up delay-3">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          No account required for trial &nbsp;·&nbsp; Windows 10 / 11
+        </p>
+      </div>
+
+      <!-- Visual (desktop only) -->
+      <div class="hero-visual" aria-hidden="true">
+        <div class="hero-card">
+          <div class="card-header">
+            <div class="card-dots">
+              <span class="card-dot dot-red"></span>
+              <span class="card-dot dot-yellow"></span>
+              <span class="card-dot dot-green"></span>
+            </div>
+            <span class="card-title-text">ghost — key validator</span>
+          </div>
+          <div class="code-block">
+            <div class="code-line"><span class="line-num">1</span><span><span class="cm"># validate a license key</span></span></div>
+            <div class="code-line"><span class="line-num">2</span><span><span class="kw">from</span> keygen <span class="kw">import</span> <span class="fn">validate_key</span></span></div>
+            <div class="code-line"><span class="line-num">3</span><span>&nbsp;</span></div>
+            <div class="code-line"><span class="line-num">4</span><span>key = <span class="str">"GHOST-XXXXX-XXXXX-XXXXX-XXXXX"</span></span></div>
+            <div class="code-line"><span class="line-num">5</span><span>result = <span class="fn">validate_key</span>(key)</span></div>
+            <div class="code-line"><span class="line-num">6</span><span>&nbsp;</span></div>
+            <div class="code-line"><span class="line-num">7</span><span><span class="kw">print</span>(result[<span class="str">"tier"</span>])   <span class="cm"># PRO</span></span></div>
+            <div class="code-line"><span class="line-num">8</span><span><span class="kw">print</span>(result[<span class="str">"valid"</span>])  <span class="ok"># True ✓</span></span></div>
+          </div>
+        </div>
+        <div class="hero-badge-float">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          Key validated &nbsp;<strong>offline</strong>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     FEATURES
+════════════════════════════════════════════════════════════ -->
+<section id="features" class="features" aria-label="Features">
+  <div class="container">
+    <div class="features-header">
+      <span class="section-label">Features</span>
+      <h2 class="section-title">Everything you need for QA profiling</h2>
+      <p class="section-sub">Built for speed and reliability — no cloud calls, no telemetry, no bloat.</p>
+    </div>
+
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <h3>GUID Rotation</h3>
+        <p>Read, rotate, or set a custom Windows MachineGUID in seconds. A registry backup is created automatically before every write.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon cyan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg>
+        </div>
+        <h3>MAC Address Spoofing</h3>
+        <p>Enumerate all network adapters and apply Locally Administered Addresses with built-in LAA bit validation.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>Offline License Keys</h3>
+        <p>HMAC-SHA256 signed keys with embedded tier, expiry, and creation date. Validation works with zero internet access.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon cyan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        </div>
+        <h3>Volume Serial Query</h3>
+        <p>Enumerate all drives and read physical volume serial numbers via ctypes and fsutil — no external dependencies.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        </div>
+        <h3>Registry Backups</h3>
+        <p>Every write operation exports a timestamped <code style="color:var(--accent);font-size:0.82em">.reg</code> backup to <code style="color:var(--accent);font-size:0.82em">backups/</code> before touching a single value.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon cyan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h3>Discord Bot Integration</h3>
+        <p>Slash commands for key generation, revocation, audit logs, and role-gated admin actions — all managed from your server.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     HOW IT WORKS
+════════════════════════════════════════════════════════════ -->
+<section id="how" class="how" aria-label="How it works">
+  <div class="container">
+    <div class="how-header">
+      <span class="section-label">How it works</span>
+      <h2 class="section-title">Up and running in three steps</h2>
+      <p class="section-sub">No installation wizard, no cloud account. Download, activate, configure.</p>
+    </div>
+
+    <div class="how-steps">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Download Ghost</h3>
+        <p>Grab the latest <code style="color:var(--accent);font-size:0.85em">.exe</code> from the download section. Runs on Windows 10 and 11 with no additional runtimes.</p>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Enter Your License Key</h3>
+        <p>Paste a Trial or Pro key from your Discord DM or purchase. Keys are validated instantly — fully offline via HMAC-SHA256.</p>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Configure &amp; Go</h3>
+        <p>Use the GUI or CLI to rotate GUIDs, set MAC addresses, and manage QA profiles. Backups are created automatically.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     PRICING
+════════════════════════════════════════════════════════════ -->
+<section id="pricing" class="pricing" aria-label="Pricing">
+  <div class="container">
+    <div class="pricing-header">
+      <span class="section-label">Pricing</span>
+      <h2 class="section-title">Simple, honest pricing</h2>
+      <p class="section-sub">Start free, upgrade when you need more. No recurring bills by default.</p>
+    </div>
+
+    <div class="pricing-grid">
+
+      <!-- Trial -->
+      <div class="pricing-card">
+        <p class="pricing-tier">Trial</p>
+        <div class="pricing-price">
+          <span class="amount">Free</span>
+        </div>
+        <p class="pricing-desc">Get started with core features, no key required.</p>
+        <ul class="pricing-features">
+          <li class="pricing-feat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            GUID read &amp; rotate
+          </li>
+          <li class="pricing-feat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Volume serial query
+          </li>
+          <li class="pricing-feat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Registry backups
+          </li>
+          <li class="pricing-feat" style="color:var(--border)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            MAC address spoofing
+          </li>
+          <li class="pricing-feat" style="color:var(--border)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            Discord bot key management
+          </li>
+        </ul>
+        <a href="#download" class="btn btn-ghost">Download Trial</a>
+      </div>
+
+      <!-- Pro -->
+      <div class="pricing-card featured">
+        <span class="pricing-badge">Most Popular</span>
+        <p class="pricing-tier">Pro</p>
+        <div class="pricing-price">
+          <span class="amount">$19</span>
+          <span class="period">/ lifetime</span>
+        </div>
+        <p class="pricing-desc">Full access to every feature, lifetime updates included.</p>
+        <ul class="pricing-features">
+          <li class="pricing-feat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Everything in Trial
+          </li>
+          <li class="pricing-feat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            MAC address spoofing
+          </li>
+          <li class="pricing-feat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Discord bot &amp; key management
+          </li>
+          <li class="pricing-feat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Priority Discord support
+          </li>
+          <li class="pricing-feat">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Lifetime updates
+          </li>
+        </ul>
+        <a href="checkout.html" class="btn btn-primary">Get Pro License</a>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     FAQ
+════════════════════════════════════════════════════════════ -->
+<section id="faq" class="faq" aria-label="Frequently asked questions">
+  <div class="container">
+    <div class="faq-header">
+      <span class="section-label">FAQ</span>
+      <h2 class="section-title">Common questions</h2>
+      <p class="section-sub">Can't find your answer? Ask in Discord.</p>
+    </div>
+
+    <ul class="faq-list" role="list">
+
+      <li class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          Does Ghost require an internet connection?
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-answer" role="region">
+          <p class="faq-answer-inner">No. License key validation is 100% offline using HMAC-SHA256 cryptography. The application never makes outbound network requests during normal operation.</p>
+        </div>
+      </li>
+
+      <li class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          What Windows versions are supported?
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-answer" role="region">
+          <p class="faq-answer-inner">Ghost is tested on Windows 10 (build 1909+) and Windows 11, both 64-bit. Windows Server 2016 and later are also supported. It must be run as Administrator.</p>
+        </div>
+      </li>
+
+      <li class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          How does MAC address spoofing work?
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-answer" role="region">
+          <p class="faq-answer-inner">Ghost writes a Locally Administered Address (LAA) to the adapter's <code style="color:var(--accent)">NetworkAddress</code> registry value. It validates the LAA bit before writing. The adapter must be disabled and re-enabled (or the system rebooted) for the change to take effect.</p>
+        </div>
+      </li>
+
+      <li class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          Can I recover from a bad registry change?
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-answer" role="region">
+          <p class="faq-answer-inner">Yes. Every write operation creates a timestamped <code style="color:var(--accent)">.reg</code> backup in the <code style="color:var(--accent)">backups/</code> folder before making any change. Simply double-click the backup file or run <code style="color:var(--accent)">regedit /s backups\&lt;filename&gt;.reg</code> to restore.</p>
+        </div>
+      </li>
+
+      <li class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          What is the difference between Trial and Pro?
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-answer" role="region">
+          <p class="faq-answer-inner">The Trial tier gives you GUID rotation and volume serial queries for free. Pro unlocks MAC address spoofing, full Discord bot integration, and priority support — for a one-time lifetime payment.</p>
+        </div>
+      </li>
+
+    </ul>
+
+    <p class="faq-cta">
+      Still have questions? <a href="#support">Ask us on Discord →</a>
+    </p>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     DOWNLOAD
+════════════════════════════════════════════════════════════ -->
+<section id="download" class="support" aria-label="Download">
+  <div class="container">
+    <span class="section-label" style="display:block;text-align:center;margin-bottom:12px">Download</span>
+    <h2>Ready to get started?</h2>
+    <p>Download Ghost and run your first GUID rotation in under a minute.<br>No account, no installer, no nonsense.</p>
+    <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+      <a href="#" class="btn btn-primary" style="padding:14px 36px;font-size:1rem;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download Free Trial
+      </a>
+      <a href="checkout.html" class="btn btn-secondary" style="padding:14px 36px;font-size:1rem;">
+        Get Pro License
+      </a>
+    </div>
+    <p style="font-size:0.78rem;color:var(--muted);margin-top:18px;">Windows 10 / 11 &nbsp;·&nbsp; Must run as Administrator</p>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     DISCORD / SUPPORT
+════════════════════════════════════════════════════════════ -->
+<section id="support" class="support" aria-label="Discord support">
+  <div class="container">
+    <span class="section-label" style="display:block;text-align:center;margin-bottom:12px">Support</span>
+    <h2>Join the Ghost Discord</h2>
+    <p>Get help, report bugs, request keys, and stay up-to-date with every release.<br>The community and dev team are active daily.</p>
+    <a href="https://discord.gg/your-invite" class="btn btn-discord" target="_blank" rel="noopener noreferrer">
+      <!-- Discord icon -->
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+      Join Discord Server
+    </a>
+  </div>
+</section>
+
+</main><!-- /main -->
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     FOOTER
+════════════════════════════════════════════════════════════ -->
+<footer class="footer" role="contentinfo">
+  <div class="container">
+    <div class="footer-grid">
+
+      <!-- Brand -->
+      <div class="footer-brand">
+        <a href="index.html" class="nav-logo" aria-label="Ghost home">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
+            <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
+            <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
+            <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+          </svg>
+          Ghost
+        </a>
+        <p>Windows QA environment configuration utility. Offline, fast, and designed for engineers who move quickly.</p>
+      </div>
+
+      <!-- Product -->
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul role="list">
+          <li><a href="#features">Features</a></li>
+          <li><a href="#pricing">Pricing</a></li>
+          <li><a href="#download">Download</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+        </ul>
+      </div>
+
+      <!-- Resources -->
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <ul role="list">
+          <li><a href="docs.html">Documentation</a></li>
+          <li><a href="#faq">FAQ</a></li>
+          <li><a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Discord</a></li>
+        </ul>
+      </div>
+
+      <!-- Account -->
+      <div class="footer-col">
+        <h4>Account</h4>
+        <ul role="list">
+          <li><a href="login.html">Login</a></li>
+          <li><a href="dashboard.html">Dashboard</a></li>
+          <li><a href="checkout.html">Get Pro</a></li>
+        </ul>
+      </div>
+
+    </div>
+
+    <div class="footer-bottom">
+      <p>&copy; 2025 Ghost. All rights reserved.</p>
+      <nav class="footer-legal" aria-label="Legal">
+        <a href="terms.html">Terms of Service</a>
+        <a href="privacy.html">Privacy Policy</a>
+      </nav>
+    </div>
+
+  </div>
+</footer>
+
+<script src="assets/js/ghost.js"></script>
+</body>
+</html>
