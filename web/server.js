@@ -58,7 +58,7 @@ async function _proxyToApi (req, res, pathOverride) {
 
     const data = await upstream.json().catch(() => ({}));
 
-    // Forward Set-Cookie (JWT cookie) from Python → browser
+    // Forward Set-Cookie (JWT cookie) from Python -> browser
     const setCookie = upstream.headers.raw()['set-cookie'];
     if (setCookie) {
       res.set('Set-Cookie', setCookie);
@@ -97,7 +97,23 @@ app.all('/api/downloads*',  (req, res) => _proxyToApi(req, res));
 app.all('/api/admin/*',     (req, res) => _proxyToApi(req, res));
 
 // ── Serve static frontend ────────────────────────────────────────────────────
-app.use(express.static(path.join(__dirname)));
+// __dirname is web/ — serve all assets (CSS, JS, images) from there.
+// The explicit GET / handler ensures bare-domain requests and Vercel's
+// root path always resolve to index.html instead of "Cannot GET /".
+app.get('/', (_req, res) =>
+  res.sendFile(path.join(__dirname, 'index.html')),
+);
+
+// Clean-path aliases: /login, /register, /dashboard, /pricing, /checkout
+// Let users navigate to these without the .html extension.
+app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
+  res.sendFile(path.join(__dirname, `${req.params.page}.html`), err => {
+    if (err) res.status(404).sendFile(path.join(__dirname, 'index.html'));
+  }),
+);
+
+// Serve everything else (CSS, JS, fonts, images) directly from web/
+app.use(express.static(path.join(__dirname), { index: 'index.html' }));
 
 // ── Health & status endpoints ────────────────────────────────────────────────
 const _START_TIME = Date.now();

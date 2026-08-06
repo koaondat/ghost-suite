@@ -6,14 +6,15 @@
  * and never trusted from the client.
  *
  * Routes (registered in server.js):
- *   POST /api/checkout/create-session   → create a Stripe Checkout Session
- *   POST /api/checkout/validate-coupon  → validate a Stripe coupon/promo code
- *   GET  /api/order/:sessionId          → retrieve a stored order record
+ *   POST /api/checkout/create-session   -> create a Stripe Checkout Session
+ *   POST /api/checkout/validate-coupon  -> validate a Stripe coupon/promo code
+ *   GET  /api/order/:sessionId          -> retrieve a stored order record
  *
  * Secrets required (via environment variables — never hardcoded):
- *   STRIPE_SECRET_KEY       sk_live_… or sk_test_…
- *   STRIPE_WEBHOOK_SECRET   whsec_…  (used only in stripe_webhook.js)
+ *   STRIPE_SECRET_KEY       sk_live_... or sk_test_...
+ *   STRIPE_WEBHOOK_SECRET   whsec_...  (used only in stripe_webhook.js)
  *   BASE_URL                https://yourdomain.com
+ *   GHOST_DELIVERY_URL      https://delivery.yourdomain.com  (never localhost in prod)
  * ================================================================
  */
 
@@ -57,14 +58,26 @@ const PLAN_CATALOGUE = {
 
 /* ── Shared order storage proxy ─────────────────────────────────────────────
    Calls forwarded to the Python license_delivery backend.
-   Replace DELIVERY_BACKEND_URL via env if the Python server is on a
-   different host (e.g. a container, a VPS, or a serverless function).
+   GHOST_DELIVERY_URL must be set to the deployed delivery server URL.
+   It must NOT be localhost in production — the delivery server is a
+   separate Python process and cannot run inside a Vercel serverless function.
 ─────────────────────────────────────────────────────────────────────────── */
-const DELIVERY_BACKEND_URL = process.env.GHOST_DELIVERY_URL || 'http://localhost:5055';
+const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+
+if (!DELIVERY_BACKEND_URL) {
+  console.error(
+    '[ghost/checkout] FATAL: GHOST_DELIVERY_URL is not set. ' +
+    'Set it to the URL of the deployed Python license_delivery server. ' +
+    'All checkout and order routes will return 503 until this is configured.',
+  );
+}
 
 
-/* ── Utility: safe fetch wrapper ────────────────────────────────────────── */
+/* ── Utility: safe fetch wrapper ────────────────────────────────────── */
 async function _deliveryFetch (path, init = {}) {
+  if (!DELIVERY_BACKEND_URL) {
+    throw new Error('GHOST_DELIVERY_URL is not configured.');
+  }
   const fetch = (await import('node-fetch')).default;
   return fetch(`${DELIVERY_BACKEND_URL}${path}`, init);
 }
@@ -139,7 +152,10 @@ async function createSession (req, res) {
   }
 
   /* ── Build Stripe Checkout Session ─────────────────────────────────── */
-  const baseUrl = (process.env.BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
+  const baseUrl = (process.env.BASE_URL || '').replace(/\/$/, '');
+  if (!baseUrl) {
+    console.warn('[ghost/checkout] BASE_URL is not set — Stripe redirect URLs will be broken');
+  }
 
   const lineItem = {
     price_data: {

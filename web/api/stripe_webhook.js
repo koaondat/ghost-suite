@@ -10,36 +10,38 @@
  * mount this route before the JSON body-parser middleware.
  *
  * Environment variables required:
- *   STRIPE_SECRET_KEY      — Stripe secret key  (sk_live_… / sk_test_…)
- *   STRIPE_WEBHOOK_SECRET  — Webhook signing secret from Stripe dashboard (whsec_…)
+ *   STRIPE_SECRET_KEY      — Stripe secret key  (sk_live_... / sk_test_...)
+ *   STRIPE_WEBHOOK_SECRET  — Webhook signing secret from Stripe dashboard (whsec_...)
  *   GHOST_DELIVERY_URL     — Base URL of the Python license_delivery server
- *                            (default: http://localhost:5055)
+ *                            MUST be a fully-qualified public URL in production.
+ *                            Do NOT use localhost — the delivery server is a separate
+ *                            process that Vercel serverless functions cannot reach.
  *
  * Handled events
  * ──────────────
  *   checkout.session.completed
  *       Payment succeeded (one-time or first sub payment).
- *       → Calls the Python delivery backend to record the order and
+ *       -> Calls the Python delivery backend to record the order and
  *         generate a GHOST license key.  The session ID is used as the
  *         unique order key, preventing duplicates.
  *
  *   checkout.session.expired
  *       Session expired without payment.
- *       → Marks the order as 'expired' if a pending record exists.
+ *       -> Marks the order as 'expired' if a pending record exists.
  *
  *   invoice.payment_failed   (subscriptions)
  *       Renewal payment failed.
- *       → Marks the subscription order as 'payment_failed'.
+ *       -> Marks the subscription order as 'payment_failed'.
  *
  *   charge.refunded
  *       Charge fully refunded.
- *       → Marks the order as 'refunded'.  Key revocation is a manual
+ *       -> Marks the order as 'refunded'.  Key revocation is a manual
  *         step for the admin — this handler does NOT auto-revoke keys
  *         because the Python license_manager.py handles that.
  *
  *   customer.subscription.deleted
  *       Subscription cancelled / not renewed.
- *       → Marks the order as 'cancelled'.
+ *       -> Marks the order as 'cancelled'.
  * =====================================================
  */
 
@@ -48,7 +50,18 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
-const DELIVERY_BACKEND_URL = process.env.GHOST_DELIVERY_URL || 'http://localhost:5055';
+// GHOST_DELIVERY_URL must be set to the deployed Python delivery server.
+// Do NOT fall back to localhost — that will silently fail in production
+// because the delivery server is a separate process not colocated with
+// the Node.js server on Vercel or any other PaaS.
+const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+
+if (!DELIVERY_BACKEND_URL) {
+  console.error(
+    '[ghost/webhook] FATAL: GHOST_DELIVERY_URL is not set. ' +
+    'Webhook events will not trigger license delivery until this is configured.',
+  );
+}
 
 /* ── Plan catalogue (mirrors api/checkout.js — kept in sync manually) ─────── */
 const PLAN_TIER = {
@@ -59,6 +72,9 @@ const PLAN_TIER = {
 
 /* ── Utility ─────────────────────────────────────────────────────────────── */
 async function _deliveryFetch (path, init = {}) {
+  if (!DELIVERY_BACKEND_URL) {
+    throw new Error('GHOST_DELIVERY_URL is not configured.');
+  }
   const fetch = (await import('node-fetch')).default;
   return fetch(`${DELIVERY_BACKEND_URL}${path}`, init);
 }
@@ -135,7 +151,7 @@ async function handleSessionCompleted (session) {
     return;
   }
 
-  // Resolve actual amount paid from Stripe (cents → dollars).
+  // Resolve actual amount paid from Stripe (cents -> dollars).
   // When amount_total is null (e.g. free trial), fall back to the plan's
   // catalogue price using the planId string — not the plan object.
   const amountTotal = session.amount_total != null
@@ -164,7 +180,7 @@ async function handleSessionCompleted (session) {
         'delivery_failed', data.error);
     } else {
       _logWebhookEvent({ type: 'checkout.session.completed', id: session.id, livemode: session.livemode },
-        { key_issued: data.key ? data.key.slice(0, 10) + '…' : 'none', plan: planId });
+        { key_issued: data.key ? data.key.slice(0, 10) + '...' : 'none', plan: planId });
     }
   } catch (err) {
     _logWebhookError({ type: 'checkout.session.completed', id: session.id },

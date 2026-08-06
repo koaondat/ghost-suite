@@ -4,9 +4,10 @@
   "description": "Ghost checkout and license delivery web server",
   "main": "server.js",
   "scripts": {
-    "start":   "node server.js",
-    "dev":     "node --watch server.js",
-    "prod":    "NODE_ENV=production node server.js"
+    "start":        "node server.js",
+    "dev":          "node --watch server.js",
+    "prod":         "NODE_ENV=production node server.js",
+    "vercel-build": "echo 'No build step required'"
   },
   "dependencies": {
     "dotenv":     "^16.0.0",
