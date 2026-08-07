@@ -4,14 +4,15 @@
   "description": "Ghost checkout and license delivery web server (PayPal)",
   "main": "server.js",
   "scripts": {
-    "start":        "node server.js",
-    "dev":          "node --watch server.js",
-    "prod":         "NODE_ENV=production node server.js",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "prod": "NODE_ENV=production node server.js",
     "vercel-build": "echo 'No build step required'"
   },
   "dependencies": {
-    "dotenv":     "^16.0.0",
-    "express":    "^4.18.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
     "node-fetch": "^3.3.0"
   },
   "engines": {

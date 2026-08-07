@@ -10,7 +10,11 @@
 (function () {
 
   /* ── State ─────────────────────────────────────────────────────────── */
-  let _token      = sessionStorage.getItem('ghost_admin_panel_token') || '';
+  // Session is managed by a server-side HttpOnly cookie (ghost_admin_session).
+  // The browser sends it automatically with every same-origin request.
+  // We track login state client-side only to control UI visibility — the cookie
+  // is the real authority; the server validates it on every authenticated request.
+  let _loggedIn   = false;
   let _invPage    = 1;
   let _ordPage    = 1;
   let _custPage   = 1;
@@ -58,18 +62,20 @@
   }
 
   /* ── Authenticated fetch with retry ───────────────────────────────── */
+  // credentials: "include" ensures the HttpOnly session cookie is sent with
+  // every same-origin request.  The browser manages the cookie automatically;
+  // we never read or set it from JavaScript.
   async function apiFetch (path, opts = {}, retries = 2) {
     const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
-    if (_token) headers['X-Admin-Panel-Token'] = _token;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const res  = await fetch(path, { ...opts, headers });
-        // If the session expired, clear token and redirect to login
+        const res  = await fetch(path, { ...opts, headers, credentials: 'include' });
+        // If the server returns 401, the session cookie is missing or expired.
+        // Clear client-side state and redirect to login once — do not retry.
         if (res.status === 401) {
           const data = await res.json().catch(() => ({}));
-          if (_token && (data.error || '').toLowerCase().includes('session')) {
-            _token = '';
-            sessionStorage.removeItem('ghost_admin_panel_token');
+          if (_loggedIn) {
+            _loggedIn = false;
             hide('adminShell');
             show('adminLogin');
             toast('Session expired. Please log in again.', 'error');
@@ -107,13 +113,13 @@
     setBusy('loginBtn', true);
     hideAlert('loginAlert');
     try {
+      // The server sets an HttpOnly cookie on success; we only check ok:true.
       const { ok, data } = await apiFetch('/api/admin/panel/auth', {
         method: 'POST',
-        body: JSON.stringify({ password: pw }),
+        body:   JSON.stringify({ password: pw }),
       });
-      if (ok && data.token) {
-        _token = data.token;
-        sessionStorage.setItem('ghost_admin_panel_token', _token);
+      if (ok) {
+        _loggedIn = true;
         hide('adminLogin');
         show('adminShell');
         loadDashboard();
@@ -127,9 +133,10 @@
     }
   }
 
-  function doLogout () {
-    _token = '';
-    sessionStorage.removeItem('ghost_admin_panel_token');
+  async function doLogout () {
+    _loggedIn = false;
+    // Ask the server to clear the HttpOnly cookie — JS cannot delete it directly.
+    await fetch('/api/admin/panel/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     hide('adminShell');
     show('adminLogin');
     $('adminPassword').value = '';
@@ -1150,17 +1157,18 @@
 
   /* ── Auto-login check ───────────────────────────────────────────────── */
   async function checkExistingSession () {
-    if (!_token) return;
+    // Ask the server to validate the HttpOnly session cookie.
+    // If it is valid the server returns 200; otherwise 401.
+    // We never inspect the cookie itself from JavaScript.
     try {
       const { ok } = await apiFetch('/api/admin/panel/verify');
       if (ok) {
+        _loggedIn = true;
         hide('adminLogin');
         show('adminShell');
         loadDashboard();
-      } else {
-        _token = '';
-        sessionStorage.removeItem('ghost_admin_panel_token');
       }
+      // If not ok the login screen is already visible — do nothing.
     } catch (_) {}
   }
 
