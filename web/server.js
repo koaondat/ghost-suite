@@ -1325,8 +1325,81 @@ async function _proxyToDelivery (req, res, deliveryPath) {
   }
 }
 
+// ── Order access token store (in-memory, short-lived) ────────────────────────
+// Maps  token → { orderId, expiresAt }
+// Tokens are generated during capture and passed to the success page URL.
+// They expire after 2 hours — enough to cover any reasonable session.
+const _orderAccessTokens = new Map();
+const _ORDER_TOKEN_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function _issueOrderToken (orderId) {
+  const token = crypto.randomBytes(32).toString('hex');
+  _orderAccessTokens.set(token, { orderId, expiresAt: Date.now() + _ORDER_TOKEN_TTL_MS });
+  return token;
+}
+
+function _verifyOrderToken (token, orderId) {
+  const entry = _orderAccessTokens.get(token);
+  if (!entry) return false;
+  if (Date.now() > entry.expiresAt) { _orderAccessTokens.delete(token); return false; }
+  // Token must match the requested orderId
+  return entry.orderId === orderId;
+}
+
+// Periodically clean up expired tokens (every 30 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [t, e] of _orderAccessTokens) {
+    if (now > e.expiresAt) _orderAccessTokens.delete(t);
+  }
+}, 30 * 60 * 1000);
+
+// ── POST /api/order/:orderId/issue-token ──────────────────────────────────────
+// Called immediately after capture to obtain a short-lived access token for the
+// success page.  Requires a valid PayPal capture response echoed back (orderId
+// is verified to exist in Redis before a token is issued).
+app.post('/api/order/:orderId/issue-token', async (req, res) => {
+  const orderId = req.params.orderId;
+  if (!orderId) return res.status(400).json({ ok: false, error: 'orderId required.' });
+
+  // Verify the order exists before issuing a token (prevents token farming)
+  let found = false;
+  const DELIVERY_BACKEND_URL_T = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+  if (DELIVERY_BACKEND_URL_T) {
+    try {
+      const { default: fetch } = await import('node-fetch');
+      const r = await fetch(`${DELIVERY_BACKEND_URL_T}/api/order/${encodeURIComponent(orderId)}`);
+      if (r.ok) found = true;
+    } catch (_) {}
+  }
+  if (!found && _redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      const raw = await _withTimeout(redis.get(`ghost:order:${orderId}`)).catch(() => null);
+      if (raw) found = true;
+    } catch (_) {}
+  }
+  if (!found) return res.status(404).json({ ok: false, error: 'Order not found.' });
+
+  const token = _issueOrderToken(orderId);
+  return res.json({ ok: true, token });
+});
+
+// ── GET /api/order/:orderId ───────────────────────────────────────────────────
+// License key is only returned when a valid per-order token is present
+// OR the requester holds an active admin session.
+// Without a token, non-sensitive order metadata is still returned so the
+// dashboard and processing-screen pollers can read order status.
 app.get('/api/order/:orderId', async (req, res) => {
   const orderId = req.params.orderId;
+  const token   = req.query.token || '';
+
+  // ── Determine whether the caller has elevated access ─────────────────────
+  const hasAdminCookie = !!req.cookies?.[ADMIN_COOKIE_NAME];
+  const adminOk = hasAdminCookie && _verifyAdminSession(req.cookies[ADMIN_COOKIE_NAME]);
+  const tokenOk = token && _verifyOrderToken(token, orderId);
+  const fullAccess = adminOk || tokenOk;   // can see license_key + sensitive fields
+
   // Try delivery backend first
   const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
   if (DELIVERY_BACKEND_URL) {
@@ -1335,7 +1408,10 @@ app.get('/api/order/:orderId', async (req, res) => {
       const upstream = await fetch(`${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(orderId)}`);
       if (upstream.ok) {
         const data = await upstream.json().catch(() => null);
-        if (data) return res.json(data);
+        if (data) {
+          if (!fullAccess) { delete data.license_key; delete data.key; }
+          return res.json(data);
+        }
       }
     } catch (_) {}
   }
@@ -1348,6 +1424,7 @@ app.get('/api/order/:orderId', async (req, res) => {
         const record = typeof raw === 'string' ? JSON.parse(raw) : raw;
         const safe = { ...record, ok: true };
         delete safe.payment_verified;
+        if (!fullAccess) { delete safe.license_key; }
         if (!safe.download_url && safe.delivery_status === 'delivered') {
           safe.download_url = `/api/order/${encodeURIComponent(orderId)}/download`;
         }
@@ -1361,11 +1438,17 @@ app.get('/api/order/:orderId/download', (req, res) =>
   _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}/download`),
 );
 
-// ── Checkout HTML ─────────────────────────────────────────────────────────────
+// ── Checkout / order-success HTML ────────────────────────────────────────────
 app.get('/checkout.html', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {
   if (err) res.status(500).send('Internal server error');
 }));
 app.get('/checkout', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {
+  if (err) res.status(500).send('Internal server error');
+}));
+app.get('/order-success.html', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'order-success.html'), err => {
+  if (err) res.status(500).send('Internal server error');
+}));
+app.get('/order-success', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'order-success.html'), err => {
   if (err) res.status(500).send('Internal server error');
 }));
 

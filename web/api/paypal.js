@@ -355,6 +355,7 @@ async function captureOrder (req, res) {
     orderId:        existing.order_id        || existing.orderId,
     captureId:      existing.paypal_capture_id || existing.captureId || existing.order_id,
     paypalOrderId:  orderID,
+    invoiceId:      existing.invoice_id      || null,
     plan:           existing.plan            || planMeta.id,
     planLabel:      existing.plan_label      || planMeta.label,
     amount:         String(existing.price_usd || planMeta.priceUsd),
@@ -367,11 +368,11 @@ async function captureOrder (req, res) {
     downloadUrl:    existing.license_key ? `/api/order/${encodeURIComponent(existing.order_id || existing.orderId)}/download` : null,
     tier:           existing.tier            || planMeta.tier,
     instructions: existing.license_key ? [
-      'Download Ghost.',
-      'Extract the ZIP if required.',
-      'Launch Ghost.',
-      'Log in or paste your license key.',
-      'Click Activate.',
+      'Download GhostConfig.exe.',
+      'Open the application.',
+      'Copy your license key above.',
+      'Paste it into Ghost.',
+      'Activate your license.',
     ] : null,
   });
 
@@ -522,6 +523,12 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
 
   const purchaseDateNow = new Date().toISOString();
 
+  // ── Generate a stable invoice ID for this order ────────────────────────────
+  // Format: GHOST-INV-XXXXXXXX (8 hex chars from captureId)
+  const _invoiceRaw  = captureId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+  const _invoiceSufx = _invoiceRaw.slice(-8).padStart(8, '0');
+  const invoiceId    = `GHOST-INV-${_invoiceSufx}`;
+
   // ── Step 6: Persist the order to Redis IMMEDIATELY after capture ──────────
   // This is the idempotency key — using the PayPal Order ID ensures that
   // even if the delivery backend call fails, the order is never lost.
@@ -530,6 +537,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     order_id:          captureId,          // capture transaction ID = our internal order ID
     paypal_order_id:   orderID,            // PayPal order ID (idempotency key)
     paypal_capture_id: captureId,
+    invoice_id:        invoiceId,
     plan:              planId,
     plan_label:        plan.label,
     tier:              plan.tier,
@@ -593,6 +601,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
       orderId:        captureId,
       captureId,
       paypalOrderId:  orderID,
+      invoiceId,
       plan:           planId,
       planLabel:      plan.label,
       amount:         capturedAmount,
@@ -619,6 +628,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     license_status:   data.key ? 'active'  : 'pending',
     created_at:       purchaseDate,
     tier:             data.tier            || plan.tier,
+    invoice_id:       invoiceId,           // always carry invoice_id through
   };
   await _redisSaveOrder(captureId, deliveredOrderRecord).catch(err =>
     console.warn('[ghost/paypal] Redis update after delivery failed orderId=%s: %s', captureId, err.message)
@@ -631,6 +641,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     orderId:        captureId,
     captureId,
     paypalOrderId:  orderID,
+    invoiceId,
     plan:           planId,
     planLabel:      plan.label,
     amount:         capturedAmount,
@@ -643,11 +654,11 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     downloadUrl:    data.key ? `/api/order/${encodeURIComponent(captureId)}/download` : null,
     tier:           data.tier || plan.tier,
     instructions: [
-      'Download Ghost.',
-      'Extract the ZIP if required.',
-      'Launch Ghost.',
-      'Log in or paste your license key.',
-      'Click Activate.',
+      'Download GhostConfig.exe.',
+      'Open the application.',
+      'Copy your license key above.',
+      'Paste it into Ghost.',
+      'Activate your license.',
     ],
   };
 

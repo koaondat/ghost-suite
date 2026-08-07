@@ -402,85 +402,6 @@
     if (card && ACTIVE_PLAN.color === 'cyan') card.classList.add('co-summary-card--cyan');
   }
 
-  /* ── _retryDelivery — polls GET /api/order/:id for an already-paid order.
-     The GET response is the Python DB record (snake_case field names).
-     Required fields to show success:
-       payment_status === "verified"
-       order_id, plan, plan_label, price_usd, created_at, license_key, license_status
-     If any are missing the page stays in delivery_pending.
-     Never charges again — only reads the stored delivery state.
-  ─────────────────────────────────────────────────────────────────────── */
-  async function _retryDelivery (orderId) {
-    if (!orderId) return;
-    const btn = document.getElementById('pending-retry-delivery-btn');
-    const RETRY_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg> Retry license delivery';
-    if (btn) { btn.disabled = true; btn.textContent = 'Checking\u2026'; }
-
-    console.log('[ghost/checkout] retry delivery lookup orderId=%s', orderId);
-    try {
-      const res  = await fetch('/api/order/' + encodeURIComponent(orderId));
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok || !data.ok) {
-        console.warn('[ghost/checkout] retry delivery: order not found orderId=%s status=%s', orderId, res.status);
-        if (btn) { btn.disabled = false; btn.innerHTML = RETRY_SVG; }
-        const noteEl = document.querySelector('#state-delivery_pending .co-pending-note span');
-        if (noteEl) noteEl.textContent = 'Order not found yet. Wait a moment and try again, or contact Discord support with Order ID: ' + orderId;
-        return;
-      }
-
-      // GET /api/order returns the Python DB record — fields are snake_case.
-      // Resolve display values first so the gate can check them.
-      const planDisplay = PLANS[(data.plan || '').toLowerCase()];
-      const planName    = data.plan_label || (planDisplay ? planDisplay.name : data.plan) || null;
-      const amountStr   = data.price_usd != null
-        ? (data.currency || 'USD') + ' ' + Number(data.price_usd).toFixed(2)
-        : null;
-
-      // All required fields must be present to show the success state.
-      // payment_status can be 'verified' (Python delivery backend) or 'completed' (paypal.js direct)
-      const paymentOk = data.payment_status === 'verified' || data.payment_status === 'completed';
-      const fulfilmentComplete = (
-        paymentOk &&
-        data.order_id &&
-        planName &&
-        amountStr &&
-        data.created_at &&
-        data.license_key &&
-        data.license_status
-      );
-
-      console.log('[ghost/checkout] retry delivery result orderId=%s payment_status=%s license_key=%s fulfilmentComplete=%s',
-        orderId, data.payment_status, data.license_key ? '[present]' : '[missing]', fulfilmentComplete);
-
-      if (fulfilmentComplete) {
-        _setText('success-email',          data.email   || '\u2014');
-        _setText('success-plan',           planName);
-        _setText('success-order-id',       data.order_id);
-        _setText('success-amount',         amountStr);
-        _setText('success-date',           _formatDate(data.created_at));
-        _setText('success-license-status', data.license_status.replace(/^\w/, c => c.toUpperCase()));
-
-        // Transition to success — hides delivery_pending automatically
-        showState('success');
-
-        _showDeliveredKey({
-          licenseKey:   data.license_key,
-          orderId:      data.order_id,
-          instructions: null,
-        });
-      } else {
-        // Still pending — restore the button and update the note
-        if (btn) { btn.disabled = false; btn.innerHTML = RETRY_SVG; }
-        const noteEl = document.querySelector('#state-delivery_pending .co-pending-note span');
-        if (noteEl) noteEl.textContent = 'License is still being prepared. Please wait a moment and try again, or contact Discord support with Order ID: ' + orderId;
-      }
-    } catch (err) {
-      console.error('[ghost/checkout] retry delivery error:', err.message);
-      if (btn) { btn.disabled = false; btn.innerHTML = RETRY_SVG; }
-    }
-  }
-
   function wireRetryButtons () {
     // "Try again" on failed / cancelled — resets to checkout form
     ['failed-retry-btn', 'cancelled-retry-btn'].forEach(id => {
@@ -494,11 +415,6 @@
         const form = document.getElementById('checkout-form');
         if (form) form.reset();
       });
-    });
-
-    // "Retry license delivery" on delivery_pending — polls the order record
-    document.getElementById('pending-retry-delivery-btn')?.addEventListener('click', function () {
-      _retryDelivery(this.dataset.orderId || '');
     });
   }
 
@@ -627,6 +543,24 @@
     }
   }
 
+  /* ── _redirectToSuccess — obtain an access token then navigate ─────────
+     Called once capture succeeds (or is known to be in-flight).
+     Issues a server-side token for the orderId, then redirects to
+     /order-success.html?order=<orderId>&token=<token>
+  ───────────────────────────────────────────────────────────────────── */
+  async function _redirectToSuccess (orderId) {
+    try {
+      const tr  = await fetch(`/api/order/${encodeURIComponent(orderId)}/issue-token`, { method: 'POST' });
+      const td  = await tr.json().catch(() => ({}));
+      const tok = td.ok && td.token ? `&token=${encodeURIComponent(td.token)}` : '';
+      window.location.href = `/order-success.html?order=${encodeURIComponent(orderId)}${tok}`;
+    } catch (_) {
+      // Even if token issuance fails, send the user to the success page — it
+      // will show a "complete" view once delivery_status becomes 'delivered'.
+      window.location.href = `/order-success.html?order=${encodeURIComponent(orderId)}`;
+    }
+  }
+
   async function _capturePayPalOrder (orderID) {
     const vals = _capturedVals;
     console.log('[ghost/checkout] capturing order orderID=%s', orderID);
@@ -658,13 +592,9 @@
       const isAbort = err.name === 'AbortError';
       console.error('[ghost/checkout] capture fetch %s orderID=%s',
         isAbort ? 'timeout' : 'network-error', orderID);
-      // The request timed out or dropped — we cannot confirm whether the payment
-      // went through, so show delivery_pending so the user can retry without repaying.
-      const pendingOrderId = orderID;
-      _setText('pending-order-id', pendingOrderId);
-      const retryBtn = document.getElementById('pending-retry-delivery-btn');
-      if (retryBtn) retryBtn.dataset.orderId = pendingOrderId;
-      showState('delivery_pending');
+      // Payment may have been captured — show the processing screen which will
+      // poll the backend and redirect once delivery_status is confirmed.
+      _showProcessingScreen(orderID, result && result.paymentStatus === 'COMPLETED', result && result.amount);
       return;
     } finally {
       clearTimeout(timer);
@@ -682,69 +612,112 @@
       return;
     }
 
-    console.log('[ghost/checkout] capture response orderID=%s paymentStatus=%s deliveryStatus=%s plan=%s amount=%s licenseKey=%s purchaseDate=%s licenseStatus=%s',
-      orderID, result.paymentStatus, result.deliveryStatus, result.plan,
-      result.amount, result.licenseKey ? '[present]' : '[missing]',
-      result.purchaseDate, result.licenseStatus);
+    const orderId = result.orderId || result.captureId || orderID;
 
-    // ── Resolve display plan name ─────────────────────────────────────
-    const planDisplay = PLANS[(result.plan || '').toLowerCase()];
-    const planName    = result.planLabel || (planDisplay ? planDisplay.name : result.plan) || null;
-    const amountStr   = result.amount != null
-      ? (result.currency || 'USD') + ' ' + Number(result.amount).toFixed(2)
-      : null;
+    console.log('[ghost/checkout] capture response orderID=%s orderId=%s paymentStatus=%s deliveryStatus=%s licenseKey=%s',
+      orderID, orderId, result.paymentStatus, result.deliveryStatus,
+      result.licenseKey ? '[present]' : '[missing]');
 
-    // ── delivery_pending: payment captured but fulfillment data incomplete ──
-    // Show delivery_pending whenever:
-    //   • deliveryStatus is explicitly 'delivery_pending', OR
-    //   • paymentStatus is not 'COMPLETED', OR
-    //   • any required fulfillment field is absent
-    // NOTE: downloadUrl is NOT required — the download button fetches it lazily.
-    const fulfilmentComplete = (
-      result.paymentStatus === 'COMPLETED' &&
-      result.orderId &&
-      planName &&
-      amountStr &&
-      result.purchaseDate &&
-      result.licenseKey &&
-      result.licenseStatus
-    );
-
-    if (!fulfilmentComplete || result.deliveryStatus === 'delivery_pending' || result.deliveryStatus === 'out_of_stock') {
-      const pendingOrderId = result.orderId || result.captureId || orderID;
-      _setText('pending-order-id', pendingOrderId);
-      const retryBtn = document.getElementById('pending-retry-delivery-btn');
-      if (retryBtn) retryBtn.dataset.orderId = pendingOrderId;
-
-      // If out of stock, update the pending note text
-      if (result.deliveryStatus === 'out_of_stock' || result.out_of_stock) {
-        const noteEl = document.querySelector('#state-delivery_pending .co-pending-note span');
-        if (noteEl) noteEl.textContent =
-          'Payment received. We are temporarily out of stock. Your order has been recorded. ' +
-          'Support has been notified. Order ID: ' + pendingOrderId;
-      }
-
-      showState('delivery_pending');
+    // ── If delivery already succeeded, redirect immediately ──────────
+    if (result.deliveryStatus === 'delivered') {
+      await _redirectToSuccess(orderId);
       return;
     }
 
-    // ── All required fields verified — populate success panel ────────
-    _setText('success-email',          result.email   || vals.email || '—');
-    _setText('success-plan',           planName);
-    _setText('success-order-id',       result.orderId);
-    _setText('success-amount',         amountStr);
-    _setText('success-date',           _formatDate(result.purchaseDate));
-    _setText('success-license-status', result.licenseStatus.replace(/^\w/, c => c.toUpperCase()));
+    // ── Out of stock: show the specific OOS message, still redirect to
+    //    processing screen so the user gets a clean UI ──────────────
+    if (result.deliveryStatus === 'out_of_stock') {
+      _showProcessingScreen(orderId, true, result.amount, 'out_of_stock');
+      return;
+    }
 
-    // Transition to success — this hides state-loading automatically
-    showState('success');
+    // ── Delivery pending (normal case): show processing screen + poll ──
+    _showProcessingScreen(orderId, result.paymentStatus === 'COMPLETED', result.amount);
+  }
 
-    console.log('[ghost/checkout] license key delivered orderID=%s', orderID);
-    _showDeliveredKey({
-      licenseKey:   result.licenseKey,
-      orderId:      result.orderId,
-      instructions: result.instructions,
-    });
+  /* ── _showProcessingScreen — compact "Processing your order" card ──────
+     Shown briefly while delivery is being confirmed.
+     Polls GET /api/order/:id every 1.5 s; redirects when delivered.
+  ─────────────────────────────────────────────────────────────────────── */
+  function _showProcessingScreen (orderId, paymentCaptured, amount, specialStatus) {
+    // Fill the processing card info fields
+    _setText('proc-order-id',  orderId || '—');
+    const amtNum = parseFloat(amount);
+    _setText('proc-amount',    (!isNaN(amtNum) ? 'USD ' + amtNum.toFixed(2) : (amount || '—')));
+    _setText('proc-pay-status', paymentCaptured ? 'Captured ✓' : 'Confirming…');
+
+    // Out-of-stock variant
+    if (specialStatus === 'out_of_stock') {
+      const stepsEl = document.getElementById('proc-steps');
+      if (stepsEl) stepsEl.innerHTML =
+        '<li class="co-pstep co-pstep--done"><span class="co-pstep-icon">✓</span> Payment captured</li>' +
+        '<li class="co-pstep co-pstep--done"><span class="co-pstep-icon">✓</span> Order created</li>' +
+        '<li class="co-pstep co-pstep--warn"><span class="co-pstep-icon">⚠</span> Temporarily out of stock</li>';
+      const noteEl = document.getElementById('proc-oos-note');
+      if (noteEl) { noteEl.hidden = false; }
+    }
+
+    showState('delivery_pending');
+
+    if (!orderId || specialStatus === 'out_of_stock') return;
+
+    // ── Poll the backend every 1.5 s ─────────────────────────────────────
+    let _pollCount = 0;
+    const MAX_POLL  = 40;   // ~60 s total
+
+    const _poll = async () => {
+      _pollCount++;
+      try {
+        const pr   = await fetch('/api/order/' + encodeURIComponent(orderId));
+        const data = await pr.json().catch(() => ({}));
+
+        if (data.ok) {
+          // Update live status dots
+          // NOTE: license_key is not present without a token — check delivery_status only
+          const isPaid = data.payment_status === 'completed' || data.payment_status === 'verified';
+          const hasOrder = !!(data.order_id);
+          const isDelivered = data.delivery_status === 'delivered';
+
+          _updateProcSteps(isPaid, hasOrder, isDelivered ? 'done' : (data.delivery_status === 'out_of_stock' ? 'warn' : 'spin'));
+
+          if (isDelivered) {
+            // Stop polling and redirect
+            await _redirectToSuccess(orderId);
+            return;
+          }
+
+          if (data.delivery_status === 'out_of_stock') {
+            _updateProcSteps(true, true, 'warn');
+            const noteEl = document.getElementById('proc-oos-note');
+            if (noteEl) noteEl.hidden = false;
+            return;  // Stop polling for OOS — admin must fulfill manually
+          }
+        }
+      } catch (_) {}
+
+      if (_pollCount < MAX_POLL) {
+        setTimeout(_poll, 1500);
+      } else {
+        // Timed out — update note to suggest retrying later
+        const noteEl = document.getElementById('proc-timeout-note');
+        if (noteEl) noteEl.hidden = false;
+      }
+    };
+
+    setTimeout(_poll, 1500);
+  }
+
+  function _updateProcSteps (payOk, orderOk, licenseState) {
+    const el = document.getElementById('proc-steps');
+    if (!el) return;
+    const licIcon = licenseState === 'done' ? '✓' :
+                    licenseState === 'warn' ? '⚠' : '⟳';
+    const licClass = licenseState === 'done' ? 'co-pstep--done' :
+                     licenseState === 'warn' ? 'co-pstep--warn' : 'co-pstep--spin';
+    el.innerHTML =
+      `<li class="co-pstep ${payOk   ? 'co-pstep--done' : 'co-pstep--spin'}"><span class="co-pstep-icon">${payOk ? '✓' : '⟳'}</span> Payment captured</li>` +
+      `<li class="co-pstep ${orderOk ? 'co-pstep--done' : 'co-pstep--spin'}"><span class="co-pstep-icon">${orderOk ? '✓' : '⟳'}</span> Order created</li>` +
+      `<li class="co-pstep ${licClass}"><span class="co-pstep-icon">${licIcon}</span> Assigning license</li>`;
   }
 
   /* ── Render the PayPal Buttons ─────────────────────────────────── */

@@ -497,46 +497,59 @@
 
 
     <!-- ══════════════════════════════════════════════════════
-         STATE: DELIVERY_PENDING — payment OK, key pending
+         STATE: DELIVERY_PENDING — Processing your order card
+         Shown briefly after PayPal capture; auto-redirects once
+         delivery_status becomes 'delivered'.
     ═══════════════════════════════════════════════════════ -->
     <div class="co-state co-state--delivery-pending" id="state-delivery_pending" hidden aria-live="assertive">
-      <div class="co-feedback-card co-feedback-card--pending">
-        <div class="co-fb-icon co-fb-icon--warning">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        </div>
-        <h2>Payment received</h2>
-        <p>Your payment was successful. Your license is still being prepared — this can take a moment. Your money is safe and no further action is needed right now.</p>
+      <div class="co-proc-wrap">
+        <div class="co-proc-card">
 
-        <!-- Pending order info -->
-        <div class="co-success-meta" style="margin-bottom:24px;">
-          <div class="co-smeta-row">
-            <span class="co-smeta-label">Payment status</span>
-            <span class="co-smeta-val" style="color:#22c55e;">Captured</span>
+          <div class="co-proc-header">
+            <div class="co-proc-spinner" aria-hidden="true">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="co-spinner-icon"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            </div>
+            <h2 class="co-proc-title">Processing your order</h2>
+            <p class="co-proc-sub">You will be redirected automatically.</p>
           </div>
-          <div class="co-smeta-row">
-            <span class="co-smeta-label">Order ID</span>
-            <span class="co-smeta-val co-smeta-mono" id="pending-order-id">—</span>
-          </div>
-          <div class="co-smeta-row">
-            <span class="co-smeta-label">License delivery</span>
-            <span class="co-smeta-val" style="color:#fbbf24;">Pending</span>
-          </div>
-        </div>
 
-        <div class="co-pending-note" role="alert">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12.01" y2="8"/><line x1="12" y1="12" x2="12" y2="16"/></svg>
-          <span>Save your Order ID above. Click <strong>Retry license delivery</strong> in a few seconds, or contact Discord support with your Order ID and we will deliver your key without charging you again.</span>
-        </div>
+          <!-- Live status steps -->
+          <ul class="co-pstep-list" id="proc-steps" aria-label="Order steps">
+            <li class="co-pstep co-pstep--done"><span class="co-pstep-icon">✓</span> Payment captured</li>
+            <li class="co-pstep co-pstep--done"><span class="co-pstep-icon">✓</span> Order created</li>
+            <li class="co-pstep co-pstep--spin"><span class="co-pstep-icon">⟳</span> Assigning license</li>
+          </ul>
 
-        <div class="co-success-actions" style="margin-top:24px;">
-          <button class="btn btn-primary" id="pending-retry-delivery-btn" type="button">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg>
-            Retry license delivery
-          </button>
-          <a href="https://discord.gg/your-invite" target="_blank" rel="noopener" class="btn btn-ghost">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
-            Discord Support
-          </a>
+          <!-- Mini order info -->
+          <div class="co-proc-meta">
+            <div class="co-proc-meta-row">
+              <span>Payment</span>
+              <span id="proc-pay-status">Captured ✓</span>
+            </div>
+            <div class="co-proc-meta-row">
+              <span>Order ID</span>
+              <code id="proc-order-id">—</code>
+            </div>
+            <div class="co-proc-meta-row">
+              <span>Amount</span>
+              <span id="proc-amount">—</span>
+            </div>
+          </div>
+
+          <!-- Out-of-stock note (hidden unless triggered) -->
+          <div id="proc-oos-note" hidden class="co-proc-note co-proc-note--warn" role="alert">
+            <strong>Temporarily out of stock.</strong>
+            Payment received and your order is confirmed. We're restocking shortly.
+            Your payment will <strong>not</strong> be processed again.
+            Check back soon or contact Discord support with your Order ID.
+          </div>
+
+          <!-- Timeout note (hidden unless polling times out) -->
+          <div id="proc-timeout-note" hidden class="co-proc-note" role="status">
+            Taking longer than expected. Your payment was captured and order recorded —
+            please refresh this page or contact Discord support with your Order ID.
+          </div>
+
         </div>
       </div>
     </div>
