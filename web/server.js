@@ -253,6 +253,11 @@ async function _proxyToApi (req, res, pathOverride) {
   const headers = { ...req.headers };
   delete headers['host'];
   delete headers['cookie'];  // never forward the admin session cookie to the backend
+  // Inject the server-side admin API key so the Python backend can authenticate
+  // proxied admin requests (require_admin Path 2: X-Admin-Key).
+  if (GHOST_ADMIN_API_KEY) {
+    headers['x-admin-key'] = GHOST_ADMIN_API_KEY;
+  }
 
   const BODY_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE'];
   const hasBody = BODY_METHODS.includes(req.method) && req.body !== undefined;
@@ -427,22 +432,25 @@ app.post('/api/admin/panel/auth', (req, res) => {
   }
 
   const token = _issueAdminSession();
+  const cookieIssued = token !== null;
+  console.log('[ghost/admin] login cookie issued=%s ip=%s', cookieIssued, req.ip);
+
+  if (!cookieIssued) {
+    return res.status(500).json({ ok: false, error: 'Failed to issue admin session. Check ADMIN_SESSION_SECRET.' });
+  }
 
   // __Host- cookie attributes: Secure (required), HttpOnly, SameSite=Lax,
   // Path=/ (required), no Domain attribute (required for __Host-).
-  // maxAge uses the same ADMIN_SESSION_TTL_SECS as the token exp claim so the
-  // browser and server expiry are always identical — no "cookie present but
-  // token expired" or "cookie gone but token still valid" mismatch.
+  // maxAge: 4 hours in ms (matches requirement).
   res.cookie(ADMIN_COOKIE_NAME, token, {
     httpOnly: true,
     secure:   true,    // required for __Host- prefix
     sameSite: 'lax',
     path:     '/',
-    maxAge:   1000 * 60 * 60 * 12, // 12 hours in ms — matches ADMIN_SESSION_TTL_SECS
+    maxAge:   1000 * 60 * 60 * 4, // 4 hours in ms
     // No domain attribute — __Host- prefix requires host-only binding
   });
 
-  console.log('[ghost/admin] login_accepted ip=%s cookie_issued=true ttl_secs=%d', req.ip, ADMIN_SESSION_TTL_SECS);
   // Return ok:true — the session is in the cookie, not the body.
   return res.json({ ok: true });
 });
@@ -453,11 +461,13 @@ app.post('/api/admin/panel/auth', (req, res) => {
 // The frontend calls this once on load — it must not produce alerts on 401.
 app.get('/api/admin/session', (req, res) => {
   const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
+  console.log('[ghost/admin] session_check cookie_present=%s ip=%s', Boolean(cookieToken), req.ip);
   if (!cookieToken) {
-    console.log('[ghost/admin] session_check cookie_missing ip=%s', req.ip);
     return res.status(401).json({ ok: false, authenticated: false });
   }
-  if (_verifyAdminSession(cookieToken)) {
+  const valid = _verifyAdminSession(cookieToken);
+  console.log('[ghost/admin] session signature valid=%s ip=%s', valid, req.ip);
+  if (valid) {
     return res.status(200).json({ ok: true, authenticated: true });
   }
   return res.status(401).json({ ok: false, authenticated: false });
@@ -489,7 +499,11 @@ app.post('/api/admin/panel/logout', (_req, res) => {
 // The catch-all below has been intentionally REMOVED to prevent the 508 loop.
 
 // Dashboard
-app.get('/api/admin/dashboard',                         _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.get('/api/admin/dashboard', _requireAdminSession, (req, res) => {
+  const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
+  console.log('[ghost/admin] dashboard cookie present=%s ip=%s', Boolean(cookieToken), req.ip);
+  return _proxyToApi(req, res);
+});
 app.get('/api/admin/stats',                             _requireAdminSession, (req, res) => _proxyToApi(req, res));
 
 // Inventory
