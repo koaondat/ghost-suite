@@ -18,12 +18,38 @@
 
 require('dotenv').config();
 
-const express = require('express');
-const path    = require('path');
-const paypal  = require('./api/paypal');
+const express  = require('express');
+const path     = require('path');
+const crypto   = require('crypto');
+const paypal   = require('./api/paypal');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+
+// Admin panel password (set ADMIN_PANEL_PASSWORD in .env)
+const ADMIN_PANEL_PASSWORD = (process.env.ADMIN_PANEL_PASSWORD || '').trim();
+// In-memory session tokens: token → expiry (Date.now() + TTL)
+const _adminSessions = new Map();
+const ADMIN_SESSION_TTL = 4 * 60 * 60 * 1000; // 4 hours
+
+function _genToken () {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function _isValidSession (token) {
+  const exp = _adminSessions.get(token);
+  if (!exp) return false;
+  if (Date.now() > exp) { _adminSessions.delete(token); return false; }
+  return true;
+}
+
+function _requireAdminSession (req, res, next) {
+  const token = req.headers['x-admin-panel-token'] || '';
+  if (!token || !_isValidSession(token)) {
+    return res.status(401).json({ ok: false, error: 'Admin session required' });
+  }
+  next();
+}
 
 // On Vercel the working directory is the project root, not necessarily the
 // directory that contains server.js.  Resolve the web/ root relative to this
@@ -164,6 +190,51 @@ app.get('/api/config/audit', (req, res) => {
   return res.json({ ok: true, allPresent, vars: report });
 });
 
+// ── Admin panel auth ─────────────────────────────────────────────────────────
+app.post('/api/admin/panel/auth', (req, res) => {
+  if (!ADMIN_PANEL_PASSWORD) {
+    return res.status(503).json({ ok: false, error: 'Admin panel not configured (ADMIN_PANEL_PASSWORD not set).' });
+  }
+  const { password } = req.body || {};
+  if (!password || !crypto.timingSafeEqual(
+    Buffer.from(password),
+    Buffer.from(ADMIN_PANEL_PASSWORD),
+  )) {
+    console.warn('[ghost/admin] Login failed — wrong password');
+    return res.status(401).json({ ok: false, error: 'Invalid password.' });
+  }
+  const token = _genToken();
+  _adminSessions.set(token, Date.now() + ADMIN_SESSION_TTL);
+  console.log('[ghost/admin] Admin panel session created');
+  return res.json({ ok: true, token });
+});
+
+app.get('/api/admin/panel/verify', _requireAdminSession, (_req, res) => {
+  res.json({ ok: true });
+});
+
+// Admin panel inventory + order routes — proxy to Python backend (api.py)
+app.get('/api/admin/inventory',                         _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.get('/api/admin/inventory/stats',                   _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/inventory/import',                 _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/inventory/bulk-delete',            _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.delete('/api/admin/inventory/:key',                 _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}`));
+app.post('/api/admin/inventory/:key/revoke',            _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}/revoke`));
+app.get('/api/admin/orders',                            _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.get('/api/admin/orders/:orderId',                   _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/orders/${req.params.orderId}`));
+
+// ── Admin panel HTML ─────────────────────────────────────────────────────────
+app.get('/admin', (_req, res) => {
+  res.sendFile(path.join(WEB_ROOT, 'admin.html'), err => {
+    if (err) res.status(500).send('Internal server error');
+  });
+});
+app.get('/admin.html', (_req, res) => {
+  res.sendFile(path.join(WEB_ROOT, 'admin.html'), err => {
+    if (err) res.status(500).send('Internal server error');
+  });
+});
+
 // ── PayPal Checkout API routes (handled by Node) ─────────────────────────────
 app.post('/api/paypal/create-order',       paypal.createOrder);
 app.post('/api/paypal/capture-order',      paypal.captureOrder);
@@ -244,6 +315,11 @@ app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
     if (err) res.status(404).sendFile(path.join(WEB_ROOT, 'index.html'));
   }),
 );
+
+// Warn if admin panel password is not set
+if (!ADMIN_PANEL_PASSWORD) {
+  console.warn('[ghost/server] WARNING: ADMIN_PANEL_PASSWORD not set — /admin panel will be unavailable');
+}
 
 app.use(express.static(WEB_ROOT, {
   index: 'index.html',

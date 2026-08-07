@@ -703,23 +703,20 @@
       result.downloadUrl
     );
 
-    if (!fulfilmentComplete || result.deliveryStatus === 'delivery_pending') {
+    if (!fulfilmentComplete || result.deliveryStatus === 'delivery_pending' || result.deliveryStatus === 'out_of_stock') {
       const pendingOrderId = result.orderId || result.captureId || orderID;
-      console.warn('[ghost/checkout] fulfillment incomplete — delivery_pending orderId=%s paymentStatus=%s deliveryStatus=%s missingFields=%s',
-        pendingOrderId, result.paymentStatus, result.deliveryStatus,
-        [
-          result.paymentStatus !== 'COMPLETED' && 'paymentStatus',
-          !result.orderId         && 'orderId',
-          !planName               && 'plan/planLabel',
-          !amountStr              && 'amount',
-          !result.purchaseDate    && 'purchaseDate',
-          !result.licenseKey      && 'licenseKey',
-          !result.licenseStatus   && 'licenseStatus',
-          !result.downloadUrl     && 'downloadUrl',
-        ].filter(Boolean).join(',') || 'none');
       _setText('pending-order-id', pendingOrderId);
       const retryBtn = document.getElementById('pending-retry-delivery-btn');
       if (retryBtn) retryBtn.dataset.orderId = pendingOrderId;
+
+      // If out of stock, update the pending note text
+      if (result.deliveryStatus === 'out_of_stock' || result.out_of_stock) {
+        const noteEl = document.querySelector('#state-delivery_pending .co-pending-note span');
+        if (noteEl) noteEl.textContent =
+          'Payment received. We are temporarily out of stock. Your order has been recorded. ' +
+          'Support has been notified. Order ID: ' + pendingOrderId;
+      }
+
       showState('delivery_pending');
       return;
     }

@@ -73,7 +73,8 @@ if str(_HERE) not in sys.path:
 from dotenv import load_dotenv  # type: ignore
 load_dotenv(_HERE / ".env")
 
-import keygen  # reuse all key logic — never duplicated here
+import keygen    # reuse all key logic — never duplicated here
+import inventory as _inv  # type: ignore
 
 # ── Optional deps (graceful import errors turn into startup failures) ─────────
 try:
@@ -877,6 +878,113 @@ def route_admin_stats():
         "tiers":      tiers,
         "users":      len(users),
     })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Inventory management
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/inventory", methods=["GET"])
+@require_admin
+def route_admin_list_inventory():
+    """GET /api/admin/inventory?status=&plan=&search= — list all stocked keys."""
+    status = request.args.get("status", "").strip() or None
+    plan   = request.args.get("plan", "").strip() or None
+    search = request.args.get("search", "").strip() or None
+    keys   = _inv.list_keys(status=status, plan=plan, search=search)
+    return jsonify({"ok": True, "keys": keys, "total": len(keys)})
+
+
+@app.route("/api/admin/inventory/stats", methods=["GET"])
+@require_admin
+def route_admin_inventory_stats():
+    """GET /api/admin/inventory/stats — aggregate counts."""
+    s = _inv.stats()
+    # Also load orders to add total_orders and revenue
+    orders = _load_orders()
+    revenue = sum(float(o.get("price_usd", 0) or 0) for o in orders)
+    s["total_orders"] = len(orders)
+    s["revenue"]      = round(revenue, 2)
+    return jsonify({"ok": True, **s})
+
+
+@app.route("/api/admin/inventory/import", methods=["POST"])
+@require_admin
+def route_admin_inventory_import():
+    """POST /api/admin/inventory/import { keys: [str], plan: str }"""
+    data = request.get_json(silent=True) or {}
+    keys = data.get("keys") or []
+    plan = (data.get("plan") or "").strip().lower()
+    if not isinstance(keys, list):
+        return jsonify({"ok": False, "error": "'keys' must be a list"}), 400
+    if not plan:
+        return jsonify({"ok": False, "error": "'plan' is required (pro|lifetime)"}), 400
+    result = _inv.import_keys(keys, plan)
+    _audit("inventory_import", g.actor, f"{result['added']} key(s)",
+           f"plan={plan} added={result['added']} skipped={result['skipped']}")
+    return jsonify({"ok": True, **result}), 201
+
+
+@app.route("/api/admin/inventory/bulk-delete", methods=["POST"])
+@require_admin
+def route_admin_inventory_bulk_delete():
+    """POST /api/admin/inventory/bulk-delete { keys: [str] }"""
+    data = request.get_json(silent=True) or {}
+    keys = data.get("keys") or []
+    if not isinstance(keys, list) or not keys:
+        return jsonify({"ok": False, "error": "'keys' must be a non-empty list"}), 400
+    result = _inv.delete_keys(keys)
+    if result["deleted"]:
+        _audit("inventory_bulk_delete", g.actor, f"{len(result['deleted'])} key(s)",
+               f"deleted={','.join(result['deleted'])}")
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/api/admin/inventory/<key>", methods=["DELETE"])
+@require_admin
+def route_admin_inventory_delete(key: str):
+    """DELETE /api/admin/inventory/<key>"""
+    clean   = key.strip().upper()
+    deleted = _inv.delete_key(clean)
+    if deleted:
+        _audit("inventory_delete_key", g.actor, clean)
+    return jsonify({"ok": True, "key": clean, "deleted": deleted,
+                    "message": "Key deleted." if deleted else "Key not found."})
+
+
+@app.route("/api/admin/inventory/<key>/revoke", methods=["POST"])
+@require_admin
+def route_admin_inventory_revoke(key: str):
+    """POST /api/admin/inventory/<key>/revoke"""
+    clean   = key.strip().upper()
+    revoked = _inv.revoke_key(clean)
+    if revoked:
+        _audit("inventory_revoke_key", g.actor, clean)
+    return jsonify({"ok": True, "key": clean, "revoked": revoked,
+                    "message": "Key revoked." if revoked else "Key not found."})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Orders (read-only view)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/orders", methods=["GET"])
+@require_admin
+def route_admin_list_orders():
+    """GET /api/admin/orders — list all orders."""
+    orders = _load_orders()
+    return jsonify({"ok": True, "orders": orders, "total": len(orders)})
+
+
+@app.route("/api/admin/orders/<order_id>", methods=["GET"])
+@require_admin
+def route_admin_get_order(order_id: str):
+    """GET /api/admin/orders/<order_id>"""
+    orders = _load_orders()
+    record = next((o for o in orders if o.get("order_id", "") == order_id.strip()), None)
+    if not record:
+        return jsonify({"ok": False, "error": "Order not found"}), 404
+    return jsonify({"ok": True, "order": record})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
