@@ -964,6 +964,51 @@ def route_admin_inventory_revoke(key: str):
                     "message": "Key revoked." if revoked else "Key not found."})
 
 
+@app.route("/api/admin/inventory/<key>", methods=["PATCH"])
+@require_admin
+def route_admin_inventory_update(key: str):
+    """PATCH /api/admin/inventory/<key> { status?, customer?, notes?, hwid?, expiration?, plan? }"""
+    clean   = key.strip().upper()
+    data    = request.get_json(silent=True) or {}
+    allowed = {'status', 'customer', 'notes', 'hwid', 'expiration', 'plan',
+               'purchase_date', 'order_id', 'customer_email'}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        return jsonify({"ok": False, "error": "No valid fields to update"}), 400
+    # Validate status if provided
+    if 'status' in updates and updates['status'] not in _inv.VALID_STATUSES:
+        return jsonify({"ok": False, "error": f"Invalid status. Choose from: {list(_inv.VALID_STATUSES)}"}), 400
+    updated = _inv.update_key(clean, updates)
+    if updated:
+        _audit("inventory_update_key", g.actor, clean, str(updates))
+    return jsonify({"ok": updated, "key": clean, "updated": updated,
+                    "message": "Key updated." if updated else "Key not found."})
+
+
+@app.route("/api/admin/inventory/<key>/extend", methods=["POST"])
+@require_admin
+def route_admin_inventory_extend(key: str):
+    """POST /api/admin/inventory/<key>/extend { days }"""
+    clean = key.strip().upper()
+    data  = request.get_json(silent=True) or {}
+    days  = int(data.get("days", 30))
+    if not (1 <= days <= 3650):
+        return jsonify({"ok": False, "error": "days must be between 1 and 3650"}), 400
+    record = _inv.get_key(clean)
+    if not record:
+        return jsonify({"ok": False, "error": "Key not found"}), 404
+    # Extend expiration
+    base = record.get("expiration") or record.get("purchase_date") or ""
+    try:
+        base_dt = datetime.datetime.fromisoformat(base) if base else datetime.datetime.now(datetime.timezone.utc)
+    except ValueError:
+        base_dt = datetime.datetime.now(datetime.timezone.utc)
+    new_exp = (base_dt + datetime.timedelta(days=days)).isoformat()
+    _inv.update_key(clean, {"expiration": new_exp})
+    _audit("inventory_extend_key", g.actor, clean, f"days={days} new_expiration={new_exp}")
+    return jsonify({"ok": True, "key": clean, "expiration": new_exp, "days_added": days})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Admin — Orders (read-only view)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -985,6 +1030,461 @@ def route_admin_get_order(order_id: str):
     if not record:
         return jsonify({"ok": False, "error": "Order not found"}), 404
     return jsonify({"ok": True, "order": record})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Customers (derived from orders + users data)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/customers", methods=["GET"])
+@require_admin
+def route_admin_list_customers():
+    """GET /api/admin/customers?search= — list unique customers from orders."""
+    search = (request.args.get("search") or "").strip().lower()
+    orders = _load_orders()
+
+    # Build customer map indexed by email
+    customers: dict[str, dict] = {}
+    for o in orders:
+        email = (o.get("email") or "").strip().lower()
+        if not email:
+            email = (o.get("discord") or "").strip().lower()
+        if not email:
+            continue
+        if email not in customers:
+            customers[email] = {
+                "email":          o.get("email", ""),
+                "discord":        o.get("discord", ""),
+                "total_orders":   0,
+                "total_spent":    0.0,
+                "active_licenses": 0,
+                "first_purchase": o.get("created_at", ""),
+                "last_purchase":  o.get("created_at", ""),
+                "orders":         [],
+            }
+        c = customers[email]
+        c["total_orders"]   += 1
+        c["total_spent"]    += float(o.get("price_usd") or 0)
+        if o.get("delivery_status") == "delivered" and o.get("license_key"):
+            c["active_licenses"] += 1
+        if o.get("created_at", "") > c["last_purchase"]:
+            c["last_purchase"] = o.get("created_at", "")
+        if o.get("created_at", "") < c["first_purchase"] or not c["first_purchase"]:
+            c["first_purchase"] = o.get("created_at", "")
+        c["orders"].append({
+            "order_id":       o.get("order_id", ""),
+            "plan":           o.get("plan", ""),
+            "price_usd":      o.get("price_usd"),
+            "license_key":    o.get("license_key"),
+            "delivery_status":o.get("delivery_status", ""),
+            "payment_status": o.get("payment_status", ""),
+            "created_at":     o.get("created_at", ""),
+        })
+
+    result = list(customers.values())
+    if search:
+        result = [c for c in result if (
+            search in (c.get("email") or "").lower() or
+            search in (c.get("discord") or "").lower()
+        )]
+    result.sort(key=lambda c: c.get("last_purchase", ""), reverse=True)
+    return jsonify({"ok": True, "customers": result, "total": len(result)})
+
+
+@app.route("/api/admin/customers/<email>/revoke", methods=["POST"])
+@require_admin
+def route_admin_customer_revoke(email: str):
+    """POST /api/admin/customers/<email>/revoke — revoke all customer keys."""
+    email   = email.strip().lower()
+    orders  = _load_orders()
+    revoked = []
+    for o in orders:
+        if (o.get("email") or "").lower() == email and o.get("license_key"):
+            _inv.revoke_key(o["license_key"])
+            revoked.append(o["license_key"])
+    _audit("customer_revoke_all", g.actor, email, f"revoked={','.join(revoked)}")
+    return jsonify({"ok": True, "email": email, "revoked": revoked})
+
+
+@app.route("/api/admin/customers/<email>/reset-hwid", methods=["POST"])
+@require_admin
+def route_admin_customer_reset_hwid(email: str):
+    """POST /api/admin/customers/<email>/reset-hwid — clear HWID for all customer keys."""
+    email = email.strip().lower()
+    orders = _load_orders()
+    reset  = []
+    for o in orders:
+        if (o.get("email") or "").lower() == email and o.get("license_key"):
+            _inv.update_key(o["license_key"].upper(), {"hwid": ""})
+            reset.append(o["license_key"])
+    _audit("customer_reset_hwid", g.actor, email, f"keys={','.join(reset)}")
+    return jsonify({"ok": True, "email": email, "reset": reset})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Downloads management
+# ─────────────────────────────────────────────────────────────────────────────
+
+DOWNLOADS_DB = _HERE / "downloads.json"
+_downloads_lock = threading.Lock()
+
+
+def _load_downloads() -> dict:
+    if DOWNLOADS_DB.exists():
+        try:
+            return json.loads(DOWNLOADS_DB.read_text("utf-8"))
+        except Exception:
+            pass
+    return {
+        "current_version": "",
+        "release_date":    "",
+        "changelog":       "",
+        "filename":        "",
+        "download_url":    "",
+        "download_count":  0,
+        "history":         [],
+    }
+
+
+def _save_downloads(data: dict) -> None:
+    with _downloads_lock:
+        tmp = DOWNLOADS_DB.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, default=str), "utf-8")
+        tmp.replace(DOWNLOADS_DB)
+
+
+@app.route("/api/admin/downloads", methods=["GET"])
+@require_admin
+def route_admin_get_downloads():
+    """GET /api/admin/downloads — get current download info."""
+    data = _load_downloads()
+    return jsonify({"ok": True, **data})
+
+
+@app.route("/api/admin/downloads", methods=["POST"])
+@require_admin
+def route_admin_update_downloads():
+    """POST /api/admin/downloads — update download metadata."""
+    req_data = request.get_json(silent=True) or {}
+    current  = _load_downloads()
+
+    # Archive current version to history if version changes
+    new_version = req_data.get("current_version", "").strip()
+    if new_version and new_version != current.get("current_version"):
+        history = current.get("history", [])
+        if current.get("current_version"):
+            history.append({
+                "version":       current["current_version"],
+                "release_date":  current.get("release_date", ""),
+                "changelog":     current.get("changelog", ""),
+                "filename":      current.get("filename", ""),
+                "archived_at":   datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
+        current["history"] = history[-20:]  # keep last 20 versions
+
+    allowed = {"current_version", "release_date", "changelog", "filename", "download_url"}
+    for k, v in req_data.items():
+        if k in allowed:
+            current[k] = v
+
+    _save_downloads(current)
+    _audit("downloads_update", g.actor, new_version or current.get("current_version", ""),
+           f"version={current.get('current_version')} url={current.get('download_url','')[:60]}")
+    return jsonify({"ok": True, **current})
+
+
+@app.route("/api/admin/downloads/increment", methods=["POST"])
+@require_admin
+def route_admin_downloads_increment():
+    """POST /api/admin/downloads/increment — increment download counter."""
+    current = _load_downloads()
+    current["download_count"] = int(current.get("download_count", 0)) + 1
+    _save_downloads(current)
+    return jsonify({"ok": True, "download_count": current["download_count"]})
+
+
+@app.route("/api/admin/downloads/rollback", methods=["POST"])
+@require_admin
+def route_admin_downloads_rollback():
+    """POST /api/admin/downloads/rollback { version } — roll back to a previous version."""
+    data    = request.get_json(silent=True) or {}
+    version = (data.get("version") or "").strip()
+    current = _load_downloads()
+    history = current.get("history", [])
+    target  = next((h for h in history if h.get("version") == version), None)
+    if not target:
+        return jsonify({"ok": False, "error": f"Version '{version}' not found in history"}), 404
+
+    # Swap current → history, target → current
+    if current.get("current_version"):
+        history = [h for h in history if h.get("version") != version]
+        history.append({
+            "version":      current["current_version"],
+            "release_date": current.get("release_date", ""),
+            "changelog":    current.get("changelog", ""),
+            "filename":     current.get("filename", ""),
+            "archived_at":  datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+
+    current["current_version"] = target["version"]
+    current["release_date"]    = target.get("release_date", "")
+    current["changelog"]       = target.get("changelog", "")
+    current["filename"]        = target.get("filename", "")
+    current["history"]         = history[-20:]
+    _save_downloads(current)
+    _audit("downloads_rollback", g.actor, version, f"rolled back to {version}")
+    return jsonify({"ok": True, **current})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+SETTINGS_DB = _HERE / "admin_settings.json"
+_settings_lock = threading.Lock()
+
+
+def _load_settings() -> dict:
+    defaults = {
+        "site_name":           "Ghost",
+        "logo_url":            "",
+        "discord_invite":      "",
+        "download_url":        "",
+        "maintenance_mode":    False,
+        "announcement_banner": "",
+        "paypal_client_id":    "",
+        "paypal_environment":  "sandbox",
+        "admin_password_hash": "",
+    }
+    if SETTINGS_DB.exists():
+        try:
+            data = json.loads(SETTINGS_DB.read_text("utf-8"))
+            defaults.update(data)
+            return defaults
+        except Exception:
+            pass
+    return defaults
+
+
+def _save_settings(data: dict) -> None:
+    with _settings_lock:
+        tmp = SETTINGS_DB.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, default=str), "utf-8")
+        tmp.replace(SETTINGS_DB)
+
+
+@app.route("/api/admin/settings", methods=["GET"])
+@require_admin
+def route_admin_get_settings():
+    """GET /api/admin/settings — return all settings (no passwords)."""
+    s = _load_settings()
+    s.pop("admin_password_hash", None)
+    return jsonify({"ok": True, "settings": s})
+
+
+@app.route("/api/admin/settings", methods=["POST"])
+@require_admin
+def route_admin_update_settings():
+    """POST /api/admin/settings — update site settings."""
+    data    = request.get_json(silent=True) or {}
+    current = _load_settings()
+    allowed = {
+        "site_name", "logo_url", "discord_invite", "download_url",
+        "maintenance_mode", "announcement_banner",
+        "paypal_client_id", "paypal_environment",
+    }
+    for k, v in data.items():
+        if k in allowed:
+            current[k] = v
+    _save_settings(current)
+    _audit("settings_update", g.actor, "settings", str({k: v for k, v in data.items() if k in allowed}))
+    current.pop("admin_password_hash", None)
+    return jsonify({"ok": True, "settings": current})
+
+
+@app.route("/api/admin/settings/password", methods=["POST"])
+@require_admin
+def route_admin_change_password():
+    """POST /api/admin/settings/password { new_password_hash } — update admin panel password."""
+    import hashlib as _hl
+    data    = request.get_json(silent=True) or {}
+    new_pw  = (data.get("new_password") or "").strip()
+    new_hash= (data.get("new_password_hash") or "").strip().lower()
+
+    if new_pw and not new_hash:
+        # Accept plain text (hashed server-side for convenience)
+        new_hash = _hl.sha256(new_pw.encode()).hexdigest()
+
+    if not new_hash or len(new_hash) != 64:
+        return jsonify({"ok": False, "error": "Provide new_password or new_password_hash (64-char SHA-256 hex)"}), 400
+
+    current = _load_settings()
+    current["admin_password_hash"] = new_hash
+    _save_settings(current)
+    _audit("password_changed", g.actor, "admin_panel_password", "password hash updated")
+    return jsonify({"ok": True, "message": "Password updated. Re-deploy with new ADMIN_PANEL_PASSWORD_HASH env var or use the stored hash."})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Activity Log
+# ─────────────────────────────────────────────────────────────────────────────
+
+ACTIVITY_LOG = _HERE / "activity_log.json"
+_activity_lock = threading.Lock()
+
+
+def _log_activity(action: str, actor: str, target: str, details: str = "", level: str = "info") -> None:
+    """Append a human-readable activity record."""
+    try:
+        ip = request.remote_addr or ""
+    except RuntimeError:
+        ip = ""
+
+    def _write(_ip: str = ip):
+        with _activity_lock:
+            try:
+                records: list[dict] = []
+                if ACTIVITY_LOG.exists():
+                    try:
+                        records = json.loads(ACTIVITY_LOG.read_text("utf-8"))
+                    except Exception:
+                        pass
+                records.append({
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "action":    action,
+                    "actor":     actor,
+                    "target":    target,
+                    "details":   details,
+                    "level":     level,
+                    "ip":        _ip,
+                })
+                tmp = ACTIVITY_LOG.with_suffix(".tmp")
+                tmp.write_text(json.dumps(records[-5_000:], indent=2, default=str), "utf-8")
+                tmp.replace(ACTIVITY_LOG)
+            except Exception as exc:
+                log.error("activity_log write error: %s", exc)
+
+    threading.Thread(target=_write, daemon=True).start()
+
+
+@app.route("/api/admin/activity", methods=["GET"])
+@require_admin
+def route_admin_activity_log():
+    """GET /api/admin/activity?limit=100&level= — return activity log."""
+    limit = min(int(request.args.get("limit", 200)), 1000)
+    level = (request.args.get("level") or "").strip().lower()
+    try:
+        records: list[dict] = []
+        if ACTIVITY_LOG.exists():
+            records = json.loads(ACTIVITY_LOG.read_text("utf-8"))
+    except Exception:
+        records = []
+    if level:
+        records = [r for r in records if r.get("level", "info") == level]
+    records = list(reversed(records[-limit:]))
+    return jsonify({"ok": True, "log": records, "total": len(records)})
+
+
+@app.route("/api/admin/activity", methods=["DELETE"])
+@require_admin
+def route_admin_clear_activity():
+    """DELETE /api/admin/activity — clear the activity log."""
+    with _activity_lock:
+        if ACTIVITY_LOG.exists():
+            ACTIVITY_LOG.write_text("[]", "utf-8")
+    _audit("activity_log_cleared", g.actor, "activity_log")
+    return jsonify({"ok": True, "message": "Activity log cleared."})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Enhanced Dashboard Stats
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/dashboard", methods=["GET"])
+@require_admin
+def route_admin_dashboard():
+    """GET /api/admin/dashboard — full dashboard stats including revenue graphs."""
+    orders  = _load_orders()
+    inv_s   = _inv.stats()
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today   = now_utc.date()
+    month   = today.replace(day=1)
+
+    revenue_today  = 0.0
+    revenue_month  = 0.0
+    revenue_total  = 0.0
+    orders_today   = 0
+    new_customers_today = 0
+    failed_payments = 0
+    pending_orders  = 0
+
+    # For graphs: last 30 days
+    days_30: dict[str, dict] = {}
+    for i in range(29, -1, -1):
+        d = (now_utc - datetime.timedelta(days=i)).date().isoformat()
+        days_30[d] = {"revenue": 0.0, "orders": 0, "customers": 0}
+
+    seen_emails: set[str] = set()
+
+    for o in orders:
+        price = float(o.get("price_usd") or 0)
+        created = o.get("created_at", "")
+        pstatus = (o.get("payment_status") or "").lower()
+
+        if pstatus == "payment_failed":
+            failed_payments += 1
+        if pstatus in ("pending", "delivery_pending"):
+            pending_orders += 1
+
+        try:
+            o_date = datetime.datetime.fromisoformat(created).date()
+        except (ValueError, TypeError):
+            continue
+
+        if pstatus not in ("verified", "completed"):
+            continue
+
+        revenue_total += price
+        if o_date == today:
+            revenue_today += price
+            orders_today  += 1
+        if o_date >= month:
+            revenue_month += price
+
+        date_str = o_date.isoformat()
+        if date_str in days_30:
+            days_30[date_str]["revenue"] += price
+            days_30[date_str]["orders"]  += 1
+            email = (o.get("email") or "").lower()
+            if email and email not in seen_emails:
+                seen_emails.add(email)
+                days_30[date_str]["customers"] += 1
+
+    graph_labels   = list(days_30.keys())
+    graph_revenue  = [round(days_30[d]["revenue"], 2) for d in graph_labels]
+    graph_orders   = [days_30[d]["orders"]   for d in graph_labels]
+    graph_customers= [days_30[d]["customers"] for d in graph_labels]
+
+    return jsonify({
+        "ok": True,
+        "cards": {
+            "revenue_today":    round(revenue_today, 2),
+            "revenue_month":    round(revenue_month, 2),
+            "revenue_total":    round(revenue_total, 2),
+            "total_orders":     len(orders),
+            "active_licenses":  inv_s.get("sold", 0) + inv_s.get("activated", 0),
+            "keys_remaining":   inv_s.get("available", 0),
+            "pending_orders":   pending_orders,
+            "failed_payments":  failed_payments,
+        },
+        "inventory": inv_s,
+        "graphs": {
+            "labels":    graph_labels,
+            "revenue":   graph_revenue,
+            "orders":    graph_orders,
+            "customers": graph_customers,
+        },
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────

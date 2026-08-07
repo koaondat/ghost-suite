@@ -7,12 +7,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/assets/css/ghost.css" />
   <link rel="stylesheet" href="/assets/css/admin.css" />
 </head>
 <body class="admin-body">
 
-  <!-- ── Login overlay ───────────────────────────────────────────────── -->
+  <!-- Toast notifications -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- ── Login overlay ───────────────────────────────────────────── -->
   <div id="adminLogin" class="admin-login-overlay">
     <div class="admin-login-card">
       <div class="admin-login-icon">
@@ -26,7 +28,7 @@
           <label class="form-label" for="adminPassword">Password</label>
           <div class="input-wrap">
             <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            <input type="password" id="adminPassword" class="form-input" placeholder="Administrator password" autofocus />
+            <input type="password" id="adminPassword" class="form-input has-icon" placeholder="Administrator password" autofocus />
           </div>
         </div>
         <button type="submit" class="btn btn-primary admin-submit" id="loginBtn">
@@ -60,6 +62,22 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
             Orders
           </a></li>
+          <li><a href="#" class="admin-nav-link" data-tab="customers">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Customers
+          </a></li>
+          <li><a href="#" class="admin-nav-link" data-tab="downloads">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Downloads
+          </a></li>
+          <li><a href="#" class="admin-nav-link" data-tab="activity">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            Activity Log
+          </a></li>
+          <li><a href="#" class="admin-nav-link" data-tab="settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Settings
+          </a></li>
         </ul>
       </nav>
       <div class="admin-sidebar-footer">
@@ -76,46 +94,115 @@
       <!-- ── TAB: Dashboard ──────────────────────────────────────────── -->
       <section id="tab-dashboard" class="admin-tab">
         <div class="admin-page-header">
-          <h1 class="admin-page-title">Dashboard</h1>
-          <p class="admin-page-sub">License system overview</p>
+          <div>
+            <h1 class="admin-page-title">Dashboard</h1>
+            <p class="admin-page-sub">Ghost license system overview</p>
+          </div>
+          <button class="btn btn-ghost btn--sm" id="refreshDashboard">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Refresh
+          </button>
         </div>
 
         <!-- Stat cards -->
         <div class="admin-stat-grid" id="dashboardStats">
-          <div class="admin-stat-card">
-            <span class="admin-stat-label">Total Keys</span>
-            <span class="admin-stat-value" id="statTotalKeys">—</span>
-          </div>
-          <div class="admin-stat-card admin-stat-card--green">
-            <span class="admin-stat-label">Unused Keys</span>
-            <span class="admin-stat-value" id="statUnusedKeys">—</span>
-          </div>
-          <div class="admin-stat-card admin-stat-card--purple">
-            <span class="admin-stat-label">Sold Keys</span>
-            <span class="admin-stat-value" id="statSoldKeys">—</span>
-          </div>
-          <div class="admin-stat-card admin-stat-card--cyan">
-            <span class="admin-stat-label">Total Orders</span>
-            <span class="admin-stat-value" id="statTotalOrders">—</span>
+          <div class="admin-stat-card admin-stat-card--gold">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Revenue Today</span>
+              <span class="admin-stat-value" id="statRevToday">—</span>
+            </div>
           </div>
           <div class="admin-stat-card admin-stat-card--gold">
-            <span class="admin-stat-label">Revenue</span>
-            <span class="admin-stat-value" id="statRevenue">—</span>
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Revenue This Month</span>
+              <span class="admin-stat-value" id="statRevMonth">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--green">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Total Revenue</span>
+              <span class="admin-stat-value" id="statRevTotal">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--cyan">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Total Orders</span>
+              <span class="admin-stat-value" id="statTotalOrders">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--purple">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Active Licenses</span>
+              <span class="admin-stat-value" id="statActiveLic">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--green">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Keys Remaining</span>
+              <span class="admin-stat-value" id="statKeysLeft">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--yellow">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Pending Orders</span>
+              <span class="admin-stat-value" id="statPending">—</span>
+            </div>
           </div>
           <div class="admin-stat-card admin-stat-card--red">
-            <span class="admin-stat-label">Revoked Keys</span>
-            <span class="admin-stat-value" id="statRevokedKeys">—</span>
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Failed Payments</span>
+              <span class="admin-stat-value" id="statFailed">—</span>
+            </div>
           </div>
         </div>
 
-        <!-- Recent Purchases -->
+        <!-- Revenue graph -->
         <div class="admin-card" style="margin-top:28px">
           <div class="admin-card-header">
+            <h2 class="admin-card-title">Revenue (Last 30 Days)</h2>
+            <div class="btn-group">
+              <button class="btn btn-ghost btn--sm graph-btn active" data-graph="revenue">Revenue</button>
+              <button class="btn btn-ghost btn--sm graph-btn" data-graph="orders">Orders</button>
+              <button class="btn btn-ghost btn--sm graph-btn" data-graph="customers">Customers</button>
+            </div>
+          </div>
+          <div class="graph-wrap">
+            <canvas id="dashChart" class="dash-chart"></canvas>
+          </div>
+        </div>
+
+        <!-- Recent Orders -->
+        <div class="admin-card" style="margin-top:20px">
+          <div class="admin-card-header">
             <h2 class="admin-card-title">Recent Purchases</h2>
-            <button class="btn btn-ghost btn--sm" id="refreshDashboard">Refresh</button>
+            <button class="btn btn-ghost btn--sm" onclick="switchTab('orders')">View All</button>
           </div>
           <div class="admin-table-wrap">
-            <table class="admin-table" id="recentOrdersTable">
+            <table class="admin-table">
               <thead>
                 <tr>
                   <th>Order ID</th>
@@ -138,19 +225,24 @@
       <!-- ── TAB: Key Inventory ───────────────────────────────────────── -->
       <section id="tab-inventory" class="admin-tab" style="display:none">
         <div class="admin-page-header">
-          <h1 class="admin-page-title">Key Inventory</h1>
-          <p class="admin-page-sub">Manage pre-stocked license keys</p>
+          <div>
+            <h1 class="admin-page-title">Key Inventory</h1>
+            <p class="admin-page-sub">Manage pre-stocked license keys</p>
+          </div>
         </div>
 
         <!-- Toolbar -->
         <div class="admin-toolbar">
           <div class="admin-toolbar-left">
-            <input type="text" id="invSearch" class="admin-search" placeholder="Search keys…" />
+            <input type="text" id="invSearch" class="admin-search" placeholder="Search keys, customers…" />
             <select id="invFilterStatus" class="admin-select">
               <option value="">All Status</option>
-              <option value="unused">Unused</option>
-              <option value="assigned">Assigned (Sold)</option>
+              <option value="available">Available</option>
+              <option value="reserved">Reserved</option>
+              <option value="sold">Sold</option>
+              <option value="activated">Activated</option>
               <option value="revoked">Revoked</option>
+              <option value="expired">Expired</option>
             </select>
             <select id="invFilterPlan" class="admin-select">
               <option value="">All Plans</option>
@@ -160,12 +252,15 @@
             <button class="btn btn-ghost btn--sm" id="applyInvFilter">Filter</button>
           </div>
           <div class="admin-toolbar-right">
+            <button class="btn btn-ghost btn--sm" id="exportInvBtn">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export CSV
+            </button>
             <button class="btn btn-ghost btn--sm" id="openImportModal">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               Import Keys
             </button>
             <button class="btn btn-danger btn--sm" id="deleteSelectedKeys" disabled>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
               Delete Selected
             </button>
           </div>
@@ -180,14 +275,17 @@
                   <th>License Key</th>
                   <th>Plan</th>
                   <th>Status</th>
-                  <th>Assigned Order</th>
-                  <th>Purchase Date</th>
                   <th>Customer</th>
+                  <th>Purchase Date</th>
+                  <th>HWID</th>
+                  <th>Created</th>
+                  <th>Expiration</th>
+                  <th>Notes</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="inventoryTbody">
-                <tr><td colspan="8" class="admin-table-empty">Loading…</td></tr>
+                <tr><td colspan="11" class="admin-table-empty">Loading…</td></tr>
               </tbody>
             </table>
           </div>
@@ -198,27 +296,37 @@
       <!-- ── TAB: Orders ──────────────────────────────────────────────── -->
       <section id="tab-orders" class="admin-tab" style="display:none">
         <div class="admin-page-header">
-          <h1 class="admin-page-title">Orders</h1>
-          <p class="admin-page-sub">View and manage customer orders</p>
+          <div>
+            <h1 class="admin-page-title">Orders</h1>
+            <p class="admin-page-sub">View and manage customer orders</p>
+          </div>
+          <button class="btn btn-ghost btn--sm" id="refreshOrders">Refresh</button>
         </div>
 
         <div class="admin-toolbar">
           <div class="admin-toolbar-left">
-            <input type="text" id="orderSearch" class="admin-search" placeholder="Search order ID or email…" />
+            <input type="text" id="orderSearch" class="admin-search" placeholder="Search order ID, email, Discord…" />
+            <select id="orderFilterDelivery" class="admin-select">
+              <option value="">All Delivery</option>
+              <option value="delivered">Delivered</option>
+              <option value="out_of_stock">Out of Stock</option>
+              <option value="pending">Pending</option>
+            </select>
             <button class="btn btn-ghost btn--sm" id="applyOrderFilter">Search</button>
           </div>
           <div class="admin-toolbar-right">
-            <button class="btn btn-ghost btn--sm" id="refreshOrders">Refresh</button>
+            <button class="btn btn-ghost btn--sm" id="exportOrdersBtn">Export CSV</button>
           </div>
         </div>
 
         <div class="admin-card" style="margin-top:16px">
           <div class="admin-table-wrap">
-            <table class="admin-table" id="ordersTable">
+            <table class="admin-table">
               <thead>
                 <tr>
                   <th>Order ID</th>
-                  <th>Customer</th>
+                  <th>Customer Email</th>
+                  <th>Discord</th>
                   <th>Plan</th>
                   <th>Amount</th>
                   <th>Payment</th>
@@ -229,11 +337,242 @@
                 </tr>
               </thead>
               <tbody id="ordersTbody">
-                <tr><td colspan="9" class="admin-table-empty">Loading…</td></tr>
+                <tr><td colspan="10" class="admin-table-empty">Loading…</td></tr>
               </tbody>
             </table>
           </div>
           <div class="admin-table-footer" id="orderPagination"></div>
+        </div>
+      </section>
+
+      <!-- ── TAB: Customers ──────────────────────────────────────────── -->
+      <section id="tab-customers" class="admin-tab" style="display:none">
+        <div class="admin-page-header">
+          <div>
+            <h1 class="admin-page-title">Customers</h1>
+            <p class="admin-page-sub">Manage customer accounts and licenses</p>
+          </div>
+          <button class="btn btn-ghost btn--sm" id="refreshCustomers">Refresh</button>
+        </div>
+
+        <div class="admin-toolbar">
+          <div class="admin-toolbar-left">
+            <input type="text" id="customerSearch" class="admin-search" placeholder="Search email or Discord…" />
+            <button class="btn btn-ghost btn--sm" id="applyCustomerFilter">Search</button>
+          </div>
+        </div>
+
+        <div class="admin-card" style="margin-top:16px">
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Discord</th>
+                  <th>Orders</th>
+                  <th>Total Spent</th>
+                  <th>Active Licenses</th>
+                  <th>First Purchase</th>
+                  <th>Last Purchase</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="customersTbody">
+                <tr><td colspan="8" class="admin-table-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="admin-table-footer" id="customerPagination"></div>
+        </div>
+      </section>
+
+      <!-- ── TAB: Downloads ─────────────────────────────────────────── -->
+      <section id="tab-downloads" class="admin-tab" style="display:none">
+        <div class="admin-page-header">
+          <div>
+            <h1 class="admin-page-title">Downloads</h1>
+            <p class="admin-page-sub">Manage Ghost.exe distribution</p>
+          </div>
+        </div>
+
+        <div class="dl-grid">
+          <!-- Current version card -->
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <h2 class="admin-card-title">Current Version</h2>
+              <span class="badge badge--green" id="dlVersionBadge">Loading…</span>
+            </div>
+            <div class="dl-info-grid" id="dlCurrentInfo">
+              <div class="dl-info-row"><span class="dl-info-label">Version</span><span class="dl-info-val" id="dlVersion">—</span></div>
+              <div class="dl-info-row"><span class="dl-info-label">Release Date</span><span class="dl-info-val" id="dlReleaseDate">—</span></div>
+              <div class="dl-info-row"><span class="dl-info-label">Filename</span><span class="dl-info-val" id="dlFilename">—</span></div>
+              <div class="dl-info-row"><span class="dl-info-label">Download URL</span><span class="dl-info-val" id="dlUrl">—</span></div>
+              <div class="dl-info-row"><span class="dl-info-label">Total Downloads</span><span class="dl-info-val" id="dlCount">—</span></div>
+            </div>
+            <div style="margin-top:16px">
+              <textarea id="dlChangelog" class="admin-textarea" rows="6" placeholder="Changelog / release notes…"></textarea>
+            </div>
+            <div class="admin-modal-footer" style="padding:16px 0 0">
+              <button class="btn btn-ghost btn--sm" id="openUpdateDlModal">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Upload New Version
+              </button>
+            </div>
+          </div>
+
+          <!-- Version history -->
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <h2 class="admin-card-title">Version History</h2>
+            </div>
+            <div id="dlHistory" class="dl-history">
+              <p class="admin-table-empty">No previous versions.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── TAB: Activity Log ──────────────────────────────────────── -->
+      <section id="tab-activity" class="admin-tab" style="display:none">
+        <div class="admin-page-header">
+          <div>
+            <h1 class="admin-page-title">Activity Log</h1>
+            <p class="admin-page-sub">All admin and system actions</p>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost btn--sm" id="refreshActivity">Refresh</button>
+            <button class="btn btn-danger btn--sm" id="clearActivityBtn">Clear Log</button>
+          </div>
+        </div>
+
+        <div class="admin-toolbar">
+          <div class="admin-toolbar-left">
+            <select id="activityLevelFilter" class="admin-select">
+              <option value="">All Levels</option>
+              <option value="info">Info</option>
+              <option value="warn">Warning</option>
+              <option value="error">Error</option>
+            </select>
+            <input type="text" id="activitySearch" class="admin-search" placeholder="Search actions…" />
+          </div>
+        </div>
+
+        <div class="admin-card" style="margin-top:16px">
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Level</th>
+                  <th>Action</th>
+                  <th>Actor</th>
+                  <th>Target</th>
+                  <th>Details</th>
+                  <th>IP</th>
+                </tr>
+              </thead>
+              <tbody id="activityTbody">
+                <tr><td colspan="7" class="admin-table-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="admin-table-footer" id="activityPagination"></div>
+        </div>
+      </section>
+
+      <!-- ── TAB: Settings ─────────────────────────────────────────── -->
+      <section id="tab-settings" class="admin-tab" style="display:none">
+        <div class="admin-page-header">
+          <div>
+            <h1 class="admin-page-title">Admin Settings</h1>
+            <p class="admin-page-sub">Configure site and payment settings</p>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <!-- Site settings -->
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <h2 class="admin-card-title">Site Settings</h2>
+            </div>
+            <div id="settingsAlert" class="admin-alert" style="display:none; margin-bottom:16px"></div>
+            <div class="settings-form" id="siteSettingsForm">
+              <div class="form-group">
+                <label class="form-label">Website Name</label>
+                <input type="text" id="settingSiteName" class="form-input" placeholder="Ghost" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Logo URL</label>
+                <input type="text" id="settingLogoUrl" class="form-input" placeholder="https://…" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Discord Invite Link</label>
+                <input type="text" id="settingDiscordInvite" class="form-input" placeholder="https://discord.gg/…" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Download URL</label>
+                <input type="text" id="settingDownloadUrl" class="form-input" placeholder="https://…/Ghost.exe" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Announcement Banner</label>
+                <input type="text" id="settingBanner" class="form-input" placeholder="Leave blank to hide" />
+              </div>
+              <div class="form-group" style="flex-direction:row; align-items:center; gap:12px">
+                <input type="checkbox" id="settingMaintenance" style="width:18px;height:18px;cursor:pointer" />
+                <label class="form-label" for="settingMaintenance" style="cursor:pointer;margin:0">Maintenance Mode</label>
+              </div>
+              <button class="btn btn-primary" id="saveSiteSettings" style="margin-top:8px">
+                <span class="btn-text">Save Site Settings</span>
+                <span class="btn-spinner" style="display:none"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- PayPal settings -->
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <h2 class="admin-card-title">PayPal Settings</h2>
+            </div>
+            <div class="settings-form">
+              <div class="form-group">
+                <label class="form-label">PayPal Client ID</label>
+                <input type="text" id="settingPaypalClientId" class="form-input" placeholder="Client ID from PayPal Developer" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">PayPal Environment</label>
+                <select id="settingPaypalEnv" class="admin-select" style="width:100%">
+                  <option value="sandbox">Sandbox (Testing)</option>
+                  <option value="live">Live (Production)</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" id="savePaypalSettings" style="margin-top:8px">
+                <span class="btn-text">Save PayPal Settings</span>
+                <span class="btn-spinner" style="display:none"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Change password -->
+          <div class="admin-card">
+            <div class="admin-card-header">
+              <h2 class="admin-card-title">Change Admin Password</h2>
+            </div>
+            <div id="pwAlert" class="admin-alert" style="display:none; margin-bottom:16px"></div>
+            <div class="settings-form">
+              <div class="form-group">
+                <label class="form-label">New Password</label>
+                <input type="password" id="settingNewPw" class="form-input" placeholder="New admin panel password" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Confirm New Password</label>
+                <input type="password" id="settingConfirmPw" class="form-input" placeholder="Confirm new password" />
+              </div>
+              <button class="btn btn-primary" id="changePasswordBtn" style="margin-top:8px">
+                <span class="btn-text">Update Password</span>
+                <span class="btn-spinner" style="display:none"></span>
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -243,35 +582,170 @@
 
   <!-- ── Import Keys Modal ────────────────────────────────────────────── -->
   <div id="importModal" class="admin-modal-overlay" style="display:none">
-    <div class="admin-modal">
+    <div class="admin-modal admin-modal--lg">
       <div class="admin-modal-header">
         <h2>Import License Keys</h2>
         <button class="admin-modal-close" id="closeImportModal">&times;</button>
       </div>
       <div class="admin-modal-body">
         <div id="importAlert" class="admin-alert" style="display:none"></div>
-        <div class="form-group">
-          <label class="form-label">Plan</label>
-          <select id="importPlan" class="admin-select" style="width:100%">
-            <option value="pro">Ghost Pro (monthly)</option>
-            <option value="lifetime">Ghost Lifetime</option>
-          </select>
+        <div class="import-grid">
+          <div class="form-group">
+            <label class="form-label">Plan</label>
+            <select id="importPlan" class="admin-select" style="width:100%">
+              <option value="pro">Ghost Pro (monthly)</option>
+              <option value="lifetime">Ghost Lifetime</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Notes (optional)</label>
+            <input type="text" id="importNotes" class="form-input" placeholder="e.g. Batch 2025-01" />
+          </div>
         </div>
-        <div class="form-group" style="margin-top:16px">
-          <label class="form-label">Import from text file</label>
-          <input type="file" id="importFile" accept=".txt" class="admin-file-input" />
-          <p class="form-hint">One key per line.</p>
+        <div class="import-source-tabs" style="margin-top:16px">
+          <button class="import-tab-btn active" id="tabPaste" data-source="paste">Paste Text</button>
+          <button class="import-tab-btn" id="tabFile" data-source="file">Upload File (.txt / .csv)</button>
         </div>
-        <div class="form-group" style="margin-top:16px">
-          <label class="form-label">Or paste keys</label>
-          <textarea id="importPaste" class="admin-textarea" rows="8" placeholder="GHOST-XXXXX-XXXXX-XXXXX-XXXXX&#10;GHOST-YYYYY-YYYYY-YYYYY-YYYYY&#10;..."></textarea>
-          <p class="form-hint">One key per line. Duplicates are silently skipped.</p>
+        <div id="importSourcePaste" style="margin-top:12px">
+          <textarea id="importPaste" class="admin-textarea" rows="10" placeholder="GHOST-XXXXX-XXXXX-XXXXX-XXXXX&#10;GHOST-YYYYY-YYYYY-YYYYY-YYYYY&#10;One key per line. Blank lines and duplicates are ignored."></textarea>
         </div>
+        <div id="importSourceFile" style="display:none; margin-top:12px">
+          <input type="file" id="importFile" accept=".txt,.csv" class="admin-file-input" />
+          <p class="form-hint" style="margin-top:6px">One key per line. .txt and .csv supported.</p>
+        </div>
+        <div id="importResultBox" class="import-result-box" style="display:none"></div>
       </div>
       <div class="admin-modal-footer">
         <button class="btn btn-ghost" id="cancelImport">Cancel</button>
         <button class="btn btn-primary" id="submitImport">
           <span class="btn-text">Import Keys</span>
+          <span class="btn-spinner" style="display:none"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Edit Key Modal ───────────────────────────────────────────────── -->
+  <div id="editKeyModal" class="admin-modal-overlay" style="display:none">
+    <div class="admin-modal">
+      <div class="admin-modal-header">
+        <h2>Edit Key</h2>
+        <button class="admin-modal-close" id="closeEditKeyModal">&times;</button>
+      </div>
+      <div class="admin-modal-body">
+        <div id="editKeyAlert" class="admin-alert" style="display:none; margin-bottom:12px"></div>
+        <input type="hidden" id="editKeyValue" />
+        <div class="edit-key-grid">
+          <div class="form-group">
+            <label class="form-label">Status</label>
+            <select id="editKeyStatus" class="admin-select" style="width:100%">
+              <option value="available">Available</option>
+              <option value="reserved">Reserved</option>
+              <option value="sold">Sold</option>
+              <option value="activated">Activated</option>
+              <option value="revoked">Revoked</option>
+              <option value="expired">Expired</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Plan</label>
+            <select id="editKeyPlan" class="admin-select" style="width:100%">
+              <option value="pro">Pro</option>
+              <option value="lifetime">Lifetime</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Customer</label>
+            <input type="text" id="editKeyCustomer" class="form-input" placeholder="Email or Discord" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">HWID</label>
+            <input type="text" id="editKeyHwid" class="form-input" placeholder="Hardware ID" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Purchase Date</label>
+            <input type="date" id="editKeyPurchaseDate" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Expiration</label>
+            <input type="date" id="editKeyExpiration" class="form-input" />
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label">Notes</label>
+          <textarea id="editKeyNotes" class="admin-textarea" rows="3" placeholder="Admin notes…"></textarea>
+        </div>
+      </div>
+      <div class="admin-modal-footer">
+        <button class="btn btn-ghost" id="cancelEditKey">Cancel</button>
+        <button class="btn btn-primary" id="saveEditKey">
+          <span class="btn-text">Save Changes</span>
+          <span class="btn-spinner" style="display:none"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Extend Key Modal ──────────────────────────────────────────────── -->
+  <div id="extendKeyModal" class="admin-modal-overlay" style="display:none">
+    <div class="admin-modal admin-modal--sm">
+      <div class="admin-modal-header">
+        <h2>Extend Key</h2>
+        <button class="admin-modal-close" onclick="document.getElementById('extendKeyModal').style.display='none'">&times;</button>
+      </div>
+      <div class="admin-modal-body">
+        <p style="color:var(--muted);margin-bottom:14px">Key: <code id="extendKeyVal" style="color:var(--text)"></code></p>
+        <div class="form-group">
+          <label class="form-label">Days to Extend</label>
+          <input type="number" id="extendDays" class="form-input" value="30" min="1" max="3650" />
+        </div>
+      </div>
+      <div class="admin-modal-footer">
+        <button class="btn btn-ghost" onclick="document.getElementById('extendKeyModal').style.display='none'">Cancel</button>
+        <button class="btn btn-primary" id="confirmExtendKey">
+          <span class="btn-text">Extend</span>
+          <span class="btn-spinner" style="display:none"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Upload Download Modal ─────────────────────────────────────────── -->
+  <div id="updateDlModal" class="admin-modal-overlay" style="display:none">
+    <div class="admin-modal">
+      <div class="admin-modal-header">
+        <h2>Upload New Version</h2>
+        <button class="admin-modal-close" id="closeUpdateDlModal">&times;</button>
+      </div>
+      <div class="admin-modal-body">
+        <div id="dlModalAlert" class="admin-alert" style="display:none; margin-bottom:12px"></div>
+        <div class="edit-key-grid">
+          <div class="form-group">
+            <label class="form-label">Version</label>
+            <input type="text" id="dlNewVersion" class="form-input" placeholder="e.g. v2.5.0" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Release Date</label>
+            <input type="date" id="dlNewReleaseDate" class="form-input" />
+          </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label class="form-label">Download URL</label>
+            <input type="text" id="dlNewUrl" class="form-input" placeholder="https://cdn.example.com/Ghost.exe" />
+          </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label class="form-label">Filename</label>
+            <input type="text" id="dlNewFilename" class="form-input" placeholder="Ghost.exe" />
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label">Changelog</label>
+          <textarea id="dlNewChangelog" class="admin-textarea" rows="5" placeholder="What's new in this version…"></textarea>
+        </div>
+      </div>
+      <div class="admin-modal-footer">
+        <button class="btn btn-ghost" id="cancelUpdateDl">Cancel</button>
+        <button class="btn btn-primary" id="confirmUpdateDl">
+          <span class="btn-text">Upload Version</span>
           <span class="btn-spinner" style="display:none"></span>
         </button>
       </div>
@@ -291,6 +765,22 @@
       <div class="admin-modal-footer">
         <button class="btn btn-ghost" id="closeOrderDetailBtn">Close</button>
         <button class="btn btn-primary" id="reissueBtn" style="display:none">Retry Delivery</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Customer Detail Modal ────────────────────────────────────────── -->
+  <div id="customerDetailModal" class="admin-modal-overlay" style="display:none">
+    <div class="admin-modal admin-modal--lg">
+      <div class="admin-modal-header">
+        <h2>Customer Details</h2>
+        <button class="admin-modal-close" id="closeCustomerDetail">&times;</button>
+      </div>
+      <div class="admin-modal-body" id="customerDetailBody">
+        <p>Loading…</p>
+      </div>
+      <div class="admin-modal-footer">
+        <button class="btn btn-ghost" id="closeCustomerDetailBtn">Close</button>
       </div>
     </div>
   </div>

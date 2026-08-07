@@ -227,14 +227,35 @@ app.get('/api/admin/panel/verify', _requireAdminSession, (_req, res) => {
 });
 
 // Admin panel inventory + order routes — proxy to Python backend (api.py)
-app.get('/api/admin/inventory',                         _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.get('/api/admin/inventory/stats',                   _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/inventory/import',                 _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/inventory/bulk-delete',            _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.delete('/api/admin/inventory/:key',                 _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}`));
-app.post('/api/admin/inventory/:key/revoke',            _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}/revoke`));
-app.get('/api/admin/orders',                            _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.get('/api/admin/orders/:orderId',                   _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/orders/${req.params.orderId}`));
+app.get('/api/admin/inventory',                             _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.get('/api/admin/inventory/stats',                       _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/inventory/import',                     _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/inventory/bulk-delete',                _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.delete('/api/admin/inventory/:key',                     _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}`));
+app.patch('/api/admin/inventory/:key',                      _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}`));
+app.post('/api/admin/inventory/:key/revoke',                _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}/revoke`));
+app.post('/api/admin/inventory/:key/extend',                _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}/extend`));
+app.get('/api/admin/orders',                                _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.get('/api/admin/orders/:orderId',                       _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/orders/${req.params.orderId}`));
+// Customers
+app.get('/api/admin/customers',                             _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/customers/:email/revoke',              _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/customers/${req.params.email}/revoke`));
+app.post('/api/admin/customers/:email/reset-hwid',          _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/customers/${req.params.email}/reset-hwid`));
+// Downloads
+app.get('/api/admin/downloads',                             _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/downloads',                            _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/downloads/increment',                  _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/downloads/rollback',                   _requireAdminSession, (req, res) => _proxyToApi(req, res));
+// Settings
+app.get('/api/admin/settings',                              _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/settings',                             _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/settings/password',                    _requireAdminSession, (req, res) => _proxyToApi(req, res));
+// Activity Log
+app.get('/api/admin/activity',                              _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.delete('/api/admin/activity',                           _requireAdminSession, (req, res) => _proxyToApi(req, res));
+// Dashboard
+app.get('/api/admin/dashboard',                             _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.get('/api/admin/stats',                                 _requireAdminSession, (req, res) => _proxyToApi(req, res));
 
 // ── Admin panel HTML ─────────────────────────────────────────────────────────
 app.get('/admin', (_req, res) => {
