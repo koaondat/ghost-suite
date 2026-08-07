@@ -12,6 +12,7 @@
           "dashboard.html",
           "pricing.html",
           "checkout.html",
+          "admin.html",
           "assets/**",
           "api/paypal.js",
           "api/checkout.js",
