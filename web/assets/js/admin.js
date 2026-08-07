@@ -724,9 +724,10 @@
   }
 
   function applyOrderFilter () {
-    const search  = ($('orderSearch')?.value || '').toLowerCase();
-    const delivery= $('orderFilterDelivery')?.value || '';
+    const search     = ($('orderSearch')?.value || '').toLowerCase();
+    const statusFilter = $('orderStatusFilter')?.value || '';
     let orders = _allOrders;
+
     if (search) {
       orders = orders.filter(o =>
         (o.order_id  || '').toLowerCase().includes(search) ||
@@ -734,9 +735,29 @@
         (o.discord   || '').toLowerCase().includes(search)
       );
     }
-    if (delivery) {
-      orders = orders.filter(o => (o.delivery_status || '') === delivery);
+
+    if (statusFilter) {
+      orders = orders.filter(o => {
+        const ps = (o.payment_status  || '').toLowerCase();
+        const ds = (o.delivery_status || '').toLowerCase();
+        switch (statusFilter) {
+          case 'completed':
+            // Payment complete and key delivered
+            return (ps === 'completed' || ps === 'verified') && ds === 'delivered';
+          case 'pending_delivery':
+            // Paid but key not yet assigned
+            return (ps === 'completed' || ps === 'verified') &&
+                   (ds === 'pending' || ds === 'delivery_pending' || ds === 'out_of_stock');
+          case 'failed_delivery':
+            return ds === 'failed' || ds === 'failed_delivery';
+          case 'refunded':
+            return ps === 'refunded';
+          default:
+            return true;
+        }
+      });
     }
+
     renderOrders(orders, 1);
   }
 
@@ -1185,15 +1206,35 @@
         toast(data.error || 'Failed to load settings.', 'error');
         return;
       }
-      const s = data.settings || {};
+      const s = data.settings || data || {};
       $('settingSiteName').value        = s.site_name           || '';
       $('settingLogoUrl').value         = s.logo_url            || '';
       $('settingDiscordInvite').value   = s.discord_invite      || '';
       $('settingDownloadUrl').value     = s.download_url        || '';
       $('settingBanner').value          = s.announcement_banner || '';
       $('settingMaintenance').checked   = !!s.maintenance_mode;
-      $('settingPaypalClientId').value  = s.paypal_client_id    || '';
-      $('settingPaypalEnv').value       = s.paypal_environment  || 'sandbox';
+
+      // PayPal config: load from /api/paypal/config (env-based, authoritative) first,
+      // then fall back to stored settings only when env vars are absent.
+      try {
+        const cfgRes  = await fetch('/api/paypal/config');
+        const cfgData = await cfgRes.json().catch(() => ({}));
+        if (cfgData.configured) {
+          // Env var values — show these as the live/active values
+          $('settingPaypalClientId').value = cfgData.clientId || '';
+          $('settingPaypalEnv').value      = cfgData.environment || 'sandbox';
+          // Mark the fields as env-controlled (read-only display)
+          const note = $('paypalEnvNote');
+          if (note) note.textContent = 'Active: ' + (cfgData.environment === 'live' ? 'Live (Production)' : 'Sandbox (Testing)');
+        } else {
+          // Env var not set — show whatever is stored in Redis settings
+          $('settingPaypalClientId').value = s.paypal_client_id  || '';
+          $('settingPaypalEnv').value      = s.paypal_environment || 'sandbox';
+        }
+      } catch (_) {
+        $('settingPaypalClientId').value = s.paypal_client_id  || '';
+        $('settingPaypalEnv').value      = s.paypal_environment || 'sandbox';
+      }
     } catch (err) {
       toast(`Settings error: ${err.message || 'Network failure'}`, 'error');
     }
@@ -1229,17 +1270,23 @@
 
   async function savePaypalSettings () {
     setBusy('savePaypalSettings', true);
-    const payload = {
-      paypal_client_id:   $('settingPaypalClientId').value.trim(),
-      paypal_environment: $('settingPaypalEnv').value,
-    };
+    const clientId = $('settingPaypalClientId').value.trim();
+    const env      = $('settingPaypalEnv').value;
+    // Save to Redis settings for reference.
+    // NOTE: These values only affect checkout when PAYPAL_CLIENT_ID and PAYPAL_ENVIRONMENT
+    // are NOT set in Vercel environment variables. When env vars are present, they always
+    // take precedence. PAYPAL_CLIENT_SECRET must always be a Vercel env var — never store it here.
+    const payload = { paypal_client_id: clientId, paypal_environment: env };
     try {
       const { ok, data } = await apiFetch('/api/admin/settings', {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      if (ok) toast('PayPal settings saved.', 'success');
-      else toast(data.error || 'Save failed.', 'error');
+      if (ok) {
+        toast('PayPal settings saved. Note: PAYPAL_CLIENT_ID env var takes precedence if set on the server.', 'success', 5000);
+      } else {
+        toast(data.error || 'Save failed.', 'error');
+      }
     } catch (_) {
       toast('Network error.', 'error');
     } finally {
@@ -1800,7 +1847,7 @@
     $('refreshOrders').addEventListener('click', loadOrders);
     $('applyOrderFilter').addEventListener('click', applyOrderFilter);
     $('orderSearch').addEventListener('keydown', e => { if (e.key === 'Enter') applyOrderFilter(); });
-    $('orderFilterDelivery').addEventListener('change', applyOrderFilter);
+    $('orderStatusFilter').addEventListener('change', applyOrderFilter);
     $('closeOrderDetail').addEventListener('click', () => hide('orderDetailModal'));
     $('closeOrderDetailBtn').addEventListener('click', () => hide('orderDetailModal'));
     $('orderDetailModal').addEventListener('click', e => { if (e.target === $('orderDetailModal')) hide('orderDetailModal'); });

@@ -39,10 +39,89 @@ if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
   );
 }
 if (!DELIVERY_BACKEND_URL) {
-  console.error(
-    '[ghost/paypal] FATAL: GHOST_DELIVERY_URL is not set. ' +
-    'License delivery will fail until this is configured.',
+  console.warn(
+    '[ghost/paypal] WARNING: GHOST_DELIVERY_URL is not set. ' +
+    'Orders will be persisted directly to Redis when delivery backend is unavailable.',
   );
+}
+
+
+/* ── Redis-direct order persistence ─────────────────────────────────────────
+   Used as the primary persistence path so orders are NEVER lost, even when
+   the Python delivery backend is unreachable.  The delivery backend can read
+   from the same keys when it comes back online.
+   Keys mirror what license_delivery.py uses:
+     ghost:order:{order_id}      — the order hash
+     ghost:orders:index          — sorted set of order IDs (score = unix timestamp)
+─────────────────────────────────────────────────────────────────────────── */
+const _REDIS_URL   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
+const _REDIS_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || '');
+
+async function _redisSaveOrder (orderId, record) {
+  if (!_REDIS_URL || !_REDIS_TOKEN) return false;
+  const { default: fetch } = await import('node-fetch');
+  // Also store a secondary lookup key so we can find the order by PayPal Order ID
+  const pipeline = [
+    ['SET', `ghost:order:${orderId}`, JSON.stringify(record)],
+    ['ZADD', 'ghost:orders:index', String(Math.floor(Date.now() / 1000)), orderId],
+  ];
+  // If the record contains a paypal_order_id, store the mapping so idempotency
+  // checks by PayPal Order ID resolve instantly without scanning all orders.
+  if (record.paypal_order_id) {
+    pipeline.push(['SET', `ghost:paypal-order:${record.paypal_order_id}`, orderId]);
+  }
+  try {
+    const res = await fetch(`${_REDIS_URL}/pipeline`, {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${_REDIS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(pipeline),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.error('[ghost/paypal] Redis pipeline save failed status=%d body=%s', res.status, text.slice(0, 200));
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('[ghost/paypal] Redis save error orderId=%s: %s', orderId, err.message);
+    return false;
+  }
+}
+
+async function _redisGetOrder (orderId) {
+  if (!_REDIS_URL || !_REDIS_TOKEN) return null;
+  const { default: fetch } = await import('node-fetch');
+  const key = encodeURIComponent(`ghost:order:${orderId}`);
+  try {
+    const res = await fetch(`${_REDIS_URL}/GET/${key}`, {
+      headers: { Authorization: `Bearer ${_REDIS_TOKEN}` },
+    });
+    if (!res.ok) return null;
+    const body = await res.json().catch(() => null);
+    if (!body || body.result === null || body.result === undefined) return null;
+    return typeof body.result === 'string' ? JSON.parse(body.result) : body.result;
+  } catch (_) { return null; }
+}
+
+// Look up an order by its PayPal Order ID (returns the order record, not just the captureId)
+async function _redisGetOrderByPaypalOrderId (paypalOrderId) {
+  if (!_REDIS_URL || !_REDIS_TOKEN) return null;
+  const { default: fetch } = await import('node-fetch');
+  // First: resolve the captureId from the secondary lookup key
+  const mapKey = encodeURIComponent(`ghost:paypal-order:${paypalOrderId}`);
+  try {
+    const mapRes = await fetch(`${_REDIS_URL}/GET/${mapKey}`, {
+      headers: { Authorization: `Bearer ${_REDIS_TOKEN}` },
+    });
+    if (!mapRes.ok) return null;
+    const mapBody = await mapRes.json().catch(() => null);
+    const captureId = mapBody?.result;
+    if (!captureId) return null;
+    return _redisGetOrder(captureId);
+  } catch (_) { return null; }
 }
 
 
@@ -266,42 +345,58 @@ async function captureOrder (req, res) {
     return res.status(400).json({ ok: false, message: 'Invalid plan.', stage: 'validate' });
   }
 
-  // ── Idempotency: if this PayPal orderID was already captured and delivered,
-  //    return the existing record immediately without re-capturing. ─────────
+  // ── Idempotency: check Redis directly first, then delivery backend ────────
+  // Use the PayPal Order ID as the idempotency key — look for any stored order
+  // with matching paypal_order_id.
+  const _buildIdempotentResponse = (existing, planMeta) => ({
+    ok:             true,
+    paymentStatus:  'COMPLETED',
+    deliveryStatus: existing.delivery_status || existing.deliveryStatus || 'delivered',
+    orderId:        existing.order_id        || existing.orderId,
+    captureId:      existing.paypal_capture_id || existing.captureId || existing.order_id,
+    paypalOrderId:  orderID,
+    plan:           existing.plan            || planMeta.id,
+    planLabel:      existing.plan_label      || planMeta.label,
+    amount:         String(existing.price_usd || planMeta.priceUsd),
+    currency:       existing.currency        || 'USD',
+    email:          existing.email           || email,
+    discord:        existing.discord         || discord,
+    licenseKey:     existing.license_key     || null,
+    licenseStatus:  existing.license_status  || (existing.license_key ? 'active' : 'pending'),
+    purchaseDate:   existing.created_at      || new Date().toISOString(),
+    downloadUrl:    existing.license_key ? `/api/order/${encodeURIComponent(existing.order_id || existing.orderId)}/download` : null,
+    tier:           existing.tier            || planMeta.tier,
+    instructions: existing.license_key ? [
+      'Download Ghost.',
+      'Extract the ZIP if required.',
+      'Launch Ghost.',
+      'Log in or paste your license key.',
+      'Click Activate.',
+    ] : null,
+  });
+
+  // Check Redis first (fastest, no Python backend required)
+  // Use the secondary lookup key ghost:paypal-order:{orderID} -> captureId -> order record
+  try {
+    const redisOrder = await _redisGetOrderByPaypalOrderId(orderID);
+    if (redisOrder && redisOrder.paypal_order_id === orderID) {
+      console.log('[ghost/paypal] captureOrder idempotent (Redis) — paypalOrderId=%s orderId=%s deliveryStatus=%s',
+        orderID, redisOrder.order_id, redisOrder.delivery_status);
+      return res.json(_buildIdempotentResponse(redisOrder, plan));
+    }
+  } catch (_) {}
+
+  // Also check delivery backend for idempotency
   try {
     const existingRes = await _deliveryFetch(
       `/api/order/paypal-order:${encodeURIComponent(orderID)}`, {}, 8_000
     );
     if (existingRes.ok) {
       const existing = await existingRes.json().catch(() => null);
-      if (existing && existing.ok && existing.license_key && existing.delivery_status === 'delivered') {
-        console.log('[ghost/paypal] captureOrder idempotent — already fulfilled paypalOrderId=%s orderId=%s',
+      if (existing && existing.ok) {
+        console.log('[ghost/paypal] captureOrder idempotent (delivery) — paypalOrderId=%s orderId=%s',
           orderID, existing.order_id);
-        return res.json({
-          ok:             true,
-          paymentStatus:  'COMPLETED',
-          deliveryStatus: 'delivered',
-          orderId:        existing.order_id,
-          paypalOrderId:  orderID,
-          plan:           existing.plan || planId,
-          planLabel:      existing.plan_label || plan.label,
-          amount:         String(existing.price_usd || plan.priceUsd),
-          currency:       existing.currency || 'USD',
-          email:          existing.email || email,
-          discord:        existing.discord || discord,
-          licenseKey:     existing.license_key,
-          licenseStatus:  existing.license_status || 'active',
-          purchaseDate:   existing.created_at || new Date().toISOString(),
-          downloadUrl:    `/api/order/${encodeURIComponent(existing.order_id)}/download`,
-          tier:           existing.tier || plan.tier,
-          instructions: [
-            'Download Ghost.',
-            'Extract the ZIP if required.',
-            'Launch Ghost.',
-            'Log in or paste your license key.',
-            'Click Activate.',
-          ],
-        });
+        return res.json(_buildIdempotentResponse(existing, plan));
       }
     }
   } catch (_) {
@@ -425,7 +520,39 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
   console.log('[ghost/paypal] capture verified orderID=%s captureId=%s plan=%s amount=%s',
     orderID, captureId, planId, capturedAmount);
 
-  // ── Step 6: Call the delivery backend ────────────────────────────────────
+  const purchaseDateNow = new Date().toISOString();
+
+  // ── Step 6: Persist the order to Redis IMMEDIATELY after capture ──────────
+  // This is the idempotency key — using the PayPal Order ID ensures that
+  // even if the delivery backend call fails, the order is never lost.
+  // The delivery backend will find this record when retried.
+  const pendingOrderRecord = {
+    order_id:          captureId,          // capture transaction ID = our internal order ID
+    paypal_order_id:   orderID,            // PayPal order ID (idempotency key)
+    paypal_capture_id: captureId,
+    plan:              planId,
+    plan_label:        plan.label,
+    tier:              plan.tier,
+    email:             resolvedEmail,
+    discord:           resolvedDiscord,
+    price_usd:         parseFloat(capturedAmount),
+    currency:          capturedCurrency,
+    created_at:        purchaseDateNow,
+    payment_status:    'completed',
+    payment_verified:  true,
+    delivery_status:   'pending',          // will be updated to 'delivered' below
+    license_key:       null,
+    license_status:    'pending',
+  };
+
+  const savedToRedis = await _redisSaveOrder(captureId, pendingOrderRecord);
+  if (savedToRedis) {
+    console.log('[ghost/paypal] order persisted to Redis orderId=%s paypalOrderId=%s', captureId, orderID);
+  } else {
+    console.warn('[ghost/paypal] could not persist order to Redis orderId=%s — will rely on delivery backend', captureId);
+  }
+
+  // ── Step 7: Call the delivery backend to assign a license key ────────────
   let data;
   let deliveryFailed = false;
   try {
@@ -449,17 +576,16 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     const isTimeout = err.name === 'AbortError';
     console.error('[ghost/paypal] delivery %s orderID=%s captureId=%s: %s',
       isTimeout ? 'timeout' : 'exception', orderID, captureId, err.message);
-    // IMPORTANT: payment was captured — do NOT return ok:false (which shows "Payment failed").
-    // Instead return ok:true with delivery_pending so the frontend shows the correct state.
+    // IMPORTANT: payment was captured and persisted to Redis — do NOT return ok:false.
+    // Show delivery_pending so the user can retry, and the order is already in admin panel.
     deliveryFailed = true;
     data = { ok: false, error: isTimeout ? 'delivery_timeout' : 'delivery_unavailable' };
   }
 
   if (!data.ok) {
-    console.error('[ghost/paypal] delivery failed orderID=%s captureId=%s error=%s stage=%s',
-      orderID, captureId, data.error, deliveryFailed ? 'exception' : 'delivery');
-    // Payment was captured successfully — show delivery_pending, not payment failure.
-    const purchaseDatePending = new Date().toISOString();
+    console.error('[ghost/paypal] delivery failed orderID=%s captureId=%s error=%s — order saved as pending',
+      orderID, captureId, data.error);
+    // Order is already in Redis as pending — admin can retry from the Orders tab.
     return {
       ok:             true,
       paymentStatus:  'COMPLETED',
@@ -475,7 +601,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
       discord:        resolvedDiscord,
       licenseKey:     null,
       licenseStatus:  'pending',
-      purchaseDate:   purchaseDatePending,
+      purchaseDate:   purchaseDateNow,
       downloadUrl:    null,
       tier:           plan.tier,
       instructions:   null,
@@ -483,7 +609,20 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     };
   }
 
-  const purchaseDate = data.created_at || new Date().toISOString();
+  const purchaseDate = data.created_at || purchaseDateNow;
+
+  // ── Step 8: Update Redis with the delivered state + license key ───────────
+  const deliveredOrderRecord = {
+    ...pendingOrderRecord,
+    delivery_status:  data.delivery_status || 'delivered',
+    license_key:      data.key             || null,
+    license_status:   data.key ? 'active'  : 'pending',
+    created_at:       purchaseDate,
+    tier:             data.tier            || plan.tier,
+  };
+  await _redisSaveOrder(captureId, deliveredOrderRecord).catch(err =>
+    console.warn('[ghost/paypal] Redis update after delivery failed orderId=%s: %s', captureId, err.message)
+  );
 
   const successResponse = {
     ok:             true,
@@ -502,7 +641,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     licenseStatus:  data.key ? 'active' : null,
     purchaseDate,
     downloadUrl:    data.key ? `/api/order/${encodeURIComponent(captureId)}/download` : null,
-    tier:           data.tier,
+    tier:           data.tier || plan.tier,
     instructions: [
       'Download Ghost.',
       'Extract the ZIP if required.',
@@ -512,22 +651,15 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     ],
   };
 
-  // Log safe response shape (no license key value in log)
   console.log(
-    '[ghost/paypal] capture success shape — orderId=%s paymentStatus=%s deliveryStatus=%s ' +
-    'plan=%s planLabel=%s amount=%s currency=%s purchaseDate=%s ' +
-    'licenseKey=%s licenseStatus=%s downloadUrl=%s',
+    '[ghost/paypal] capture complete — orderId=%s paymentStatus=%s deliveryStatus=%s ' +
+    'plan=%s amount=%s licenseKey=%s',
     successResponse.orderId,
     successResponse.paymentStatus,
     successResponse.deliveryStatus,
     successResponse.plan,
-    successResponse.planLabel,
     successResponse.amount,
-    successResponse.currency,
-    successResponse.purchaseDate,
     successResponse.licenseKey ? '[present]' : '[missing]',
-    successResponse.licenseStatus,
-    successResponse.downloadUrl ? '[present]' : '[missing]',
   );
 
   return successResponse;
@@ -562,76 +694,96 @@ async function retryFulfillment (req, res) {
 
   const id = captureId.trim();
 
-  if (!DELIVERY_BACKEND_URL) {
-    return res.status(503).json({
+  // ── Try delivery backend first (it handles key assignment from inventory) ─
+  if (DELIVERY_BACKEND_URL) {
+    try {
+      const deliveryRes = await _deliveryFetch(`/api/order/${encodeURIComponent(id)}/fulfill`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({}),
+      }, 25_000);
+
+      const data = await deliveryRes.json().catch(() => ({}));
+
+      if (deliveryRes.status === 404) {
+        // Order not in delivery backend — fall through to check Redis directly
+        console.warn('[ghost/paypal] retry-fulfillment: not in delivery backend captureId=%s, checking Redis', id);
+      } else if (!data.ok) {
+        console.error('[ghost/paypal] retry-fulfillment failed captureId=%s error=%s',
+          id, data.error || data.message);
+        return res.status(deliveryRes.status || 500).json({
+          ok:      false,
+          message: data.error || data.message || 'Fulfillment retry failed.',
+          stage:   'retry-fulfillment',
+        });
+      } else {
+        console.log('[ghost/paypal] retry-fulfillment success (delivery) captureId=%s deliveryStatus=%s',
+          id, data.deliveryStatus || data.delivery_status);
+
+        // If delivery succeeded and returned a license key, update Redis too
+        if (data.key || data.license_key) {
+          const existingRecord = await _redisGetOrder(id).catch(() => null);
+          if (existingRecord) {
+            await _redisSaveOrder(id, {
+              ...existingRecord,
+              delivery_status: data.delivery_status || 'delivered',
+              license_key:     data.key || data.license_key || existingRecord.license_key,
+              license_status:  'active',
+            }).catch(() => {});
+          }
+        }
+
+        return res.json({
+          ok:             true,
+          paymentStatus:  data.paymentStatus  || 'COMPLETED',
+          deliveryStatus: data.deliveryStatus || data.delivery_status || 'delivered',
+          orderId:        data.orderId        || data.order_id        || id,
+          plan:           data.plan,
+          planLabel:      data.planLabel      || data.plan_label,
+          amount:         String(data.amount  || data.price_usd || ''),
+          currency:       data.currency       || 'USD',
+          purchaseDate:   data.purchaseDate   || data.created_at,
+          licenseKey:     data.licenseKey     || data.license_key  || data.key || null,
+          licenseStatus:  data.licenseStatus  || data.license_status || (data.licenseKey ? 'active' : null),
+          downloadUrl:    data.downloadUrl    || data.download_url  || (data.orderId || id ? `/api/order/${encodeURIComponent(data.orderId || id)}/download` : null),
+          tier:           data.tier,
+        });
+      }
+    } catch (err) {
+      const isTimeout = err.name === 'AbortError';
+      console.warn('[ghost/paypal] retry-fulfillment delivery %s captureId=%s — falling back to Redis: %s',
+        isTimeout ? 'timeout' : 'error', id, err.message);
+      // Fall through to Redis check below
+    }
+  }
+
+  // ── Redis-only path: return the stored order (fulfillment must happen via delivery backend) ─
+  // When the delivery backend is unavailable we can at least confirm what is stored.
+  const redisRecord = await _redisGetOrder(id).catch(() => null);
+  if (!redisRecord) {
+    return res.status(404).json({
       ok:      false,
-      message: 'License delivery service is not configured (GHOST_DELIVERY_URL not set).',
+      message: 'Order not found. Ensure GHOST_DELIVERY_URL is configured and the delivery backend is running.',
       stage:   'retry-fulfillment',
     });
   }
 
-  try {
-    const deliveryRes = await _deliveryFetch(`/api/order/${encodeURIComponent(id)}/fulfill`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({}),
-    }, 25_000);
-
-    const data = await deliveryRes.json().catch(() => ({}));
-
-    if (deliveryRes.status === 404) {
-      console.warn('[ghost/paypal] retry-fulfillment: order not found captureId=%s storage_backend=%s',
-        id, data.storage_backend || 'unknown');
-      return res.status(404).json({
-        ok:      false,
-        message: data.error || 'Order not found. The payment capture may not have been saved to persistent storage.',
-        hint:    data.hint  || 'Ensure UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are set on the delivery server.',
-        stage:   'retry-fulfillment',
-      });
-    }
-
-    if (!data.ok) {
-      console.error('[ghost/paypal] retry-fulfillment failed captureId=%s error=%s',
-        id, data.error || data.message);
-      return res.status(deliveryRes.status || 500).json({
-        ok:      false,
-        message: data.error || data.message || 'Fulfillment retry failed.',
-        stage:   'retry-fulfillment',
-      });
-    }
-
-    console.log('[ghost/paypal] retry-fulfillment success captureId=%s deliveryStatus=%s',
-      id, data.deliveryStatus || data.delivery_status);
-
-    // Normalise to the same shape as a successful capture-order response
-    return res.json({
-      ok:             true,
-      paymentStatus:  data.paymentStatus  || 'COMPLETED',
-      deliveryStatus: data.deliveryStatus || data.delivery_status || 'delivered',
-      orderId:        data.orderId        || data.order_id        || id,
-      plan:           data.plan,
-      planLabel:      data.planLabel      || data.plan_label,
-      amount:         String(data.amount  || data.price_usd || ''),
-      currency:       data.currency       || 'USD',
-      purchaseDate:   data.purchaseDate   || data.created_at,
-      licenseKey:     data.licenseKey     || data.license_key  || data.key || null,
-      licenseStatus:  data.licenseStatus  || data.license_status || (data.licenseKey ? 'active' : null),
-      downloadUrl:    data.downloadUrl    || data.download_url  || (data.orderId ? `/api/order/${encodeURIComponent(data.orderId || id)}/download` : null),
-      tier:           data.tier,
-    });
-
-  } catch (err) {
-    const isTimeout = err.name === 'AbortError';
-    console.error('[ghost/paypal] retry-fulfillment %s captureId=%s: %s',
-      isTimeout ? 'timeout' : 'error', id, err.message);
-    return res.status(502).json({
-      ok:      false,
-      message: isTimeout
-        ? 'License delivery service did not respond. Please try again in a moment.'
-        : 'License delivery service unavailable.',
-      stage: 'retry-fulfillment',
-    });
-  }
+  const licenseKey = redisRecord.license_key || null;
+  return res.json({
+    ok:             true,
+    paymentStatus:  redisRecord.payment_status  || 'COMPLETED',
+    deliveryStatus: redisRecord.delivery_status || 'pending',
+    orderId:        redisRecord.order_id        || id,
+    plan:           redisRecord.plan,
+    planLabel:      redisRecord.plan_label,
+    amount:         String(redisRecord.price_usd || ''),
+    currency:       redisRecord.currency        || 'USD',
+    purchaseDate:   redisRecord.created_at,
+    licenseKey:     licenseKey,
+    licenseStatus:  redisRecord.license_status  || (licenseKey ? 'active' : 'pending'),
+    downloadUrl:    licenseKey ? `/api/order/${encodeURIComponent(id)}/download` : null,
+    tier:           redisRecord.tier,
+  });
 }
 
 

@@ -579,11 +579,12 @@
         <div class="admin-toolbar">
           <div class="admin-toolbar-left">
             <input type="text" id="orderSearch" class="admin-search" placeholder="Search order ID, email, Discord…" />
-            <select id="orderFilterDelivery" class="admin-select">
-              <option value="">All Delivery</option>
-              <option value="delivered">Delivered</option>
-              <option value="out_of_stock">Out of Stock</option>
-              <option value="pending">Pending</option>
+            <select id="orderStatusFilter" class="admin-select">
+              <option value="">All Orders</option>
+              <option value="completed">Completed</option>
+              <option value="pending_delivery">Pending Delivery</option>
+              <option value="failed_delivery">Failed Delivery</option>
+              <option value="refunded">Refunded</option>
             </select>
             <button class="btn btn-ghost btn--sm" id="applyOrderFilter">Search</button>
           </div>
@@ -808,8 +809,14 @@
               <h2 class="admin-card-title">PayPal Settings</h2>
             </div>
             <div class="settings-form">
+              <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#92400e;">
+                <strong>⚠ Environment variables take precedence.</strong><br>
+                <code>PAYPAL_CLIENT_ID</code> and <code>PAYPAL_ENVIRONMENT</code> set in Vercel always override values saved here.
+                <code>PAYPAL_CLIENT_SECRET</code> must <strong>only</strong> be stored as a Vercel environment variable — never save it here.
+                Changing the environment between Sandbox and Live switches between test and real payments.
+              </div>
               <div class="form-group">
-                <label class="form-label">PayPal Client ID</label>
+                <label class="form-label">PayPal Client ID <span style="font-size:11px;color:var(--muted)">(used by checkout frontend SDK)</span></label>
                 <input type="text" id="settingPaypalClientId" class="form-input" placeholder="Client ID from PayPal Developer" />
               </div>
               <div class="form-group">
@@ -818,6 +825,7 @@
                   <option value="sandbox">Sandbox (Testing)</option>
                   <option value="live">Live (Production)</option>
                 </select>
+                <span id="paypalEnvNote" style="font-size:12px;color:var(--muted);margin-top:4px;display:block"></span>
               </div>
               <button class="btn btn-primary" id="savePaypalSettings" style="margin-top:8px">
                 <span class="btn-text">Save PayPal Settings</span>

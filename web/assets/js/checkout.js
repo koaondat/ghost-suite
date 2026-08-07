@@ -438,8 +438,10 @@
         : null;
 
       // All required fields must be present to show the success state.
+      // payment_status can be 'verified' (Python delivery backend) or 'completed' (paypal.js direct)
+      const paymentOk = data.payment_status === 'verified' || data.payment_status === 'completed';
       const fulfilmentComplete = (
-        data.payment_status === 'verified' &&
+        paymentOk &&
         data.order_id &&
         planName &&
         amountStr &&

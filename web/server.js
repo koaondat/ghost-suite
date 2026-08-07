@@ -1037,25 +1037,43 @@ async function _fetchDeliveryOrders () {
 }
 
 app.get('/api/admin/orders', _requireAdminSession, async (req, res) => {
+  // Primary: read directly from Redis (ghost:orders:index + ghost:order:{id}).
+  // This is always attempted first — it works whether or not the Python delivery
+  // backend is running, and it includes orders persisted directly by paypal.js.
+  let redisOrders = null;
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+      if (Array.isArray(ids) && ids.length) {
+        const records = await Promise.all(
+          ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+        );
+        redisOrders = records.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+      } else {
+        redisOrders = [];
+      }
+    } catch (err) {
+      console.error('[ghost/admin] Redis orders read error:', err.message);
+    }
+  }
+
+  // Secondary: also try the delivery backend and merge any orders not already in Redis
   const remote = await _fetchDeliveryOrders();
-  if (remote && remote.ok) {
-    return res.json({ ok: true, orders: remote.orders || [], total: (remote.orders || []).length });
+  if (remote && remote.ok && Array.isArray(remote.orders) && remote.orders.length) {
+    if (!Array.isArray(redisOrders)) {
+      redisOrders = remote.orders;
+    } else {
+      // Merge: delivery backend may have orders that Redis does not (e.g. older orders)
+      const existingIds = new Set(redisOrders.map(o => o.order_id));
+      for (const o of remote.orders) {
+        if (o.order_id && !existingIds.has(o.order_id)) redisOrders.push(o);
+      }
+    }
   }
-  // Fallback: read from Redis index built by delivery backend (ghost:orders:index + ghost:order:{id})
-  try {
-    const redis = _redisConfigured() ? _getRedisClient() : null;
-    if (!redis) return res.json({ ok: true, orders: [], total: 0 });
-    const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
-    if (!Array.isArray(ids) || !ids.length) return res.json({ ok: true, orders: [], total: 0 });
-    const records = await Promise.all(
-      ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
-    );
-    const orders = records.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
-    return res.json({ ok: true, orders, total: orders.length });
-  } catch (err) {
-    console.error('[ghost/admin] orders fallback error:', err.message);
-    return res.json({ ok: true, orders: [], total: 0 });
-  }
+
+  const orders = Array.isArray(redisOrders) ? redisOrders : [];
+  return res.json({ ok: true, orders, total: orders.length });
 });
 
 app.get('/api/admin/orders/:orderId', _requireAdminSession, async (req, res) => {
@@ -1232,10 +1250,17 @@ app.post('/api/admin/downloads/rollback', _requireAdminSession, async (req, res)
 
 // ── Settings endpoints ────────────────────────────────────────────────────────
 app.get('/api/admin/settings', _requireAdminSession, async (req, res) => {
-  const settings = await _redisGet('ghost:settings') || {};
+  const stored = await _redisGet('ghost:settings') || {};
   // Never return secrets — strip any that might have been stored
-  const { paypal_client_secret, admin_key, ...safe } = settings;
-  return res.json({ ok: true, ...safe });
+  const { paypal_client_secret, admin_key, ...safe } = stored;
+  // Merge env-based PayPal config so the admin panel always shows the live values.
+  // Env vars are the authoritative source; stored values are only used as fallback
+  // when env vars are absent (e.g. the admin has manually set them in the panel).
+  const envClientId = (process.env.PAYPAL_CLIENT_ID || '').trim();
+  const envEnv      = (process.env.PAYPAL_ENVIRONMENT || '').trim().toLowerCase();
+  if (envClientId) safe.paypal_client_id   = envClientId;
+  if (envEnv)      safe.paypal_environment = envEnv;
+  return res.json({ ok: true, settings: safe });
 });
 
 app.post('/api/admin/settings', _requireAdminSession, async (req, res) => {
@@ -1245,7 +1270,7 @@ app.post('/api/admin/settings', _requireAdminSession, async (req, res) => {
   const merged = { ...prev, ...updates };
   await _redisSet('ghost:settings', merged);
   const { paypal_client_secret: _s, admin_key: _k, ...safe } = merged;
-  return res.json({ ok: true, ...safe });
+  return res.json({ ok: true, settings: safe });
 });
 
 // ── Activity log endpoints ────────────────────────────────────────────────────
@@ -1300,9 +1325,38 @@ async function _proxyToDelivery (req, res, deliveryPath) {
   }
 }
 
-app.get('/api/order/:orderId', (req, res) =>
-  _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}`),
-);
+app.get('/api/order/:orderId', async (req, res) => {
+  const orderId = req.params.orderId;
+  // Try delivery backend first
+  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+  if (DELIVERY_BACKEND_URL) {
+    try {
+      const { default: fetch } = await import('node-fetch');
+      const upstream = await fetch(`${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(orderId)}`);
+      if (upstream.ok) {
+        const data = await upstream.json().catch(() => null);
+        if (data) return res.json(data);
+      }
+    } catch (_) {}
+  }
+  // Fallback: read from Redis directly (works even when delivery backend is down)
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      const raw = await _withTimeout(redis.get(`ghost:order:${orderId}`)).catch(() => null);
+      if (raw) {
+        const record = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const safe = { ...record, ok: true };
+        delete safe.payment_verified;
+        if (!safe.download_url && safe.delivery_status === 'delivered') {
+          safe.download_url = `/api/order/${encodeURIComponent(orderId)}/download`;
+        }
+        return res.json(safe);
+      }
+    } catch (_) {}
+  }
+  return res.status(404).json({ ok: false, error: 'Order not found.' });
+});
 app.get('/api/order/:orderId/download', (req, res) =>
   _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}/download`),
 );
