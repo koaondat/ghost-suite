@@ -2798,10 +2798,12 @@ section { padding: 100px 0; }
 
 /* ── State panels ─────────────────────────────────────────── */
 .co-state { width: 100%; }
-.co-state--loading,
-.co-state--success,
-.co-state--cancelled,
-.co-state--failed {
+/* [hidden] must win over any display rule — guard once, globally for state panels */
+.co-state[hidden] { display: none !important; }
+.co-state--loading:not([hidden]),
+.co-state--success:not([hidden]),
+.co-state--cancelled:not([hidden]),
+.co-state--failed:not([hidden]) {
   display: flex;
   justify-content: center;
   padding: 20px 0 60px;
@@ -3873,7 +3875,7 @@ section { padding: 100px 0; }
    ============================================================ */
 
 /* ── Processing card (loading state) ─────────────────────── */
-.co-state--loading {
+.co-state--loading:not([hidden]) {
   display: flex;
   justify-content: center;
   padding: 60px 0;
@@ -3912,7 +3914,7 @@ section { padding: 100px 0; }
 }
 
 /* ── Confirmation dashboard (success state) ──────────────── */
-.co-state--success {
+.co-state--success:not([hidden]) {
   display: flex;
   justify-content: center;
   padding: 20px 0 80px;
@@ -4075,7 +4077,7 @@ section { padding: 100px 0; }
 }
 
 /* ── Delivery-pending state ───────────────────────────────── */
-.co-state--delivery-pending {
+.co-state--delivery-pending:not([hidden]) {
   display: flex;
   justify-content: center;
   padding: 20px 0 60px;
