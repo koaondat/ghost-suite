@@ -189,8 +189,7 @@
     // POST to /api/admin/logout so the server can clear the HttpOnly cookie.
     // JS cannot delete an HttpOnly cookie directly.
     await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
-    // Redirect to homepage — ghost.js will re-check /api/admin/session (401)
-    // and immediately hide the Admin Panel nav button for the current visitor.
+    // Redirect to homepage after logout.
     window.location.href = '/';
   }
 
@@ -212,6 +211,7 @@
     if (name === 'activity')           loadActivity();
     if (name === 'fulfillment-diag')   loadFulfillmentDiag();
     if (name === 'settings')           loadSettings();
+    if (name === 'coupons')            loadCoupons();
   };
 
   /* ── Dashboard ─────────────────────────────────────────────────────── */
@@ -375,7 +375,7 @@
   /* ── Key Inventory ─────────────────────────────────────────────────── */
   async function loadInventory (filter = {}) {
     const tb = $('inventoryTbody');
-    tb.innerHTML = '<tr><td colspan="11" class="admin-table-empty skeleton-row">Loading…</td></tr>';
+    tb.innerHTML = '<tr><td colspan="12" class="admin-table-empty skeleton-row">Loading…</td></tr>';
     try {
       const params = new URLSearchParams();
       // Active tab sets the status. '__all__' = no filter. '' or 'available' = status=available.
@@ -409,7 +409,7 @@
       _allInventory = items;
       renderInventory(_allInventory, 1);
     } catch (err) {
-      tb.innerHTML = `<tr><td colspan="11" class="admin-table-empty" style="color:#f87171">${esc(err.message)}</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="12" class="admin-table-empty" style="color:#f87171">${esc(err.message)}</td></tr>`;
     }
   }
 
@@ -422,10 +422,16 @@
     const slice = safeKeys.slice(start, start + PAGE_SIZE);
 
     if (!slice.length) {
-      tb.innerHTML = '<tr><td colspan="11" class="admin-table-empty">No keys found.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="12" class="admin-table-empty">No keys found.</td></tr>';
       $('invPagination').innerHTML = '';
       return;
     }
+
+    // Show discord/order-id columns only for sold/activated/revoked views
+    const showExtended = ['sold','activated','revoked','expired'].includes(_invStatusFilter);
+    document.querySelectorAll('.inv-col-discord, .inv-col-orderid').forEach(el => {
+      el.style.display = showExtended ? '' : 'none';
+    });
 
     tb.innerHTML = slice.map(k => `
       <tr>
@@ -433,17 +439,21 @@
         <td><span class="key-mono copy-cell" onclick="copyText('${esc(k.key)}')" title="Click to copy">${esc(k.key)}</span></td>
         <td>${planBadge(k.plan)}</td>
         <td>${statusBadge(k.status)}</td>
-        <td class="cell-truncate">${esc(k.customer || '—')}</td>
+        <td class="cell-truncate">${esc(k.customer_email || k.customer || '—')}</td>
+        <td class="inv-col-discord cell-truncate" style="${showExtended ? '' : 'display:none'}">${esc(k.discord_username || k.assigned_user || '—')}</td>
+        <td class="inv-col-orderid cell-mono-sm" style="${showExtended ? '' : 'display:none'}">${k.order_id ? `<span class="copy-cell" onclick="copyText('${esc(k.order_id)}')" title="${esc(k.order_id)}">${esc((k.order_id||'').slice(0,14))}…</span>` : '<span style="color:var(--muted)">—</span>'}</td>
         <td>${fmtDateShort(k.purchase_date)}</td>
         <td class="cell-mono-sm">${k.hwid ? `<span title="${esc(k.hwid)}">${esc(k.hwid.slice(0,12))}…</span>` : '<span style="color:var(--muted)">—</span>'}</td>
-        <td>${fmtDateShort(k.created_date || k.added_at)}</td>
         <td>${k.expiration ? fmtDateShort(k.expiration) : '<span style="color:var(--muted)">—</span>'}</td>
         <td class="cell-truncate" title="${esc(k.notes || '')}">${esc((k.notes||'').slice(0,20))||'<span style="color:var(--muted)">—</span>'}</td>
         <td class="actions-cell">
           <button class="btn-icon" onclick="copyText('${esc(k.key)}')" title="Copy">Copy</button>
+          ${k.order_id ? `<button class="btn-icon" onclick="openOrderDetail('${esc(k.order_id)}')" title="View Order">View Order</button>` : ''}
           <button class="btn-icon" onclick="openEditKey(${JSON.stringify(JSON.stringify(k))})" title="Edit">Edit</button>
           <button class="btn-icon" onclick="openExtendKey('${esc(k.key)}')" title="Extend">Extend</button>
+          ${(k.status === 'sold' || k.status === 'available') ? `<button class="btn-icon" onclick="activateKey('${esc(k.key)}')" title="Activate">Activate</button>` : ''}
           ${k.status !== 'revoked' ? `<button class="btn-icon btn-icon--danger" onclick="revokeKey('${esc(k.key)}')" title="Revoke">Revoke</button>` : ''}
+          ${k.hwid ? `<button class="btn-icon" onclick="resetHwidForKey('${esc(k.key)}')" title="Reset HWID">Reset HWID</button>` : ''}
           <button class="btn-icon btn-icon--danger" onclick="deleteKey('${esc(k.key)}')" title="Delete">Delete</button>
         </td>
       </tr>
@@ -969,6 +979,17 @@
   }
 
   /* ── Key actions (global) ──────────────────────────────────────────── */
+  window.activateKey = function (key) {
+    confirmAction('Activate Key', `Mark key ${key} as activated?`, async () => {
+      const { ok, data } = await apiFetch(`/api/admin/inventory/${encodeURIComponent(key)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'activated' }),
+      });
+      if (ok) { toast('Key marked as activated.', 'success'); loadInventory(currentInvFilter()); }
+      else toast(data.error || 'Activate failed.', 'error');
+    });
+  };
+
   window.revokeKey = function (key) {
     confirmAction('Revoke Key', `Revoke key ${key}? It will remain in the database marked as revoked.`, async () => {
       const { ok, data } = await apiFetch(`/api/admin/inventory/${encodeURIComponent(key)}/revoke`, { method: 'POST' });
@@ -1846,6 +1867,197 @@
     });
   }
 
+  /* ── Coupon Management ─────────────────────────────────────────────────── */
+  let _allCoupons = [];
+
+  async function loadCoupons () {
+    const tb = $('couponsTbody');
+    if (!tb) return;
+    tb.innerHTML = '<tr><td colspan="9" class="admin-table-empty">Loading…</td></tr>';
+    try {
+      const { ok, data } = await apiFetch('/api/admin/coupons');
+      if (!ok) throw new Error(data.error || 'Failed to load coupons');
+      _allCoupons = Array.isArray(data.coupons) ? data.coupons : [];
+      renderCoupons(_allCoupons);
+    } catch (err) {
+      tb.innerHTML = `<tr><td colspan="9" class="admin-table-empty" style="color:#f87171">${esc(err.message)}</td></tr>`;
+    }
+  }
+
+  function renderCoupons (coupons) {
+    const tb = $('couponsTbody');
+    if (!tb) return;
+    if (!coupons.length) {
+      tb.innerHTML = '<tr><td colspan="9" class="admin-table-empty">No coupons. Create one above.</td></tr>';
+      return;
+    }
+    tb.innerHTML = coupons.map(c => {
+      const discLabel = c.discount_type === 'free'
+        ? '100% Off'
+        : c.discount_type === 'percentage'
+          ? `${c.discount_value}%`
+          : `$${parseFloat(c.discount_value).toFixed(2)}`;
+      const planLabel = c.applies_to === 'all' ? 'All Plans'
+        : c.applies_to === 'pro' ? 'Pro'
+        : c.applies_to === 'lifetime' ? 'Lifetime' : esc(c.applies_to);
+      const remaining = c.usage_limit != null ? (c.usage_limit - (c.uses || 0)) : '∞';
+      const statusBadgeHtml = c.active
+        ? '<span class="badge badge--green">Active</span>'
+        : '<span class="badge badge--muted">Disabled</span>';
+      return `<tr>
+        <td><span class="key-mono copy-cell" onclick="copyText('${esc(c.code)}')" title="Copy">${esc(c.code)}</span></td>
+        <td>${esc(c.discount_type === 'free' ? 'Free' : c.discount_type === 'percentage' ? 'Percent' : 'Fixed')}</td>
+        <td>${esc(discLabel)}</td>
+        <td>${planLabel}</td>
+        <td>${c.uses || 0}</td>
+        <td>${c.usage_limit != null ? c.usage_limit : '∞'}</td>
+        <td>${c.expiration_date ? fmtDateShort(c.expiration_date) : '<span style="color:var(--muted)">Never</span>'}</td>
+        <td>${statusBadgeHtml}</td>
+        <td class="actions-cell">
+          <button class="btn-icon" onclick="copyText('${esc(c.code)}')">Copy</button>
+          <button class="btn-icon" onclick="openEditCoupon(${JSON.stringify(JSON.stringify(c))})">Edit</button>
+          ${c.active
+            ? `<button class="btn-icon btn-icon--danger" onclick="setCouponActive('${esc(c.code)}',false)">Disable</button>`
+            : `<button class="btn-icon" onclick="setCouponActive('${esc(c.code)}',true)">Enable</button>`}
+          <button class="btn-icon btn-icon--danger" onclick="deleteCoupon('${esc(c.code)}')">Delete</button>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  function _couponModalClear () {
+    $('couponEditCode').value        = '';
+    $('couponCode').value            = '';
+    $('couponCode').disabled         = false;
+    $('couponDiscountType').value    = 'percentage';
+    $('couponDiscountValue').value   = '';
+    $('couponAppliesTo').value       = 'all';
+    $('couponUsageLimit').value      = '';
+    $('couponUsagePerCustomer').value= '';
+    $('couponStartDate').value       = '';
+    $('couponExpirationDate').value  = '';
+    $('couponNotes').value           = '';
+    $('couponActive').checked        = true;
+    window._couponTypeChange();
+    hideAlert('couponModalAlert');
+  }
+
+  window._couponTypeChange = function () {
+    const type  = $('couponDiscountType')?.value;
+    const group = $('couponValueGroup');
+    const label = $('couponValueLabel');
+    const input = $('couponDiscountValue');
+    if (!type) return;
+    if (type === 'free') {
+      if (group) group.style.display = 'none';
+    } else {
+      if (group) group.style.display = '';
+      if (label) label.firstChild.textContent = type === 'percentage' ? 'Percentage (0–100) ' : 'Fixed Amount ($) ';
+      if (input) { input.placeholder = type === 'percentage' ? '20' : '5.00'; }
+    }
+  };
+
+  function openCreateCoupon () {
+    _couponModalClear();
+    $('couponModalTitle').textContent = 'Create Coupon';
+    show('couponModal');
+  }
+
+  window.openEditCoupon = function (jsonStr) {
+    const c = JSON.parse(jsonStr);
+    _couponModalClear();
+    $('couponModalTitle').textContent   = 'Edit Coupon';
+    $('couponEditCode').value           = c.code;
+    $('couponCode').value               = c.code;
+    $('couponCode').disabled            = true;   // code is the primary key
+    $('couponDiscountType').value       = c.discount_type || 'percentage';
+    $('couponDiscountValue').value      = c.discount_type === 'free' ? '' : (c.discount_value || '');
+    $('couponAppliesTo').value          = c.applies_to || 'all';
+    $('couponUsageLimit').value         = c.usage_limit != null ? c.usage_limit : '';
+    $('couponUsagePerCustomer').value   = c.usage_per_customer != null ? c.usage_per_customer : '';
+    $('couponStartDate').value          = (c.start_date      || '').slice(0, 10);
+    $('couponExpirationDate').value     = (c.expiration_date || '').slice(0, 10);
+    $('couponNotes').value              = c.notes || '';
+    $('couponActive').checked           = Boolean(c.active);
+    window._couponTypeChange();
+    show('couponModal');
+  };
+
+  async function saveCoupon () {
+    hideAlert('couponModalAlert');
+    const editCode    = $('couponEditCode').value;
+    const isEdit      = Boolean(editCode);
+    const code        = $('couponCode').value.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    const discountType  = $('couponDiscountType').value;
+    const discountValue = $('couponDiscountValue').value;
+    const appliesTo     = $('couponAppliesTo').value;
+    const usageLimit    = $('couponUsageLimit').value   ? parseInt($('couponUsageLimit').value, 10)   : null;
+    const usagePerCust  = $('couponUsagePerCustomer').value ? parseInt($('couponUsagePerCustomer').value, 10) : null;
+    const startDate     = $('couponStartDate').value    || null;
+    const expirationDate= $('couponExpirationDate').value || null;
+    const notes         = $('couponNotes').value.trim();
+    const active        = $('couponActive').checked;
+
+    if (!code) { showAlert('couponModalAlert', 'error', 'Code is required.'); return; }
+    if (discountType !== 'free' && (!discountValue || parseFloat(discountValue) <= 0)) {
+      showAlert('couponModalAlert', 'error', 'Discount value must be greater than zero.'); return;
+    }
+
+    setBusy('saveCouponBtn', true);
+    try {
+      const payload = {
+        code, discount_type: discountType,
+        discount_value: discountType === 'free' ? 100 : parseFloat(discountValue),
+        applies_to: appliesTo, usage_limit: usageLimit,
+        usage_per_customer: usagePerCust, start_date: startDate,
+        expiration_date: expirationDate, active, notes,
+      };
+      const endpoint = isEdit
+        ? `/api/admin/coupons/${encodeURIComponent(editCode)}`
+        : '/api/admin/coupons';
+      const method = isEdit ? 'PATCH' : 'POST';
+      const { ok, data } = await apiFetch(endpoint, { method, body: JSON.stringify(payload) });
+      if (ok) {
+        hide('couponModal');
+        toast(isEdit ? 'Coupon updated.' : 'Coupon created.', 'success');
+        loadCoupons();
+      } else {
+        showAlert('couponModalAlert', 'error', data.error || 'Save failed.');
+      }
+    } catch (_) {
+      showAlert('couponModalAlert', 'error', 'Network error.');
+    } finally {
+      setBusy('saveCouponBtn', false);
+    }
+  }
+
+  window.setCouponActive = function (code, active) {
+    const msg = active ? `Enable coupon ${code}?` : `Disable coupon ${code}?`;
+    confirmAction(active ? 'Enable Coupon' : 'Disable Coupon', msg, async () => {
+      const { ok, data } = await apiFetch(`/api/admin/coupons/${encodeURIComponent(code)}`, {
+        method: 'PATCH', body: JSON.stringify({ active }),
+      });
+      if (ok) { toast(`Coupon ${active ? 'enabled' : 'disabled'}.`, 'success'); loadCoupons(); }
+      else toast(data.error || 'Update failed.', 'error');
+    });
+  };
+
+  window.deleteCoupon = function (code) {
+    confirmAction('Delete Coupon', `Permanently delete coupon ${code}?`, async () => {
+      const { ok, data } = await apiFetch(`/api/admin/coupons/${encodeURIComponent(code)}`, { method: 'DELETE' });
+      if (ok) { toast('Coupon deleted.', 'success'); loadCoupons(); }
+      else toast(data.error || 'Delete failed.', 'error');
+    });
+  };
+
+  function wireCoupons () {
+    $('openCreateCouponBtn')?.addEventListener('click', openCreateCoupon);
+    $('closeCouponModal')?.addEventListener('click', () => hide('couponModal'));
+    $('cancelCouponModal')?.addEventListener('click', () => hide('couponModal'));
+    $('saveCouponBtn')?.addEventListener('click', saveCoupon);
+    $('couponModal')?.addEventListener('click', e => { if (e.target === $('couponModal')) hide('couponModal'); });
+  }
+
   function wireAll () {
     // Login
     $('loginForm').addEventListener('submit', doLogin);
@@ -1861,6 +2073,7 @@
 
     wireGenerate();
     wireInvStatusTabs();
+    wireCoupons();
 
     // Dashboard
     $('refreshDashboard').addEventListener('click', loadDashboard);

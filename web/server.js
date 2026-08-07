@@ -1369,6 +1369,316 @@ app.get('/api/admin/fulfillment-log', _requireAdminSession, async (req, res) => 
   return res.json({ ok: true, attempts, total: attempts.length });
 });
 
+// ── Coupon management endpoints ───────────────────────────────────────────────
+// Redis key: ghost:coupons — array of coupon objects
+// Redis key: ghost:coupon:uses:{code} — hash of email → use count (for per-customer limits)
+
+function _normalizeCouponCode (code) {
+  return String(code || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+}
+
+function _applyCoupon (coupon, priceUsd) {
+  const base = parseFloat(priceUsd) || 0;
+  let discount = 0;
+  if (coupon.discount_type === 'percentage') {
+    discount = Math.round(base * (parseFloat(coupon.discount_value) / 100) * 100) / 100;
+  } else if (coupon.discount_type === 'fixed') {
+    discount = Math.min(parseFloat(coupon.discount_value) || 0, base);
+  } else if (coupon.discount_type === 'free') {
+    discount = base;
+  }
+  const finalPrice = Math.max(0, Math.round((base - discount) * 100) / 100);
+  return { originalPrice: base, discount: Math.round(discount * 100) / 100, finalPrice };
+}
+
+// GET /api/admin/coupons — list all coupons
+app.get('/api/admin/coupons', _requireAdminSession, async (req, res) => {
+  const coupons = await _redisGet('ghost:coupons') || [];
+  return res.json({ ok: true, coupons, total: coupons.length });
+});
+
+// POST /api/admin/coupons — create coupon
+app.post('/api/admin/coupons', _requireAdminSession, async (req, res) => {
+  const {
+    code, discount_type, discount_value, applies_to = 'all',
+    usage_limit = null, usage_per_customer = null,
+    start_date = null, expiration_date = null,
+    active = true, notes = '',
+  } = req.body || {};
+
+  const normalizedCode = _normalizeCouponCode(code);
+  if (!normalizedCode) {
+    return res.status(400).json({ ok: false, error: 'Coupon code is required.' });
+  }
+  if (!['percentage', 'fixed', 'free'].includes(discount_type)) {
+    return res.status(400).json({ ok: false, error: 'Invalid discount_type. Use percentage, fixed, or free.' });
+  }
+  if (discount_type !== 'free') {
+    const val = parseFloat(discount_value);
+    if (isNaN(val) || val <= 0) {
+      return res.status(400).json({ ok: false, error: 'discount_value must be a positive number.' });
+    }
+    if (discount_type === 'percentage' && val > 100) {
+      return res.status(400).json({ ok: false, error: 'Percentage discount cannot exceed 100.' });
+    }
+  }
+
+  const coupons = await _redisGet('ghost:coupons') || [];
+  if (coupons.find(c => c.code === normalizedCode)) {
+    return res.status(409).json({ ok: false, error: `Coupon code "${normalizedCode}" already exists.` });
+  }
+
+  const newCoupon = {
+    code:                normalizedCode,
+    discount_type,
+    discount_value:      discount_type === 'free' ? 100 : parseFloat(discount_value),
+    applies_to,
+    usage_limit:         usage_limit != null ? parseInt(usage_limit, 10) : null,
+    usage_per_customer:  usage_per_customer != null ? parseInt(usage_per_customer, 10) : null,
+    uses:                0,
+    start_date:          start_date || null,
+    expiration_date:     expiration_date || null,
+    active:              Boolean(active),
+    notes,
+    created_at:          new Date().toISOString(),
+  };
+
+  coupons.push(newCoupon);
+  await _redisSet('ghost:coupons', coupons);
+  return res.json({ ok: true, coupon: newCoupon });
+});
+
+// PATCH /api/admin/coupons/:code — update coupon
+app.patch('/api/admin/coupons/:code', _requireAdminSession, async (req, res) => {
+  const target = _normalizeCouponCode(req.params.code);
+  const coupons = await _redisGet('ghost:coupons') || [];
+  const idx = coupons.findIndex(c => c.code === target);
+  if (idx === -1) return res.status(404).json({ ok: false, error: 'Coupon not found.' });
+  const allowed = ['discount_type','discount_value','applies_to','usage_limit',
+    'usage_per_customer','start_date','expiration_date','active','notes'];
+  const updates = {};
+  for (const k of allowed) {
+    if (req.body[k] !== undefined) updates[k] = req.body[k];
+  }
+  Object.assign(coupons[idx], updates);
+  await _redisSet('ghost:coupons', coupons);
+  return res.json({ ok: true, coupon: coupons[idx] });
+});
+
+// DELETE /api/admin/coupons/:code — delete coupon
+app.delete('/api/admin/coupons/:code', _requireAdminSession, async (req, res) => {
+  const target = _normalizeCouponCode(req.params.code);
+  const coupons = await _redisGet('ghost:coupons') || [];
+  const idx = coupons.findIndex(c => c.code === target);
+  if (idx === -1) return res.status(404).json({ ok: false, error: 'Coupon not found.' });
+  coupons.splice(idx, 1);
+  await _redisSet('ghost:coupons', coupons);
+  return res.json({ ok: true });
+});
+
+// POST /api/coupons/validate — public endpoint: validate + calculate discount
+// Called by checkout frontend. Server-authoritative; never trusts client-submitted discount.
+app.post('/api/coupons/validate', async (req, res) => {
+  const { code, plan: planRaw, email = '' } = req.body || {};
+  const normalizedCode = _normalizeCouponCode(code);
+  if (!normalizedCode) {
+    return res.status(400).json({ ok: false, message: 'Coupon code is required.' });
+  }
+
+  // Find plan price
+  const planId = (planRaw || '').trim().toLowerCase();
+  const { PLAN_CATALOGUE: PP } = require('./api/paypal');
+  const plan = PP[planId];
+  if (!plan) return res.status(400).json({ ok: false, message: 'Invalid plan.' });
+
+  const coupons = await _redisGet('ghost:coupons') || [];
+  const coupon = coupons.find(c => c.code === normalizedCode);
+
+  if (!coupon) return res.json({ ok: false, message: 'Invalid coupon code.' });
+  if (!coupon.active) return res.json({ ok: false, message: 'This coupon is no longer active.' });
+
+  // Expiration check
+  const now = new Date();
+  if (coupon.start_date && now < new Date(coupon.start_date)) {
+    return res.json({ ok: false, message: 'This coupon is not yet active.' });
+  }
+  if (coupon.expiration_date && now > new Date(coupon.expiration_date + 'T23:59:59Z')) {
+    return res.json({ ok: false, message: 'This coupon has expired.' });
+  }
+
+  // Usage limit check
+  if (coupon.usage_limit != null && coupon.uses >= coupon.usage_limit) {
+    return res.json({ ok: false, message: 'This coupon has reached its usage limit.' });
+  }
+
+  // Applies-to check
+  if (coupon.applies_to !== 'all') {
+    const allowed = Array.isArray(coupon.applies_to) ? coupon.applies_to : [coupon.applies_to];
+    if (!allowed.includes(planId)) {
+      return res.json({ ok: false, message: 'This coupon does not apply to the selected plan.' });
+    }
+  }
+
+  // Per-customer check (if email provided)
+  if (coupon.usage_per_customer != null && email) {
+    const emailKey = 'ghost:coupon:uses:' + normalizedCode;
+    let userUses = 0;
+    if (_redisConfigured()) {
+      try {
+        const redis = _getRedisClient();
+        const raw = await _withTimeout(redis.hget(emailKey, email.toLowerCase())).catch(() => null);
+        userUses = parseInt(raw || '0', 10) || 0;
+      } catch (_) {}
+    }
+    if (userUses >= coupon.usage_per_customer) {
+      return res.json({ ok: false, message: 'You have already used this coupon the maximum number of times.' });
+    }
+  }
+
+  const priceUsd = parseFloat(plan.priceUsd) || 0;
+  const { originalPrice, discount, finalPrice } = _applyCoupon(coupon, priceUsd);
+
+  return res.json({
+    ok: true,
+    couponCode: normalizedCode,
+    discountType: coupon.discount_type,
+    discountValue: coupon.discount_value,
+    originalPrice,
+    discount,
+    finalPrice,
+    isFree: finalPrice === 0,
+    label: coupon.discount_type === 'free'
+      ? '100% Off'
+      : coupon.discount_type === 'percentage'
+        ? `${coupon.discount_value}% Off`
+        : `$${coupon.discount_value.toFixed(2)} Off`,
+  });
+});
+
+// POST /api/coupons/redeem-free — redeem a 100%-off coupon without PayPal
+// Protected: server validates coupon, increments usage atomically, runs fulfillOrder
+app.post('/api/coupons/redeem-free', async (req, res) => {
+  const { code, plan: planRaw, email, discord } = req.body || {};
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ ok: false, message: 'A valid email address is required.' });
+  }
+  if (!discord || discord.trim().length < 2) {
+    return res.status(400).json({ ok: false, message: 'Discord username is required.' });
+  }
+
+  const normalizedCode = _normalizeCouponCode(code);
+  if (!normalizedCode) {
+    return res.status(400).json({ ok: false, message: 'Coupon code is required.' });
+  }
+
+  const planId = (planRaw || '').trim().toLowerCase();
+  const { PLAN_CATALOGUE: PP, fulfillOrder } = require('./api/paypal');
+  const plan = PP[planId];
+  if (!plan) return res.status(400).json({ ok: false, message: 'Invalid plan.' });
+
+  // ── Atomic coupon validation + increment ────────────────────────────────────
+  const coupons = await _redisGet('ghost:coupons') || [];
+  const couponIdx = coupons.findIndex(c => c.code === normalizedCode);
+  if (couponIdx === -1) return res.status(400).json({ ok: false, message: 'Invalid coupon code.' });
+
+  const coupon = coupons[couponIdx];
+  if (!coupon.active) return res.status(400).json({ ok: false, message: 'This coupon is no longer active.' });
+
+  const now = new Date();
+  if (coupon.start_date && now < new Date(coupon.start_date)) {
+    return res.status(400).json({ ok: false, message: 'This coupon is not yet active.' });
+  }
+  if (coupon.expiration_date && now > new Date(coupon.expiration_date + 'T23:59:59Z')) {
+    return res.status(400).json({ ok: false, message: 'This coupon has expired.' });
+  }
+  if (coupon.usage_limit != null && coupon.uses >= coupon.usage_limit) {
+    return res.status(400).json({ ok: false, message: 'This coupon has reached its usage limit.' });
+  }
+
+  // Applies-to check
+  if (coupon.applies_to !== 'all') {
+    const allowed = Array.isArray(coupon.applies_to) ? coupon.applies_to : [coupon.applies_to];
+    if (!allowed.includes(planId)) {
+      return res.status(400).json({ ok: false, message: 'This coupon does not apply to the selected plan.' });
+    }
+  }
+
+  // Per-customer usage check
+  const emailKey = 'ghost:coupon:uses:' + normalizedCode;
+  if (coupon.usage_per_customer != null && _redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      const raw = await _withTimeout(redis.hget(emailKey, email.toLowerCase())).catch(() => null);
+      const userUses = parseInt(raw || '0', 10) || 0;
+      if (userUses >= coupon.usage_per_customer) {
+        return res.status(400).json({ ok: false, message: 'You have already used this coupon the maximum number of times.' });
+      }
+    } catch (_) {}
+  }
+
+  // Verify finalPrice === 0
+  const priceUsd = parseFloat(plan.priceUsd) || 0;
+  const { finalPrice } = _applyCoupon(coupon, priceUsd);
+  if (finalPrice !== 0) {
+    return res.status(400).json({ ok: false, message: 'This coupon does not make the order free.' });
+  }
+
+  // ── Increment coupon usage (before fulfillment to prevent race) ─────────────
+  coupons[couponIdx].uses = (coupons[couponIdx].uses || 0) + 1;
+  await _redisSet('ghost:coupons', coupons);
+
+  // Track per-customer usage in Redis hash
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      await _withTimeout(redis.hincrby(emailKey, email.toLowerCase(), 1)).catch(() => {});
+    } catch (_) {}
+  }
+
+  // ── Create internal $0 order ─────────────────────────────────────────────────
+  const orderId = 'GHOST-FREE-' + Date.now().toString(36).toUpperCase();
+  const orderRecord = {
+    order_id:         orderId,
+    plan:             planId,
+    plan_label:       plan.label,
+    tier:             plan.tier,
+    email:            email.trim(),
+    discord:          discord.trim(),
+    price_usd:        0,
+    currency:         'USD',
+    created_at:       new Date().toISOString(),
+    payment_status:   'completed',
+    payment_method:   'coupon',
+    payment_verified: true,
+    delivery_status:  'pending',
+    license_key:      null,
+    license_status:   'pending',
+    coupon_code:      normalizedCode,
+    coupon_discount:  priceUsd,
+  };
+
+  await _redisSet(`ghost:order:${orderId}`, orderRecord);
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      await _withTimeout(redis.zadd('ghost:orders:index', { score: Math.floor(Date.now() / 1000), member: orderId })).catch(() => {});
+    } catch (_) {}
+  }
+
+  // ── Fulfill the order (same path as paid orders) ─────────────────────────────
+  const result = await fulfillOrder(orderId).catch(err => ({ ok: false, reason: err.message }));
+
+  if (!result.ok) {
+    // Decrement coupon usage back on fulfillment failure
+    coupons[couponIdx].uses = Math.max(0, (coupons[couponIdx].uses || 1) - 1);
+    await _redisSet('ghost:coupons', coupons);
+    return res.status(503).json({ ok: false, message: 'No keys available at this time. Please try again later.' });
+  }
+
+  return res.json({ ok: true, orderId, licenseKey: result.licenseKey, tier: plan.tier });
+});
+
 // ── Admin panel HTML ──────────────────────────────────────────────────────────
 app.get('/admin', (_req, res) => {
   res.sendFile(path.join(WEB_ROOT, 'admin.html'), err => {

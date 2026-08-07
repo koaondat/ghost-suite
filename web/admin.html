@@ -94,6 +94,10 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 0 2-2h11"/></svg>
             Fulfillment Diag
           </a></li>
+          <li><a href="#" class="admin-nav-link" data-tab="coupons">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            Coupons
+          </a></li>
           <li><a href="#" class="admin-nav-link" data-tab="settings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             Settings
@@ -297,23 +301,24 @@
         <div class="admin-card" style="margin-top:16px">
           <div class="admin-table-wrap">
             <table class="admin-table" id="inventoryTable">
-              <thead>
+              <thead id="inventoryThead">
                 <tr>
                   <th><input type="checkbox" id="selectAllKeys" /></th>
                   <th>License Key</th>
                   <th>Plan</th>
                   <th>Status</th>
-                  <th>Customer</th>
+                  <th>Customer Email</th>
+                  <th class="inv-col-discord">Discord</th>
+                  <th class="inv-col-orderid">Order ID</th>
                   <th>Purchase Date</th>
                   <th>HWID</th>
-                  <th>Created</th>
                   <th>Expiration</th>
                   <th>Notes</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="inventoryTbody">
-                <tr><td colspan="11" class="admin-table-empty">Loading…</td></tr>
+                <tr><td colspan="12" class="admin-table-empty">Loading…</td></tr>
               </tbody>
             </table>
           </div>
@@ -901,6 +906,45 @@
         </div>
       </section>
 
+      <!-- ── TAB: Coupons ────────────────────────────────────────────── -->
+      <section id="tab-coupons" class="admin-tab" style="display:none">
+        <div class="admin-page-header">
+          <div>
+            <h1 class="admin-page-title">Coupons</h1>
+            <p class="admin-page-sub">Manage discount codes and promotions</p>
+          </div>
+          <button class="btn btn-primary btn--sm" id="openCreateCouponBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Create Coupon
+          </button>
+        </div>
+
+        <div id="couponAlert" class="admin-alert" style="display:none; margin-bottom:14px"></div>
+
+        <div class="admin-card" style="margin-top:16px">
+          <div class="admin-table-wrap">
+            <table class="admin-table" id="couponsTable">
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Type</th>
+                  <th>Discount</th>
+                  <th>Plan</th>
+                  <th>Uses</th>
+                  <th>Limit</th>
+                  <th>Expires</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="couponsTbody">
+                <tr><td colspan="9" class="admin-table-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
     </main><!-- /admin-main -->
   </div><!-- /adminShell -->
 
@@ -1190,6 +1234,78 @@
         </button>
         <button class="btn btn-primary" id="genGoInventoryBtn">
           Go To Inventory
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Create / Edit Coupon Modal ──────────────────────────────────────── -->
+  <div id="couponModal" class="admin-modal-overlay" style="display:none">
+    <div class="admin-modal admin-modal--lg">
+      <div class="admin-modal-header">
+        <h2 id="couponModalTitle">Create Coupon</h2>
+        <button class="admin-modal-close" id="closeCouponModal">&times;</button>
+      </div>
+      <div class="admin-modal-body">
+        <div id="couponModalAlert" class="admin-alert" style="display:none; margin-bottom:12px"></div>
+        <input type="hidden" id="couponEditCode" />
+        <div class="edit-key-grid">
+          <div class="form-group">
+            <label class="form-label">Code <span style="color:var(--red)">*</span></label>
+            <input type="text" id="couponCode" class="form-input" placeholder="SAVE20" maxlength="40"
+              style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9_-]/g,'')" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Discount Type <span style="color:var(--red)">*</span></label>
+            <select id="couponDiscountType" class="admin-select" style="width:100%" onchange="window._couponTypeChange()">
+              <option value="percentage">Percentage (%)</option>
+              <option value="fixed">Fixed Amount ($)</option>
+              <option value="free">Free / 100% Off</option>
+            </select>
+          </div>
+          <div class="form-group" id="couponValueGroup">
+            <label class="form-label" id="couponValueLabel">Discount Value <span style="color:var(--red)">*</span></label>
+            <input type="number" id="couponDiscountValue" class="form-input" placeholder="20" min="0.01" step="0.01" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Applies To</label>
+            <select id="couponAppliesTo" class="admin-select" style="width:100%">
+              <option value="all">All Plans</option>
+              <option value="pro">Ghost Pro Monthly</option>
+              <option value="lifetime">Ghost Lifetime</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Usage Limit</label>
+            <input type="number" id="couponUsageLimit" class="form-input" placeholder="Unlimited" min="1" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Uses Per Customer</label>
+            <input type="number" id="couponUsagePerCustomer" class="form-input" placeholder="Unlimited" min="1" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Start Date</label>
+            <input type="date" id="couponStartDate" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Expiration Date</label>
+            <input type="date" id="couponExpirationDate" class="form-input" />
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label">Notes</label>
+          <textarea id="couponNotes" class="admin-textarea" rows="2" placeholder="Internal notes…"></textarea>
+        </div>
+        <div class="form-group" style="margin-top:12px;display:flex;align-items:center;gap:10px">
+          <input type="checkbox" id="couponActive" checked style="width:16px;height:16px;accent-color:var(--accent)" />
+          <label class="form-label" for="couponActive" style="margin:0;cursor:pointer">Active</label>
+        </div>
+      </div>
+      <div class="admin-modal-footer">
+        <button class="btn btn-ghost" id="cancelCouponModal">Cancel</button>
+        <button class="btn btn-primary" id="saveCouponBtn">
+          <span class="btn-text">Save Coupon</span>
+          <span class="btn-spinner" style="display:none"></span>
         </button>
       </div>
     </div>

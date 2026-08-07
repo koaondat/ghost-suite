@@ -366,11 +366,12 @@ async function fulfillOrder (orderId) {
 
   inventory[keyIdx] = {
     ...inventory[keyIdx],
-    status:         'sold',
-    customer:       order.email || '',
-    customer_email: order.email || '',
-    order_id:       orderId,
-    purchase_date:  now,
+    status:            'sold',
+    customer:          order.email || '',
+    customer_email:    order.email || '',
+    discord_username:  order.discord || '',
+    order_id:          orderId,
+    purchase_date:     now,
   };
 
   // ── Save inventory ───────────────────────────────────────────────────────
@@ -406,7 +407,7 @@ const _captureInFlight = new Map();
    POST /api/paypal/create-order
   ──────────────────────────────────────────────────────────────────────────*/
 async function createOrder (req, res) {
-  const { plan: planRaw, email, discord } = req.body || {};
+  const { plan: planRaw, email, discord, couponCode, finalPrice: clientFinalPrice } = req.body || {};
 
   const planId = (planRaw || '').trim().toLowerCase();
   const plan   = PLAN_CATALOGUE[planId];
@@ -425,20 +426,75 @@ async function createOrder (req, res) {
     return res.status(503).json({ ok: false, message: 'Payment is not configured on this server.', stage: 'create-order' });
   }
 
+  // ── Resolve authoritative price ──────────────────────────────────────────────
+  // If a coupon code is supplied, validate it server-side and compute the final price.
+  // We NEVER trust the finalPrice submitted by the client.
+  let authorizedPrice = parseFloat(plan.priceUsd);
+  let resolvedCouponCode = null;
+  let resolvedDiscount = 0;
+
+  if (couponCode) {
+    const normCode = String(couponCode).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    if (normCode) {
+      // Lazy-load redis via the module-level REST helpers (same pattern used elsewhere)
+      try {
+        const { default: fetch } = await import('node-fetch');
+        const couponRes = await fetch(`${_REDIS_URL}/GET/${encodeURIComponent('ghost:coupons')}`, {
+          headers: { Authorization: `Bearer ${_REDIS_TOKEN}` },
+        });
+        if (couponRes.ok) {
+          const couponBody = await couponRes.json().catch(() => null);
+          const raw = couponBody?.result;
+          const coupons = Array.isArray(raw) ? raw :
+            (typeof raw === 'string' ? JSON.parse(raw) : []);
+          const coupon = coupons.find(c => c.code === normCode && c.active);
+          if (coupon) {
+            const base = parseFloat(plan.priceUsd);
+            let disc = 0;
+            if (coupon.discount_type === 'percentage') {
+              disc = Math.round(base * (parseFloat(coupon.discount_value) / 100) * 100) / 100;
+            } else if (coupon.discount_type === 'fixed') {
+              disc = Math.min(parseFloat(coupon.discount_value) || 0, base);
+            } else if (coupon.discount_type === 'free') {
+              disc = base;
+            }
+            authorizedPrice = Math.max(0, Math.round((base - disc) * 100) / 100);
+            resolvedCouponCode = normCode;
+            resolvedDiscount   = Math.round(disc * 100) / 100;
+          }
+        }
+      } catch (_) { /* coupon resolution failed — use full price */ }
+    }
+  }
+
+  // Safety: if coupon makes price $0, the caller should use /api/coupons/redeem-free instead
+  if (authorizedPrice === 0) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Free orders must be processed via /api/coupons/redeem-free.',
+      stage: 'create-order',
+    });
+  }
+
+  const priceValue = authorizedPrice.toFixed(2);
+
   try {
     const order = await _paypalRequest('POST', '/v2/checkout/orders', {
       intent: 'CAPTURE',
       purchase_units: [{
         reference_id: `ghost-${planId}-${Date.now()}`,
-        description:  plan.label,
+        description:  plan.label + (resolvedCouponCode ? ` (${resolvedCouponCode})` : ''),
         amount: {
           currency_code: 'USD',
-          value:         plan.priceUsd,
+          value:         priceValue,
         },
         custom_id: JSON.stringify({
-          plan:    planId,
-          email:   email.trim(),
-          discord: discord.trim(),
+          plan:       planId,
+          email:      email.trim(),
+          discord:    discord.trim(),
+          couponCode: resolvedCouponCode || '',
+          discount:   resolvedDiscount,
+          origPrice:  plan.priceUsd,
         }),
       }],
       application_context: {
@@ -611,9 +667,21 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     return { ok: false, message: 'Unexpected payment currency. Contact support.',
       stage: 'capture-currency', orderId: orderID, _status: 400 };
   }
-  if (parseFloat(capturedAmount) !== parseFloat(plan.priceUsd)) {
+
+  // Extract coupon data stored in custom_id during create-order
+  let _couponCode = '', _couponDiscount = 0, _origPrice = parseFloat(plan.priceUsd);
+  try {
+    const customData = JSON.parse(pu.custom_id || '{}');
+    _couponCode     = customData.couponCode || '';
+    _couponDiscount = parseFloat(customData.discount || 0) || 0;
+    _origPrice      = parseFloat(customData.origPrice || plan.priceUsd) || _origPrice;
+  } catch (_) {}
+
+  const _authorizedPrice = Math.max(0, Math.round((_origPrice - _couponDiscount) * 100) / 100);
+
+  if (Math.abs(parseFloat(capturedAmount) - _authorizedPrice) > 0.02) {
     console.error('[ghost/paypal] amount mismatch orderID=%s expected=%s got=%s',
-      orderID, plan.priceUsd, capturedAmount);
+      orderID, _authorizedPrice, capturedAmount);
     return { ok: false, message: 'Payment amount mismatch. Contact support.',
       stage: 'capture-amount', orderId: orderID, _status: 400 };
   }
@@ -623,8 +691,8 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
   const resolvedEmail   = payerEmail.trim() || (email || '').trim();
   const resolvedDiscord = (discord || '').trim();
 
-  console.log('[ghost/paypal] capture verified orderID=%s captureId=%s plan=%s amount=%s',
-    orderID, captureId, planId, capturedAmount);
+  console.log('[ghost/paypal] capture verified orderID=%s captureId=%s plan=%s amount=%s coupon=%s',
+    orderID, captureId, planId, capturedAmount, _couponCode || 'none');
 
   const purchaseDateNow = new Date().toISOString();
 
@@ -645,6 +713,9 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     email:             resolvedEmail,
     discord:           resolvedDiscord,
     price_usd:         parseFloat(capturedAmount),
+    original_price:    _origPrice,
+    coupon_code:       _couponCode || null,
+    coupon_discount:   _couponDiscount || 0,
     currency:          capturedCurrency,
     created_at:        purchaseDateNow,
     payment_status:    'completed',

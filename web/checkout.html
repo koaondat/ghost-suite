@@ -41,7 +41,6 @@
       <div class="nav-cta">
         <a href="login.html"     class="btn btn-ghost">Login</a>
         <a href="dashboard.html" class="btn btn-ghost">Dashboard</a>
-        <a href="/admin" class="btn btn-ghost" id="nav-admin-btn" style="display:none">Admin Panel</a>
       </div>
 
       <button class="nav-toggle" aria-label="Open menu" aria-expanded="false">
@@ -58,7 +57,6 @@
       <div class="mobile-cta">
         <a href="login.html"     class="btn btn-ghost">Login</a>
         <a href="dashboard.html" class="btn btn-ghost">Dashboard</a>
-        <a href="/admin" class="btn btn-ghost" id="nav-admin-btn-mobile" style="display:none">Admin Panel</a>
       </div>
     </div>
   </div>
@@ -181,6 +179,38 @@
             </div>
 
           </form><!-- /checkout-form -->
+
+          <!-- ── COUPON SECTION ───────────────────────────────── -->
+          <div class="co-coupon-section" id="co-coupon-section">
+            <button class="co-coupon-toggle" id="co-coupon-toggle" type="button">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+              Have a coupon?
+            </button>
+            <div class="co-coupon-body" id="co-coupon-body" style="display:none">
+              <div class="co-coupon-row">
+                <input
+                  type="text"
+                  id="co-coupon-input"
+                  class="form-input co-coupon-input"
+                  placeholder="Enter coupon code"
+                  autocomplete="off"
+                  maxlength="40"
+                  style="text-transform:uppercase;"
+                />
+                <button type="button" class="btn btn-ghost co-coupon-apply" id="co-coupon-apply">Apply</button>
+                <button type="button" class="btn btn-ghost co-coupon-remove" id="co-coupon-remove" style="display:none">Remove</button>
+              </div>
+              <p id="co-coupon-msg" class="co-coupon-msg"></p>
+            </div>
+          </div>
+
+          <!-- Free-coupon redemption button (shown only when finalPrice=0) -->
+          <div id="co-free-coupon-wrap" style="display:none" hidden>
+            <button type="button" class="btn btn-primary co-submit-btn" id="co-free-coupon-btn" style="display:none;width:100%;margin-top:.75rem;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              Get Free License
+            </button>
+          </div>
 
           <!-- ── STEP 2: Payment section (hidden until Step 1 valid) ── -->
           <div id="co-payment-section" hidden aria-live="polite">

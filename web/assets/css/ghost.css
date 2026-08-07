@@ -2629,18 +2629,52 @@ section { padding: 100px 0; }
   gap: 20px;
 }
 
+/* ── Coupon section ───────────────────────────────────────── */
+.co-coupon-section {
+  margin-top: 12px;
+}
+.co-coupon-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--accent, #a855f7);
+  font-size: 0.85rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.co-coupon-toggle:hover { opacity: 0.8; }
+.co-coupon-body {
+  margin-top: 10px;
+}
 /* ── Coupon row ───────────────────────────────────────────── */
 .co-coupon-row {
   display: flex;
   gap: 10px;
   align-items: flex-start;
 }
-.co-coupon-apply {
+.co-coupon-input {
+  flex: 1;
+  text-transform: uppercase;
+}
+.co-coupon-apply, .co-coupon-remove {
   flex-shrink: 0;
   height: 44px;
   padding: 0 18px;
   white-space: nowrap;
 }
+.co-coupon-msg {
+  font-size: 0.82rem;
+  margin-top: 6px;
+  min-height: 1.2em;
+}
+.co-coupon-msg--success { color: #22c55e; }
+.co-coupon-msg--error   { color: #ef4444; }
+.co-coupon-msg--info    { color: var(--muted, #57606a); }
 .co-optional-badge {
   background: rgba(136,150,176,0.12) !important;
   color: var(--muted) !important;

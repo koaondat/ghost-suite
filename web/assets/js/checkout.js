@@ -91,6 +91,9 @@
   const planKey     = (params.get('plan') || 'pro').toLowerCase();
   const ACTIVE_PLAN = PLANS[planKey] || PLANS.pro;
 
+  /* ── Coupon state ────────────────────────────────────────────── */
+  let _appliedCoupon = null;   // null | { couponCode, discount, finalPrice, originalPrice, isFree, label }
+
   /* ── State machine ──────────────────────────────────────────
      All state panel IDs.  Only one is visible at a time.
   ──────────────────────────────────────────────────────────── */
@@ -106,7 +109,7 @@
 
   /* ── Order summary renderer ─────────────────────────────────── */
 
-  function renderSummary (plan) {
+  function renderSummary (plan, coupon) {
     const iconEl    = document.getElementById('co-summary-icon');
     const nameEl    = document.getElementById('co-summary-plan-name');
     const taglineEl = document.getElementById('co-summary-plan-tagline');
@@ -134,17 +137,30 @@
         </li>`).join('');
     }
 
-    const subtotalEl  = document.getElementById('co-price-subtotal');
-    const totalEl     = document.getElementById('co-price-total');
-    const discountRow = document.getElementById('co-discount-row');
-    const durationEl  = document.getElementById('co-license-duration-text');
-    const cardPrice   = document.getElementById('co-card-price');
+    const subtotalEl   = document.getElementById('co-price-subtotal');
+    const totalEl      = document.getElementById('co-price-total');
+    const discountRow  = document.getElementById('co-discount-row');
+    const discountLabel= document.getElementById('co-discount-label');
+    const discountVal  = document.getElementById('co-price-discount');
+    const durationEl   = document.getElementById('co-license-duration-text');
+    const cardPrice    = document.getElementById('co-card-price');
 
     if (subtotalEl) subtotalEl.textContent = plan.symbol + plan.price.toFixed(2);
-    if (totalEl)    totalEl.textContent    = plan.symbol + plan.price.toFixed(2);
-    if (discountRow) discountRow.hidden    = true;
-    if (durationEl)  durationEl.textContent = 'License duration: ' + plan.duration;
-    if (cardPrice)   cardPrice.textContent  = plan.price.toFixed(2);
+
+    const activeCoupon = coupon || _appliedCoupon;
+    if (activeCoupon) {
+      const finalPrice = activeCoupon.finalPrice;
+      if (totalEl)       totalEl.textContent     = plan.symbol + finalPrice.toFixed(2);
+      if (discountRow)   discountRow.hidden       = false;
+      if (discountLabel) discountLabel.textContent = activeCoupon.couponCode + '  ' + activeCoupon.label;
+      if (discountVal)   discountVal.textContent  = '−' + plan.symbol + activeCoupon.discount.toFixed(2);
+      if (cardPrice)     cardPrice.textContent    = finalPrice.toFixed(2);
+    } else {
+      if (totalEl)      totalEl.textContent    = plan.symbol + plan.price.toFixed(2);
+      if (discountRow)  discountRow.hidden     = true;
+      if (cardPrice)    cardPrice.textContent  = plan.price.toFixed(2);
+    }
+    if (durationEl) durationEl.textContent = 'License duration: ' + plan.duration;
   }
 
 
@@ -499,7 +515,12 @@
       res  = await fetch('/api/paypal/create-order', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ plan: ACTIVE_PLAN.id, email: vals.email, discord: vals.discord }),
+        body:    JSON.stringify({
+          plan:       ACTIVE_PLAN.id,
+          email:      vals.email,
+          discord:    vals.discord,
+          couponCode: _appliedCoupon ? _appliedCoupon.couponCode : undefined,
+        }),
         signal:  controller.signal,
       });
       data = await res.json().catch(() => ({}));
@@ -945,6 +966,126 @@
   }
 
 
+  /* ── Coupon wiring ────────────────────────────────────────────── */
+  function wireCoupon () {
+    // Toggle coupon body visibility
+    const toggleBtn = document.getElementById('co-coupon-toggle');
+    const couponBody = document.getElementById('co-coupon-body');
+    if (toggleBtn && couponBody) {
+      toggleBtn.addEventListener('click', () => {
+        const open = couponBody.style.display === 'none' || !couponBody.style.display;
+        couponBody.style.display = open ? '' : 'none';
+        toggleBtn.classList.toggle('active', open);
+      });
+    }
+
+    const applyBtn  = document.getElementById('co-coupon-apply');
+    const removeBtn = document.getElementById('co-coupon-remove');
+    const input     = document.getElementById('co-coupon-input');
+    const msgEl     = document.getElementById('co-coupon-msg');
+
+    if (!applyBtn || !input) return;
+
+    async function applyCode () {
+      const code = (input.value || '').trim().toUpperCase();
+      if (!code) { if (msgEl) { msgEl.textContent = 'Enter a coupon code.'; msgEl.className = 'co-coupon-msg co-coupon-msg--error'; } return; }
+      if (msgEl) { msgEl.textContent = 'Checking…'; msgEl.className = 'co-coupon-msg co-coupon-msg--info'; }
+      applyBtn.disabled = true;
+      try {
+        const res  = await fetch('/api/coupons/validate', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ code, plan: ACTIVE_PLAN.id }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.ok) {
+          _appliedCoupon = data;
+          renderSummary(ACTIVE_PLAN);
+          input.disabled = true;
+          applyBtn.style.display = 'none';
+          if (removeBtn) removeBtn.style.display = '';
+          if (msgEl) {
+            msgEl.textContent = data.isFree
+              ? '🎉 100% off! This order is free — click the button below to get your key.'
+              : `✓ ${data.label} applied — you save $${data.discount.toFixed(2)}`;
+            msgEl.className = 'co-coupon-msg co-coupon-msg--success';
+          }
+          // If free, show a special "Get Free License" button instead of PayPal
+          const freeBtn = document.getElementById('co-free-coupon-btn');
+          if (data.isFree && freeBtn) freeBtn.style.display = '';
+        } else {
+          _appliedCoupon = null;
+          renderSummary(ACTIVE_PLAN);
+          if (msgEl) { msgEl.textContent = data.message || 'Invalid coupon.'; msgEl.className = 'co-coupon-msg co-coupon-msg--error'; }
+        }
+      } catch (_) {
+        if (msgEl) { msgEl.textContent = 'Network error. Please try again.'; msgEl.className = 'co-coupon-msg co-coupon-msg--error'; }
+      } finally {
+        applyBtn.disabled = false;
+      }
+    }
+
+    applyBtn.addEventListener('click', applyCode);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); applyCode(); } });
+
+    if (removeBtn) {
+      removeBtn.addEventListener('click', () => {
+        _appliedCoupon = null;
+        input.value    = '';
+        input.disabled = false;
+        applyBtn.style.display = '';
+        removeBtn.style.display = 'none';
+        if (msgEl) { msgEl.textContent = ''; msgEl.className = 'co-coupon-msg'; }
+        renderSummary(ACTIVE_PLAN);
+        const freeBtn = document.getElementById('co-free-coupon-btn');
+        if (freeBtn) freeBtn.style.display = 'none';
+      });
+    }
+
+    // Free coupon redemption — skips PayPal entirely
+    const freeBtn = document.getElementById('co-free-coupon-btn');
+    if (freeBtn) {
+      freeBtn.addEventListener('click', async () => {
+        if (!_appliedCoupon || !_appliedCoupon.isFree) return;
+        const vals = _capturedVals;
+        if (!vals || !vals.email) {
+          // Form not yet submitted — validate first
+          showAlert('error', 'Please fill in your details and click "Continue to Payment" first.');
+          return;
+        }
+        freeBtn.disabled    = true;
+        freeBtn.textContent = 'Processing…';
+        showState('loading');
+        try {
+          const res  = await fetch('/api/coupons/redeem-free', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({
+              code:    _appliedCoupon.couponCode,
+              plan:    ACTIVE_PLAN.id,
+              email:   vals.email,
+              discord: vals.discord,
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (data.ok && data.orderId) {
+            await _redirectToSuccess(data.orderId);
+          } else {
+            showState('idle');
+            showAlert('error', data.message || 'Free redemption failed. Please try again.');
+            freeBtn.disabled    = false;
+            freeBtn.textContent = 'Get Free License';
+          }
+        } catch (_) {
+          showState('idle');
+          showAlert('error', 'Network error. Please try again.');
+          freeBtn.disabled    = false;
+          freeBtn.textContent = 'Get Free License';
+        }
+      });
+    }
+  }
+
   /* ── Init ─────────────────────────────────────────────────────── */
 
   (function init () {
@@ -952,6 +1093,7 @@
     applyPlanTheme();
     wireForm();
     wireRetryButtons();
+    wireCoupon();
 
     const btnText = document.getElementById('co-btn-text');
     if (btnText) {
