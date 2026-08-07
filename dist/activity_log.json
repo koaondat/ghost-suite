@@ -96,5 +96,33 @@
     "license_key": "GHOST-AA…",
     "result": "Login successful (tier=TRIAL)",
     "error": ""
+  },
+  {
+    "event_type": "register_success",
+    "username": "dav",
+    "user_id": "88ba1c4700c3",
+    "timestamp": "2026-08-07T20:11:43Z",
+    "ip": "192.168.0.129",
+    "geo": "N/A",
+    "device_name": "HOST-VT2IN8",
+    "os_info": "Windows 11 (10.0.26200)",
+    "browser": "GhostConfig/4.0",
+    "license_key": "GHOST-AA…",
+    "result": "Registered successfully (tier=PRO)",
+    "error": ""
+  },
+  {
+    "event_type": "login_success",
+    "username": "dav",
+    "user_id": "88ba1c4700c3",
+    "timestamp": "2026-08-07T20:11:45Z",
+    "ip": "192.168.0.129",
+    "geo": "N/A",
+    "device_name": "HOST-VT2IN8",
+    "os_info": "Windows 11 (10.0.26200)",
+    "browser": "GhostConfig/4.0",
+    "license_key": "GHOST-AA…",
+    "result": "Login successful (tier=PRO)",
+    "error": ""
   }
 ]

@@ -55,8 +55,9 @@ if str(_PROJECT_ROOT) not in sys.path:
 import inventory as _inv  # type: ignore  # noqa: E402
 
 # ── Data files ────────────────────────────────────────────────────────────────
-ORDERS_DB    = _PROJECT_ROOT / "orders.json"
-DELIVERY_LOG = _PROJECT_ROOT / "delivery_log.json"
+ORDERS_DB           = _PROJECT_ROOT / "orders.json"
+DELIVERY_LOG        = _PROJECT_ROOT / "delivery_log.json"
+FULFILLMENT_DIAG_LOG = _PROJECT_ROOT / "fulfillment_diag.json"
 
 # ── Env / Redis ───────────────────────────────────────────────────────────────
 from dotenv import load_dotenv  # type: ignore
@@ -88,8 +89,9 @@ PLAN_PRICES: dict[str, dict[str, Any]] = {
 _ALLOWED_TOKEN_PREFIXES  = ("paypal:", "stripe:", "cashapp:", "crypto:")
 _ALLOWED_TOKEN_LITERALS  = {"FREE_TRIAL"}
 
-_orders_lock     = threading.Lock()
-_inventory_lock  = threading.Lock()
+_orders_lock       = threading.Lock()
+_inventory_lock    = threading.Lock()
+_fulfillment_lock  = threading.Lock()
 
 
 # ── Redis helpers ─────────────────────────────────────────────────────────────
@@ -320,6 +322,46 @@ def _log_delivery_failure(order_id: str, reason: str, detail: str = "") -> None:
         log.error("Could not write delivery_log: %s", exc)
 
 
+def _log_fulfillment_attempt(
+    order_id:        str,
+    plan:            str,
+    available_keys:  int,
+    selected_key:    bool,
+    outcome:         str,           # "delivered" | "failed" | "out_of_stock" | "idempotent"
+    error:           str = "",
+) -> None:
+    """
+    Append one structured entry to fulfillment_diag.json (capped at 20 records).
+    Called from every terminal path in confirm_payment_and_deliver and
+    route_fulfill_order so the admin diagnostics page always has a fresh trail.
+    """
+    entry = {
+        "timestamp":      datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "order_id":       order_id,
+        "plan":           plan,
+        "available_keys": available_keys,
+        "selected_key":   selected_key,
+        "outcome":        outcome,
+        "error":          error[:500] if error else "",
+        "stages": [],   # filled in by the caller when available
+    }
+    with _fulfillment_lock:
+        try:
+            records: list[dict] = []
+            if FULFILLMENT_DIAG_LOG.exists():
+                try:
+                    records = json.loads(FULFILLMENT_DIAG_LOG.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    pass
+            records.append(entry)
+            # keep last 20
+            FULFILLMENT_DIAG_LOG.write_text(
+                json.dumps(records[-20:], indent=2, default=str), encoding="utf-8"
+            )
+        except Exception as exc:
+            log.error("[fulfillment] Could not write fulfillment_diag: %s", exc)
+
+
 def _verify_payment_token(payment_token: str) -> bool:
     """
     Accept tokens produced by any supported payment provider.
@@ -354,236 +396,275 @@ def confirm_payment_and_deliver(
     One order may only ever receive one key.
     """
     order_id = order_id.strip() if order_id else ""
+    stages:  list[str] = []
 
-    # ── Normalise the plan slug up front and log it ───────────────────────────
+    # ── Normalise the plan slug up front ─────────────────────────────────────
     raw_plan  = (plan or "").strip()
     plan      = _inv.normalize_plan(raw_plan.lower())
-    log.info("fulfill order=%s step=normalized_plan raw=%r canonical=%r", order_id, raw_plan, plan)
+
+    log.info("[fulfillment] started order=%s", order_id)
+    log.info("[fulfillment] normalized_plan=%r (raw=%r)", plan, raw_plan)
+    stages.append("started")
 
     if not order_id:
         return {"ok": False, "error": "order_id is required"}
     if not plan or plan not in PLAN_PRICES:
-        log.error("fulfill order=%s step=unknown_plan raw=%r canonical=%r known=%s",
-                  order_id, raw_plan, plan, list(PLAN_PRICES))
-        return {"ok": False, "error": f"Unknown plan '{plan}'. Choose from: {list(PLAN_PRICES)}"}
+        msg = f"Unknown plan '{plan}'. Choose from: {list(PLAN_PRICES)}"
+        log.error("[fulfillment] error=%s order=%s", msg, order_id)
+        _log_fulfillment_attempt(order_id, plan, 0, False, "failed", msg)
+        return {"ok": False, "error": msg}
     if not email or "@" not in email:
         return {"ok": False, "error": "A valid email is required"}
     if not discord or len(discord.strip()) < 2:
         return {"ok": False, "error": "Discord username is required"}
     if not _verify_payment_token(payment_token):
-        log.warning("Payment token rejected for order %s", order_id)
+        log.warning("[fulfillment] error=payment_token_rejected order=%s", order_id)
         _log_delivery_failure(order_id, "payment_token_rejected")
+        _log_fulfillment_attempt(order_id, plan, 0, False, "failed", "payment_token_rejected")
         return {"ok": False, "error": "Payment could not be verified"}
 
     resolved_price = price_usd if price_usd is not None else float(PLAN_PRICES[plan]["priceUsd"])
     plan_label     = PLAN_PRICES[plan]["label"]
 
-    with _orders_lock:
-        # ── Step 1: Load order record ─────────────────────────────────────
-        existing = _load_single_order(order_id) if _USE_REDIS else _find_order(order_id, _load_orders())
-        log.info("fulfill order=%s step=order_loaded existing=%s", order_id, bool(existing))
+    # Outer try/except ensures the order is NEVER left permanently pending
+    # if an unexpected exception escapes the inner logic.
+    order_record: dict = {}
+    try:
+        with _orders_lock:
+            # ── Step 1: Load order record ─────────────────────────────────────
+            existing = _load_single_order(order_id) if _USE_REDIS else _find_order(order_id, _load_orders())
+            log.info("[fulfillment] order_loaded order=%s existing=%s", order_id, bool(existing))
+            stages.append("order_loaded")
 
-        if existing:
-            # ── Log what plan is stored vs what was requested ─────────────
-            stored_plan = existing.get("plan", "")
-            stored_plan_canonical = _inv.normalize_plan(stored_plan)
+            if existing:
+                # Log order.plan vs inventory.plan vs request plan for mismatch diagnosis
+                stored_plan = existing.get("plan", "")
+                stored_plan_canonical = _inv.normalize_plan(stored_plan)
+                log.info(
+                    "[fulfillment] plan_check order=%s "
+                    "order.plan=%r order.plan_canonical=%r "
+                    "request.plan_raw=%r request.plan_canonical=%r "
+                    "inventory_match=%s",
+                    order_id,
+                    stored_plan, stored_plan_canonical,
+                    raw_plan, plan,
+                    stored_plan_canonical == plan,
+                )
+
+            # ── Idempotency: already delivered? ──────────────────────────────
+            if existing:
+                if existing.get("license_key") and existing.get("delivery_status") == "delivered":
+                    log.info("[fulfillment] idempotent order=%s returning_existing_key", order_id)
+                    _log_fulfillment_attempt(order_id, plan, 0, True, "idempotent")
+                    return _safe_response(existing)
+                if existing.get("delivery_status") == "out_of_stock":
+                    log.info("[fulfillment] retry_out_of_stock order=%s", order_id)
+                    pass  # fall through to inventory lookup below
+                # pending / delivery_pending — fall through to assign a key
+
+            # ── Step 2: Check available licenses in inventory ─────────────────
+            all_inv        = _inv_load_all()
+            inv_total      = len(all_inv)
+            inv_available  = [r for r in all_inv if r.get("status") in ("available", "unused")]
+            avail_total    = len(inv_available)
+
+            # Log plan values on every inventory record so mismatches are obvious
+            inv_plans_raw       = [r.get("plan", "") for r in all_inv]
+            inv_plans_canonical = [_inv.normalize_plan(p) for p in inv_plans_raw]
+            plan_available      = [r for r in inv_available if _inv.normalize_plan(r.get("plan", "")) == plan]
+            match_count         = len(plan_available)
+
             log.info(
-                "fulfill order=%s step=plan_check "
-                "order_plan_raw=%r order_plan_canonical=%r "
-                "request_plan_raw=%r request_plan_canonical=%r match=%s",
-                order_id,
-                stored_plan, stored_plan_canonical,
-                raw_plan, plan,
-                stored_plan_canonical == plan,
+                "[fulfillment] available_keys=%d order=%s "
+                "inventory_total=%d available_total=%d matching_plan=%d "
+                "inventory_plans_raw=%r inventory_plans_canonical=%r searching_for=%r",
+                match_count, order_id,
+                inv_total, avail_total, match_count,
+                inv_plans_raw, inv_plans_canonical, plan,
             )
+            stages.append(f"available_keys={match_count}")
 
-        # ── Idempotency: already delivered? ──────────────────────────────
-        if existing:
-            if existing.get("license_key") and existing.get("delivery_status") == "delivered":
-                log.info("fulfill order=%s step=idempotent returning_existing_key", order_id)
-                return _safe_response(existing)
-            if existing.get("delivery_status") == "out_of_stock":
-                # Try to fulfill from inventory now that more keys may be stocked
-                log.info("fulfill order=%s step=retry_out_of_stock", order_id)
-                pass  # fall through to inventory lookup below
-            # pending / delivery_pending — fall through to assign a key
-
-        # ── Step 2: Check available licenses in inventory ─────────────────
-        all_inv        = _inv_load_all()
-        inv_total      = len(all_inv)
-        inv_available  = [r for r in all_inv if r.get("status") in ("available", "unused")]
-        avail_total    = len(inv_available)
-
-        # Log the raw plan stored on every inventory record so mismatches are obvious
-        inv_plans_raw      = [r.get("plan", "") for r in all_inv]
-        inv_plans_canonical = [_inv.normalize_plan(p) for p in inv_plans_raw]
-        log.info(
-            "fulfill order=%s step=available_keys_found "
-            "inventory_total=%d available_total=%d "
-            "inventory_plans_raw=%r inventory_plans_canonical=%r "
-            "searching_for_plan=%r",
-            order_id, inv_total, avail_total,
-            inv_plans_raw, inv_plans_canonical, plan,
-        )
-
-        plan_available = [r for r in inv_available if _inv.normalize_plan(r.get("plan", "")) == plan]
-        match_count    = len(plan_available)
-        log.info(
-            "fulfill order=%s step=available_keys_found matching_plan=%d plan=%r",
-            order_id, match_count, plan,
-        )
-
-        # ── Step 3: Pick the next available key ───────────────────────────
-        inv_record = _inv_get_next_available(plan)
-        created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-        if inv_record is None:
-            # ── Out of stock — never leave delivery_status=pending ────────
-            log.warning(
-                "fulfill order=%s step=out_of_stock plan=%r — setting delivery_status=out_of_stock",
-                order_id, plan,
-            )
-            _log_delivery_failure(order_id, "out_of_stock", f"plan={plan}")
-
-            # Preserve any existing fields from the Redis-saved pending order
-            existing_payment_status = (existing or {}).get("payment_status", "")
-            oos_payment_status = (
-                "completed"
-                if existing_payment_status == "completed" or payment_token.startswith("paypal:")
-                else "verified"
-            )
-            order_record: dict = {
-                **(existing or {}),
-                "order_id":         order_id,
-                "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else (existing or {}).get("paypal_capture_id", ""),
-                "paypal_order_id":  paypal_order_id or (data_extra or {}).get("paypal_order_id", "") or (existing or {}).get("paypal_order_id", ""),
-                "plan":             plan,
-                "plan_label":       plan_label,
-                "email":            email,
-                "discord":          discord,
-                "price_usd":        resolved_price,
-                "currency":         "USD",
-                "created_at":       (existing or {}).get("created_at", created_at),
-                "payment_status":   oos_payment_status,
-                "payment_verified": True,
-                "delivery_status":  "out_of_stock",
-                "license_key":      None,
-                "license_status":   "pending",
-                "failure_reason":   "out_of_stock",
-            }
-            _persist_order(order_id, order_record, existing)
-            log.info("fulfill order=%s step=order_saved delivery_status=out_of_stock", order_id)
-            return {
-                "ok":               True,
-                "out_of_stock":     True,
-                "order_id":         order_id,
-                "plan":             plan,
-                "email":            email,
-                "price_usd":        resolved_price,
-                "created_at":       order_record["created_at"],
-                "payment_status":   oos_payment_status,
-                "delivery_status":  "out_of_stock",
-                "license_key":      None,
-                "message": (
-                    "Payment received. We are temporarily out of stock. "
-                    "Your order has been recorded. Support has been notified."
-                ),
-            }
-
-        log.info("fulfill order=%s step=selected_key key=%s plan=%r",
-                 order_id, inv_record["key"], inv_record.get("plan", ""))
-
-        # ── Step 4: Assign the selected key (atomic) ──────────────────────
-        assigned = _inv_assign_key(
-            key=inv_record["key"],
-            order_id=order_id,
-            customer_email=email,
-            assigned_user=discord,
-            purchase_date=created_at,
-        )
-        if not assigned:
-            # Race condition — another request grabbed the same key; retry once
-            log.warning("fulfill order=%s step=assignment_race retrying", order_id)
+            # ── Step 3: Pick the next available key ───────────────────────────
             inv_record = _inv_get_next_available(plan)
+            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+            log.info("[fulfillment] selected_key=%s order=%s", inv_record is not None, order_id)
+            stages.append(f"selected_key={'true' if inv_record else 'false'}")
+
             if inv_record is None:
-                _log_delivery_failure(order_id, "out_of_stock_race", f"plan={plan}")
-                # Persist as out_of_stock rather than leaving status=pending
+                # ── Out of stock — never leave delivery_status=pending ────────
+                log.warning("[fulfillment] error=out_of_stock order=%s plan=%r", order_id, plan)
+                _log_delivery_failure(order_id, "out_of_stock", f"plan={plan}")
+
                 existing_payment_status = (existing or {}).get("payment_status", "")
-                oos_payment_status2 = (
+                oos_payment_status = (
                     "completed"
                     if existing_payment_status == "completed" or payment_token.startswith("paypal:")
                     else "verified"
                 )
-                oos_record: dict = {
+                order_record = {
                     **(existing or {}),
+                    "order_id":          order_id,
+                    "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else (existing or {}).get("paypal_capture_id", ""),
+                    "paypal_order_id":   paypal_order_id or (data_extra or {}).get("paypal_order_id", "") or (existing or {}).get("paypal_order_id", ""),
+                    "plan":              plan,
+                    "plan_label":        plan_label,
+                    "email":             email,
+                    "discord":           discord,
+                    "price_usd":         resolved_price,
+                    "currency":          "USD",
+                    "created_at":        (existing or {}).get("created_at", created_at),
+                    "payment_status":    oos_payment_status,
+                    "payment_verified":  True,
+                    "delivery_status":   "out_of_stock",
+                    "license_key":       None,
+                    "license_status":    "pending",
+                    "failure_reason":    "out_of_stock",
+                }
+                _persist_order(order_id, order_record, existing)
+                log.info("[fulfillment] order_saved order=%s delivery_status=out_of_stock", order_id)
+                _log_fulfillment_attempt(order_id, plan, match_count, False, "out_of_stock")
+                return {
+                    "ok":               True,
+                    "out_of_stock":     True,
                     "order_id":         order_id,
                     "plan":             plan,
-                    "plan_label":       plan_label,
                     "email":            email,
-                    "discord":          discord,
                     "price_usd":        resolved_price,
-                    "currency":         "USD",
-                    "created_at":       (existing or {}).get("created_at", created_at),
-                    "payment_status":   oos_payment_status2,
-                    "payment_verified": True,
+                    "created_at":       order_record["created_at"],
+                    "payment_status":   oos_payment_status,
                     "delivery_status":  "out_of_stock",
                     "license_key":      None,
-                    "license_status":   "pending",
-                    "failure_reason":   "out_of_stock_race",
+                    "message": (
+                        "Payment received. We are temporarily out of stock. "
+                        "Your order has been recorded. Support has been notified."
+                    ),
                 }
-                _persist_order(order_id, oos_record, existing)
-                log.warning("fulfill order=%s step=out_of_stock_race delivery_status=out_of_stock", order_id)
-                return {"ok": False, "error": "Temporarily out of stock. Contact support."}
-            assigned = _inv_assign_key(inv_record["key"], order_id, email, discord, created_at)
 
-        log.info("fulfill order=%s step=license_saved key=%s assigned=%s",
-                 order_id, inv_record["key"], assigned)
+            log.info(
+                "[fulfillment] selected_key_value=%s order=%s plan=%r",
+                inv_record["key"], order_id, inv_record.get("plan", ""),
+            )
 
-        # Preserve payment_status='completed' if already set by the capture step;
-        # otherwise fall back to 'verified' (legacy token-based path).
-        existing_payment_status = (existing or {}).get("payment_status", "")
-        payment_status_final = (
-            "completed"
-            if existing_payment_status == "completed" or payment_token.startswith("paypal:")
-            else "verified"
-        )
+            # ── Step 4a: Assign the selected key (atomic) ─────────────────────
+            log.info("[fulfillment] updating_license order=%s key=%s", order_id, inv_record["key"])
+            stages.append("updating_license")
+            assigned = _inv_assign_key(
+                key=inv_record["key"],
+                order_id=order_id,
+                customer_email=email,
+                assigned_user=discord,
+                purchase_date=created_at,
+            )
+            if not assigned:
+                # Race condition — another request grabbed the same key; retry once
+                log.warning("[fulfillment] assignment_race order=%s — retrying", order_id)
+                inv_record = _inv_get_next_available(plan)
+                if inv_record is None:
+                    _log_delivery_failure(order_id, "out_of_stock_race", f"plan={plan}")
+                    existing_payment_status = (existing or {}).get("payment_status", "")
+                    oos_payment_status2 = (
+                        "completed"
+                        if existing_payment_status == "completed" or payment_token.startswith("paypal:")
+                        else "verified"
+                    )
+                    oos_record: dict = {
+                        **(existing or {}),
+                        "order_id":          order_id,
+                        "plan":              plan,
+                        "plan_label":        plan_label,
+                        "email":             email,
+                        "discord":           discord,
+                        "price_usd":         resolved_price,
+                        "currency":          "USD",
+                        "created_at":        (existing or {}).get("created_at", created_at),
+                        "payment_status":    oos_payment_status2,
+                        "payment_verified":  True,
+                        "delivery_status":   "out_of_stock",
+                        "license_key":       None,
+                        "license_status":    "pending",
+                        "failure_reason":    "out_of_stock_race",
+                    }
+                    _persist_order(order_id, oos_record, existing)
+                    log.warning("[fulfillment] out_of_stock_race order=%s delivery_status=out_of_stock", order_id)
+                    _log_fulfillment_attempt(order_id, plan, 0, False, "out_of_stock", "race")
+                    return {"ok": False, "error": "Temporarily out of stock. Contact support."}
+                log.info("[fulfillment] updating_license (retry) order=%s key=%s", order_id, inv_record["key"])
+                assigned = _inv_assign_key(inv_record["key"], order_id, email, discord, created_at)
 
-        assigned_key = inv_record["key"]
-        order_record = {
-            **(existing or {}),
-            "order_id":         order_id,
-            "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else (existing or {}).get("paypal_capture_id", ""),
-            "paypal_order_id":  paypal_order_id or (data_extra or {}).get("paypal_order_id", "") or (existing or {}).get("paypal_order_id", ""),
-            "plan":             plan,
-            "plan_label":       plan_label,
-            "tier":             PLAN_PRICES[plan]["tier"],
-            "email":            email,
-            "discord":          discord,
-            "price_usd":        resolved_price,
-            "currency":         "USD",
-            "created_at":       (existing or {}).get("created_at", created_at),
-            "payment_status":   payment_status_final,
-            "payment_verified": True,
-            "delivery_status":  "delivered",
-            "license_key":      assigned_key,
-            "license_status":   "active",
-            "download_url":     f"/api/order/{order_id}/download",
-        }
+            log.info("[fulfillment] license_updated order=%s key=%s assigned=%s",
+                     order_id, inv_record["key"], assigned)
 
-        # ── Step 5: Persist the final order record ────────────────────────
-        try:
+            # ── Step 4b: Build and persist the final order record ─────────────
+            existing_payment_status = (existing or {}).get("payment_status", "")
+            payment_status_final = (
+                "completed"
+                if existing_payment_status == "completed" or payment_token.startswith("paypal:")
+                else "verified"
+            )
+
+            assigned_key = inv_record["key"]
+            order_record = {
+                **(existing or {}),
+                "order_id":          order_id,
+                "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else (existing or {}).get("paypal_capture_id", ""),
+                "paypal_order_id":   paypal_order_id or (data_extra or {}).get("paypal_order_id", "") or (existing or {}).get("paypal_order_id", ""),
+                "plan":              plan,
+                "plan_label":        plan_label,
+                "tier":              PLAN_PRICES[plan]["tier"],
+                "email":             email,
+                "discord":           discord,
+                "price_usd":         resolved_price,
+                "currency":          "USD",
+                "created_at":        (existing or {}).get("created_at", created_at),
+                "payment_status":    payment_status_final,
+                "payment_verified":  True,
+                "delivery_status":   "delivered",
+                "license_key":       assigned_key,
+                "license_status":    "active",
+                "status":            "completed",
+                "download_url":      f"/api/order/{order_id}/download",
+            }
+
+            log.info("[fulfillment] updating_order order=%s delivery_status=delivered", order_id)
+            stages.append("updating_order")
             _persist_order(order_id, order_record, existing)
             log.info(
-                "fulfill order=%s step=order_saved delivery_status=delivered license_key=%s",
+                "[fulfillment] order_saved order=%s delivery_status=delivered license_key=%s",
                 order_id, assigned_key,
             )
-        except Exception as exc:
-            log.error("fulfill order=%s step=order_save_failed error=%s", order_id, exc)
-            _log_delivery_failure(order_id, "order_save_failed", str(exc))
-            # Key was already assigned — return it anyway so the customer gets their key
-            pass
+            stages.append("completed")
 
-    log.info("fulfill order=%s step=delivery_status status=delivered", order_id)
+    except Exception as exc:
+        # ── Safety net: never leave the order permanently pending ─────────────
+        err_msg = str(exc)
+        log.exception("[fulfillment] error=%s order=%s", err_msg, order_id)
+        _log_delivery_failure(order_id, "exception", err_msg)
+        _log_fulfillment_attempt(order_id, plan, 0, False, "failed", err_msg)
+
+        # Attempt to save the order as failed so it shows up in admin view
+        try:
+            failed_record: dict = {
+                **(order_record or {}),
+                "order_id":        order_id,
+                "plan":            plan,
+                "email":           email,
+                "discord":         discord,
+                "delivery_status": "failed",
+                "license_key":     None,
+                "license_status":  "pending",
+                "failure_reason":  err_msg[:500],
+                "status":          "failed",
+            }
+            _persist_order(order_id, failed_record, None)
+            log.info("[fulfillment] order_saved order=%s delivery_status=failed", order_id)
+        except Exception as save_exc:
+            log.error("[fulfillment] could not save failed order record order=%s: %s", order_id, save_exc)
+
+        return {"ok": False, "error": f"Internal fulfillment error: {err_msg}"}
+
+    log.info("[fulfillment] completed order=%s", order_id)
+    _log_fulfillment_attempt(order_id, plan, 0, True, "delivered")
     return _safe_response(order_record)
 
 
@@ -781,12 +862,17 @@ if _flask_available:
         Retry delivery for a pending, delivery_pending, or out_of_stock order.
         NEVER re-charges. Idempotent — returns existing key if already delivered.
         """
+        log.info("[fulfillment] started order=%s (retry)", order_id)
+
         record = get_order(order_id)
         if not record:
+            log.warning("[fulfillment] error=order_not_found order=%s", order_id)
+            _log_fulfillment_attempt(order_id, "", 0, False, "failed", "order_not_found")
             return jsonify({"ok": False, "error": "Order not found. Payment may not be saved yet."}), 404
 
-        log.info("fulfill_retry order=%s step=order_loaded delivery_status=%s license_key=%s",
-                 order_id, record.get("delivery_status"), "[present]" if record.get("license_key") else "[missing]")
+        log.info("[fulfillment] order_loaded order=%s delivery_status=%s license_key=%s",
+                 order_id, record.get("delivery_status"),
+                 "[present]" if record.get("license_key") else "[missing]")
 
         # Already delivered — return existing key (idempotent)
         if record.get("license_key") and record.get("delivery_status") == "delivered":
@@ -794,7 +880,8 @@ if _flask_available:
             safe["ok"] = True
             if not safe.get("download_url"):
                 safe["download_url"] = f"/api/order/{order_id}/download"
-            log.info("fulfill_retry order=%s step=idempotent already_delivered", order_id)
+            log.info("[fulfillment] idempotent order=%s already_delivered", order_id)
+            _log_fulfillment_attempt(order_id, record.get("plan", ""), 0, True, "idempotent")
             return jsonify(safe), 200
 
         if record.get("payment_status") not in ("verified", "completed"):
@@ -807,22 +894,28 @@ if _flask_available:
         # Normalize plan from the stored order record
         raw_plan = record.get("plan", "")
         plan     = _inv.normalize_plan(raw_plan)
-        log.info("fulfill_retry order=%s step=normalized_plan raw=%r canonical=%r", order_id, raw_plan, plan)
+        log.info("[fulfillment] normalized_plan=%r (raw=%r) order=%s", plan, raw_plan, order_id)
 
         if not plan or plan not in PLAN_PRICES:
-            return jsonify({"ok": False, "error": f"Unknown plan '{plan}' on stored order"}), 500
+            err = f"Unknown plan '{plan}' on stored order"
+            log.error("[fulfillment] error=%s order=%s", err, order_id)
+            _log_fulfillment_attempt(order_id, plan, 0, False, "failed", err)
+            return jsonify({"ok": False, "error": err}), 500
 
         # Validate inventory and log what is available
         all_inv       = _inv_load_all()
         inv_available = [r for r in all_inv if r.get("status") in ("available", "unused")]
         plan_avail    = [r for r in inv_available if _inv.normalize_plan(r.get("plan", "")) == plan]
+        match_count   = len(plan_avail)
         log.info(
-            "fulfill_retry order=%s step=available_keys_found "
+            "[fulfillment] available_keys=%d order=%s "
             "inventory_total=%d available_total=%d matching_plan=%d plan=%r",
-            order_id, len(all_inv), len(inv_available), len(plan_avail), plan,
+            match_count, order_id, len(all_inv), len(inv_available), match_count, plan,
         )
 
         inv_record = _inv_get_next_available(plan)
+        log.info("[fulfillment] selected_key=%s order=%s", inv_record is not None, order_id)
+
         if inv_record is None:
             # Update the order to out_of_stock so it never stays pending
             with _orders_lock:
@@ -832,19 +925,22 @@ if _flask_available:
                     rec_upd["failure_reason"]  = "out_of_stock"
                     try:
                         _persist_order(order_id, rec_upd, None)
-                        log.info("fulfill_retry order=%s step=order_saved delivery_status=out_of_stock", order_id)
+                        log.info("[fulfillment] order_saved order=%s delivery_status=out_of_stock", order_id)
                     except Exception as exc:
-                        log.error("fulfill_retry order=%s failed to save out_of_stock: %s", order_id, exc)
+                        log.error("[fulfillment] error=%s order=%s (saving out_of_stock)", exc, order_id)
+            _log_fulfillment_attempt(order_id, plan, match_count, False, "out_of_stock")
             return jsonify({
                 "ok":              False,
                 "error":           "Still out of stock. Please contact support.",
                 "delivery_status": "out_of_stock",
             }), 200
 
-        log.info("fulfill_retry order=%s step=selected_key key=%s plan=%r",
-                 order_id, inv_record["key"], inv_record.get("plan", ""))
+        log.info("[fulfillment] selected_key_value=%s order=%s plan=%r",
+                 inv_record["key"], order_id, inv_record.get("plan", ""))
 
         created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        log.info("[fulfillment] updating_license order=%s key=%s", order_id, inv_record["key"])
         assigned   = _inv_assign_key(
             key=inv_record["key"],
             order_id=order_id,
@@ -853,9 +949,13 @@ if _flask_available:
             purchase_date=record.get("created_at", created_at),
         )
         if not assigned:
-            return jsonify({"ok": False, "error": "Could not assign key. Try again."}), 500
+            err = "Could not assign key. Try again."
+            log.error("[fulfillment] error=%s order=%s", err, order_id)
+            _log_fulfillment_attempt(order_id, plan, match_count, True, "failed", err)
+            return jsonify({"ok": False, "error": err}), 500
 
-        log.info("fulfill_retry order=%s step=license_saved key=%s", order_id, inv_record["key"])
+        log.info("[fulfillment] license_updated order=%s key=%s", order_id, inv_record["key"])
+        log.info("[fulfillment] updating_order order=%s delivery_status=delivered", order_id)
 
         with _orders_lock:
             rec2 = _load_single_order(order_id) if _USE_REDIS else _find_order(order_id, _load_orders())
@@ -868,17 +968,21 @@ if _flask_available:
                 rec2["license_key"]     = inv_record["key"]
                 rec2["license_status"]  = "active"
                 rec2["delivery_status"] = "delivered"
+                rec2["status"]          = "completed"
                 rec2["fulfilled_at"]    = created_at
                 rec2["download_url"]    = f"/api/order/{order_id}/download"
                 try:
                     _persist_order(order_id, rec2, None)
-                    log.info("fulfill_retry order=%s step=order_saved delivery_status=delivered license_key=%s",
+                    log.info("[fulfillment] order_saved order=%s delivery_status=delivered license_key=%s",
                              order_id, inv_record["key"])
                 except Exception as exc:
-                    log.error("Failed to save fulfill update for order %s: %s", order_id, exc)
+                    err_msg = str(exc)
+                    log.error("[fulfillment] error=%s order=%s (saving delivered)", err_msg, order_id)
+                    _log_fulfillment_attempt(order_id, plan, match_count, True, "failed", err_msg)
                     return jsonify({"ok": False, "error": "Order update could not be saved"}), 500
 
-        log.info("fulfill_retry order=%s step=delivery_status status=delivered", order_id)
+        log.info("[fulfillment] completed order=%s", order_id)
+        _log_fulfillment_attempt(order_id, plan, match_count, True, "delivered")
         safe = {k: v for k, v in (rec2 or {}).items() if k != "payment_verified"}
         safe["ok"] = True
         if not safe.get("download_url"):
@@ -893,6 +997,27 @@ if _flask_available:
         orders = _load_orders()
         safe = [{k: v for k, v in o.items() if k not in ("payment_verified",)} for o in orders]
         return jsonify({"ok": True, "orders": safe, "total": len(safe)}), 200
+
+
+    # ── GET /api/admin/fulfillment-log ─────────────────────────────────────
+    @app.route("/api/admin/fulfillment-log", methods=["GET"])
+    def route_admin_fulfillment_log():
+        """
+        Return the last 20 fulfillment attempts from fulfillment_diag.json.
+        Used by the Fulfillment Diagnostics admin panel tab.
+        Query: ?limit=20
+        """
+        try:
+            limit = min(int(request.args.get("limit", 20)), 50)
+        except (ValueError, TypeError):
+            limit = 20
+        records: list[dict] = []
+        if FULFILLMENT_DIAG_LOG.exists():
+            try:
+                records = json.loads(FULFILLMENT_DIAG_LOG.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                records = []
+        return jsonify({"ok": True, "attempts": records[-limit:], "total": len(records)}), 200
 
 
     if __name__ == "__main__":

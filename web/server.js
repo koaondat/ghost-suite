@@ -1398,6 +1398,38 @@ app.delete('/api/admin/activity', _requireAdminSession, async (req, res) => {
   return res.json({ ok: true });
 });
 
+// ── Fulfillment Diagnostics — proxy to Python delivery backend ────────────────
+// Returns the last 20 fulfillment attempts from fulfillment_diag.json.
+// Falls back to an empty list when the delivery backend is unavailable.
+app.get('/api/admin/fulfillment-log', _requireAdminSession, async (req, res) => {
+  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+  const limit = Math.min(parseInt(req.query.limit || '20', 10) || 20, 50);
+
+  if (DELIVERY_BACKEND_URL) {
+    try {
+      const { default: fetch } = await import('node-fetch');
+      const upstream = await fetch(
+        `${DELIVERY_BACKEND_URL}/api/admin/fulfillment-log?limit=${limit}`,
+        { method: 'GET' }
+      );
+      if (upstream.ok) {
+        const data = await upstream.json().catch(() => null);
+        if (data && data.ok) return res.json(data);
+      }
+    } catch (err) {
+      console.warn('[ghost/admin] fulfillment-log fetch error:', err.message);
+    }
+  }
+
+  // Delivery backend unavailable — return empty list with a note
+  return res.json({
+    ok:       true,
+    attempts: [],
+    total:    0,
+    note:     'Delivery backend unavailable. Set GHOST_DELIVERY_URL to enable diagnostics.',
+  });
+});
+
 // ── Admin panel HTML ──────────────────────────────────────────────────────────
 app.get('/admin', (_req, res) => {
   res.sendFile(path.join(WEB_ROOT, 'admin.html'), err => {

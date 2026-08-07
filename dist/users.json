@@ -14,5 +14,13 @@
     "key": "GHOST-AAFUS-7IAAW-JH6QA-KJ74U",
     "tier": "TRIAL",
     "created": "2026-08-06"
+  },
+  {
+    "username": "dav",
+    "salt": "919dc6b9c18ed19caafa99cee497840a",
+    "pw_hash": "99f5061a8117f49e594aa1346263bb14a5ba3a2a2a6f5476ccf1e3b5604acf43",
+    "key": "GHOST-AAFUS-7MAAW-JH6AC-PTPQC",
+    "tier": "PRO",
+    "created": "2026-08-07"
   }
 ]

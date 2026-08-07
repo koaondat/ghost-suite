@@ -210,6 +210,7 @@
     if (name === 'customers')          loadCustomers();
     if (name === 'downloads')          loadDownloads();
     if (name === 'activity')           loadActivity();
+    if (name === 'fulfillment-diag')   loadFulfillmentDiag();
     if (name === 'settings')           loadSettings();
   };
 
@@ -1225,6 +1226,56 @@
     renderPagination('activityPagination', log.length, page, p => renderActivity(log, p));
   }
 
+  /* ── Fulfillment Diagnostics ────────────────────────────────────────── */
+  async function loadFulfillmentDiag () {
+    const tb    = $('fulfillmentDiagTbody');
+    const alert = $('fulfillmentDiagAlert');
+    if (tb) tb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">Loading…</td></tr>';
+    if (alert) alert.style.display = 'none';
+    try {
+      const { ok, data } = await apiFetch('/api/admin/fulfillment-log?limit=20');
+      if (!ok) throw new Error(data.error || 'Failed to load fulfillment log');
+
+      const attempts = (data.attempts || []).slice().reverse(); // newest first
+
+      if (data.note && alert) {
+        alert.textContent = data.note;
+        alert.className   = 'admin-alert admin-alert--warn';
+        alert.style.display = '';
+      }
+
+      if (!attempts.length) {
+        if (tb) tb.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px">No fulfillment attempts recorded yet.</td></tr>';
+        return;
+      }
+
+      const OUTCOME_COLORS = {
+        delivered:   'var(--green)',
+        idempotent:  '#6366f1',
+        out_of_stock:'#f59e0b',
+        failed:      '#f87171',
+      };
+
+      if (tb) tb.innerHTML = attempts.map(a => {
+        const color  = OUTCOME_COLORS[a.outcome] || 'var(--muted)';
+        const ts     = a.timestamp ? fmtDate(a.timestamp) : '—';
+        const orderId = (a.order_id || '').slice(-12) || '—'; // last 12 chars for readability
+        return `<tr>
+          <td class="cell-mono-sm" style="white-space:nowrap">${esc(ts)}</td>
+          <td class="cell-mono-sm" title="${esc(a.order_id||'')}">${esc(orderId)}</td>
+          <td>${esc(a.plan || '—')}</td>
+          <td style="text-align:center">${a.available_keys ?? '—'}</td>
+          <td style="text-align:center">${a.selected_key ? '✓' : '✗'}</td>
+          <td><span style="color:${color};font-weight:600">${esc(a.outcome||'—')}</span></td>
+          <td class="cell-truncate" title="${esc(a.error||'')}" style="color:#f87171;font-size:12px">${esc((a.error||'').slice(0,80))||'—'}</td>
+        </tr>`;
+      }).join('');
+
+    } catch (err) {
+      if (tb)  tb.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#f87171;padding:24px">${esc(err.message)}</td></tr>`;
+    }
+  }
+
   /* ── Settings ───────────────────────────────────────────────────────── */
   async function loadSettings () {
     try {
@@ -1902,6 +1953,11 @@
     $('cancelUpdateDl').addEventListener('click',     () => hide('updateDlModal'));
     $('confirmUpdateDl').addEventListener('click',    saveDownload);
     $('updateDlModal').addEventListener('click', e => { if (e.target === $('updateDlModal')) hide('updateDlModal'); });
+
+    // Fulfillment Diagnostics
+    if ($('refreshFulfillmentDiag')) {
+      $('refreshFulfillmentDiag').addEventListener('click', loadFulfillmentDiag);
+    }
 
     // Activity log
     $('refreshActivity').addEventListener('click', loadActivity);
