@@ -1320,32 +1320,32 @@
 
       // Populate all sections
       try { renderUserInfo(account); }
-        catch (err) { console.error("renderUserInfo failed:", err, "\nData:", account); throw err; }
+        catch (err) { console.error("renderUserInfo failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
       try { renderStatCards(account); }
-        catch (err) { console.error("renderStatCards failed:", err, "\nData:", account); throw err; }
+        catch (err) { console.error("renderStatCards failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
       try { renderKeyCard(account); }
-        catch (err) { console.error("renderKeyCard failed:", err, "\nData:", account); throw err; }
+        catch (err) { console.error("renderKeyCard failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
       try { renderLicenseDetails(account); }
-        catch (err) { console.error("renderLicenseDetails failed:", err, "\nData:", account); throw err; }
+        catch (err) { console.error("renderLicenseDetails failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
       try { renderSettings(account); }
-        catch (err) { console.error("renderSettings failed:", err, "\nData:", account); throw err; }
+        catch (err) { console.error("renderSettings failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
       try { renderActivity(account); }
-        catch (err) { console.error("renderActivity failed:", err, "\nData:", account); throw err; }
+        catch (err) { console.error("renderActivity failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
       try { renderDownloads(account); }
-        catch (err) { console.error("renderDownloads failed:", err, "\nData:", account); throw err; }
+        catch (err) { console.error("renderDownloads failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
       try { renderPurchases(account); }
-        catch (err) { console.error("renderPurchases failed:", err, "\nData:", account); throw err; }
+        catch (err) { console.error("renderPurchases failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
       // Wire reset modal after key is loaded
       try { initResetModal(account.license.key); }
-        catch (err) { console.error("initResetModal failed:", err, "\nKey:", account.license?.key); throw err; }
+        catch (err) { console.error("initResetModal failed:", err); console.error(err.stack); console.error("license.key:", account.license?.key); throw err; }
 
       // Reveal content
       showContent();
@@ -1354,7 +1354,9 @@
       if (err.message === 'auth') {
         window.location.href = 'login.html';
       } else {
+        console.error("Dashboard Exception");
         console.error(err);
+        console.error(err.stack);
         showError();
       }
     }
