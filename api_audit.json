@@ -934,5 +934,869 @@
     "details": "Panel login",
     "ok": true,
     "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.289160+00:00",
+    "action": "register",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.300945+00:00",
+    "action": "login",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.316743+00:00",
+    "action": "register",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.338584+00:00",
+    "action": "login",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "Incorrect password.",
+    "ok": false,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.403862+00:00",
+    "action": "register",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.413642+00:00",
+    "action": "login",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.443134+00:00",
+    "action": "register",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.443134+00:00",
+    "action": "login",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.475013+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.493683+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "5 key(s)",
+    "details": "tier=TRIAL days=7 note= keys=GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.519552+00:00",
+    "action": "ban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "test",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.528362+00:00",
+    "action": "unban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.568329+00:00",
+    "action": "delete_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.600092+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.606307+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.606307+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.606307+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.622232+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.622232+00:00",
+    "action": "reset_activation",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.654057+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.660086+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.660086+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.669691+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.669691+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.669691+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.685630+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.694116+00:00",
+    "action": "admin_panel_auth_fail",
+    "actor": "panel",
+    "target": "",
+    "details": "Bad password",
+    "ok": false,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.701714+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.701714+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.722598+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.732816+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:45:09.732816+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.310637+00:00",
+    "action": "register",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.324259+00:00",
+    "action": "login",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.329770+00:00",
+    "action": "register",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.338146+00:00",
+    "action": "login",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "Incorrect password.",
+    "ok": false,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.365890+00:00",
+    "action": "register",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.365890+00:00",
+    "action": "login",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.407206+00:00",
+    "action": "register",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.414171+00:00",
+    "action": "login",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.421652+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.437165+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "5 key(s)",
+    "details": "tier=TRIAL days=7 note= keys=GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.463337+00:00",
+    "action": "ban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "test",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.463337+00:00",
+    "action": "unban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.476703+00:00",
+    "action": "delete_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.504629+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.504629+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.504629+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.504629+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.519485+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.545294+00:00",
+    "action": "reset_activation",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.629714+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.630230+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.644452+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.644452+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.657977+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.670425+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.671999+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.686044+00:00",
+    "action": "admin_panel_auth_fail",
+    "actor": "panel",
+    "target": "",
+    "details": "Bad password",
+    "ok": false,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.699698+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.713749+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.727814+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.741384+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:46:36.755296+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.391587+00:00",
+    "action": "register",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.395596+00:00",
+    "action": "login",
+    "actor": "apitest1",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.417412+00:00",
+    "action": "register",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.429206+00:00",
+    "action": "login",
+    "actor": "apitest_wp",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "Incorrect password.",
+    "ok": false,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.541757+00:00",
+    "action": "register",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.555757+00:00",
+    "action": "login",
+    "actor": "lictesta",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.608046+00:00",
+    "action": "register",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.617477+00:00",
+    "action": "login",
+    "actor": "lictestb",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "tier=PRO",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.635379+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.649171+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "5 key(s)",
+    "details": "tier=TRIAL days=7 note= keys=GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM,GHOST-AAFUS-7IAAW-JIAQA-SESGM",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.674670+00:00",
+    "action": "ban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "test",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.674670+00:00",
+    "action": "unban_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.682041+00:00",
+    "action": "delete_key",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.722416+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.722416+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.722416+00:00",
+    "action": "generate_key",
+    "actor": "__api_key__",
+    "target": "1 key(s)",
+    "details": "tier=PRO days=30 note= keys=GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.734515+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.738064+00:00",
+    "action": "bulk_delete_keys",
+    "actor": "__api_key__",
+    "target": "1 keys",
+    "details": "deleted=GHOST-AAFUS-7IAAW-JIMAC-O4GQA not_found=",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.764585+00:00",
+    "action": "reset_activation",
+    "actor": "__api_key__",
+    "target": "GHOST-AAFUS-7IAAW-JIMAC-O4GQA",
+    "details": "",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.803479+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.817187+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.832916+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.832916+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.848685+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.848685+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.864816+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.873189+00:00",
+    "action": "admin_panel_auth_fail",
+    "actor": "panel",
+    "target": "",
+    "details": "Bad password",
+    "ok": false,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.880490+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.912342+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.928474+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.944268+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T05:51:25.944268+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
   }
 ]

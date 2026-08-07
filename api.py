@@ -125,7 +125,7 @@ ORDERS_DB     = _HERE / "orders.json"
 #   • Path:      /  (enforced by __Host- prefix)
 #   • no Domain attribute  (required by __Host- prefix)
 _PANEL_JWT_ALGO     = "HS256"
-_PANEL_JWT_TTL      = 8 * 3600   # 8 hours
+_PANEL_JWT_TTL      = 4 * 3600   # 4 hours — matches server.js maxAge: 1000 * 60 * 60 * 4
 _ADMIN_COOKIE_NAME  = "__Host-ghost_admin_session"
 
 # ── Thread lock for the audit log ─────────────────────────────────────────────
@@ -499,6 +499,10 @@ def route_admin_panel_auth():
         path="/",
         max_age=_PANEL_JWT_TTL,
     )
+    # Safe diagnostic — never log the cookie value or secret.
+    auth_set_cookie = _ADMIN_COOKIE_NAME in (resp.headers.get("Set-Cookie") or "")
+    log.info("auth_set_cookie=%s ip=%s", auth_set_cookie, request.remote_addr)
+    resp.headers["X-Diag-Auth-Set-Cookie"] = str(auth_set_cookie).lower()
     return resp
 
 
@@ -543,6 +547,10 @@ def route_admin_debug_session():
     GET /api/admin/debug-session
     Safe diagnostic endpoint.  Never returns cookie values, passwords, hashes,
     or secrets — only boolean presence/validity flags.
+    Includes the three required diagnostics:
+      auth_set_cookie          — cookie was present on this request (proxy of login result)
+      dashboard_cookie_present — same as above (alias used by the Node debug endpoint)
+      session_verify           — cookie signature and expiry are valid
     """
     cookie_token  = request.cookies.get(_ADMIN_COOKIE_NAME, "").strip()
     cookie_present = bool(cookie_token)
@@ -551,6 +559,11 @@ def route_admin_debug_session():
         session_valid = _decode_panel_jwt(cookie_token) is not None
     secret_configured = bool(_JWT_SECRET and _JWT_SECRET != "INSECURE-FALLBACK-SET-GHOST_JWT_SECRET-IN-ENV")
     return jsonify({
+        # Canonical names required by the audit spec
+        "auth_set_cookie":          cookie_present,
+        "dashboard_cookie_present": cookie_present,
+        "session_verify":           session_valid,
+        # Additional context
         "cookiePresent":    cookie_present,
         "sessionValid":     session_valid,
         "secretConfigured": secret_configured,

@@ -257,6 +257,10 @@ async function _proxyToApi (req, res, pathOverride) {
   // proxied admin requests (require_admin Path 2: X-Admin-Key).
   if (GHOST_ADMIN_API_KEY) {
     headers['x-admin-key'] = GHOST_ADMIN_API_KEY;
+  } else {
+    // Without the API key the Python require_admin will reject the request with 401.
+    // Log clearly so this misconfiguration is immediately visible in server logs.
+    console.error('[ghost/proxy] CRITICAL: GHOST_ADMIN_API_KEY not set — proxied admin requests will return 401. Set it in env vars.');
   }
 
   const BODY_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE'];
@@ -451,8 +455,15 @@ app.post('/api/admin/panel/auth', (req, res) => {
     // No domain attribute — __Host- prefix requires host-only binding
   });
 
+  // Safe diagnostic: confirm cookie was written to response (never log the value).
+  const setCookieHeader = res.getHeader('Set-Cookie');
+  const authSetCookie   = Array.isArray(setCookieHeader)
+    ? setCookieHeader.some(h => h.startsWith(ADMIN_COOKIE_NAME))
+    : (typeof setCookieHeader === 'string' && setCookieHeader.startsWith(ADMIN_COOKIE_NAME));
+  console.log('[ghost/admin] auth_set_cookie=%s ip=%s', authSetCookie, req.ip);
+
   // Return ok:true — the session is in the cookie, not the body.
-  return res.json({ ok: true });
+  return res.json({ ok: true, auth_set_cookie: authSetCookie });
 });
 
 // GET /api/admin/session  — canonical session validity check (called on page load)
@@ -478,6 +489,28 @@ app.get('/api/admin/panel/verify', _requireAdminSession, (_req, res) => {
   res.json({ ok: true });
 });
 
+// GET /api/admin/debug-session — safe diagnostic endpoint
+// Returns boolean presence/validity flags only — never the cookie value or secret.
+app.get('/api/admin/debug-session', (req, res) => {
+  const cookieToken           = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
+  const dashboardCookiePresent = Boolean(cookieToken);
+  const sessionVerify          = dashboardCookiePresent ? _verifyAdminSession(cookieToken) : false;
+  const secretConfigured       = Boolean(process.env.ADMIN_SESSION_SECRET && process.env.ADMIN_SESSION_SECRET.trim());
+  const apiKeyConfigured       = Boolean(GHOST_ADMIN_API_KEY);
+  // auth_set_cookie is only knowable at login time; here we report the current cookie presence.
+  const authSetCookie          = dashboardCookiePresent;
+  console.log('[ghost/admin] debug_session dashboard_cookie_present=%s session_verify=%s auth_set_cookie=%s ip=%s',
+    dashboardCookiePresent, sessionVerify, authSetCookie, req.ip);
+  return res.json({
+    auth_set_cookie:          authSetCookie,
+    dashboard_cookie_present: dashboardCookiePresent,
+    session_verify:           sessionVerify,
+    secret_configured:        secretConfigured,
+    api_key_configured:       apiKeyConfigured,
+    cookie_name:              ADMIN_COOKIE_NAME,
+  });
+});
+
 // POST /api/admin/panel/logout — clear the session cookie
 app.post('/api/admin/panel/logout', (_req, res) => {
   // Must match the exact attributes used when setting the cookie:
@@ -501,7 +534,11 @@ app.post('/api/admin/panel/logout', (_req, res) => {
 // Dashboard
 app.get('/api/admin/dashboard', _requireAdminSession, (req, res) => {
   const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
-  console.log('[ghost/admin] dashboard cookie present=%s ip=%s', Boolean(cookieToken), req.ip);
+  // Diagnostics: dashboard_cookie_present and session_verify — never log the value.
+  const dashboardCookiePresent = Boolean(cookieToken);
+  const sessionVerify          = dashboardCookiePresent ? _verifyAdminSession(cookieToken) : false;
+  console.log('[ghost/admin] dashboard_cookie_present=%s session_verify=%s ip=%s',
+    dashboardCookiePresent, sessionVerify, req.ip);
   return _proxyToApi(req, res);
 });
 app.get('/api/admin/stats',                             _requireAdminSession, (req, res) => _proxyToApi(req, res));
@@ -621,6 +658,10 @@ app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
     if (err) res.status(404).sendFile(path.join(WEB_ROOT, 'index.html'));
   }),
 );
+
+// Suppress browser favicon 404 — no favicon file exists in this project.
+// Without this route every page load produces a 404 in logs and network inspector.
+app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
 app.use(express.static(WEB_ROOT, {
   index: 'index.html',

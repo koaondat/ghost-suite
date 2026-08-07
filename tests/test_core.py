@@ -55,8 +55,9 @@ os.environ.setdefault("GHOST_HMAC_SECRET",     "test-hmac-secret-seed-for-pytest
 @pytest.fixture(autouse=True)
 def _tmp_data_dir(tmp_path, monkeypatch):
     """
-    Redirect all JSON data files (keys, bans, users, orders) to a temp
-    directory so tests are fully isolated and leave no state behind.
+    Redirect all JSON data files (keys, bans, users, orders, inventory) to a
+    temp directory so tests are fully isolated and leave no state behind.
+    Pre-stocks the inventory with valid generated keys so delivery tests work.
     """
     import keygen
     monkeypatch.setattr(keygen, "KEYS_DB",      tmp_path / "issued_keys.json")
@@ -64,6 +65,17 @@ def _tmp_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(keygen, "BLACKLIST_DB", tmp_path / "blacklist.json")
     monkeypatch.setattr(keygen, "WHITELIST_DB", tmp_path / "whitelist.json")
     monkeypatch.setattr(keygen, "USERS_DB",     tmp_path / "users.json")
+
+    # Redirect inventory DB — shared by license_delivery._inv and api._inv.
+    import inventory as _inv_mod
+    monkeypatch.setattr(_inv_mod, "INVENTORY_DB", tmp_path / "key_inventory.json")
+
+    # Pre-stock inventory so delivery tests can fulfil orders without "out of stock".
+    # Generate 3 keys per plan — each delivery test consumes at most 1.
+    for plan, tier in [("pro", "PRO"), ("lifetime", "PRO"), ("trial", "TRIAL")]:
+        days = 0 if plan == "lifetime" else (7 if plan == "trial" else 30)
+        keys = [keygen.generate_key(expires_days=days, tier=tier) for _ in range(3)]
+        _inv_mod.import_keys(keys, plan)
 
     # Also patch delivery module paths if it is already imported
     try:

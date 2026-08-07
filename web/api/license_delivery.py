@@ -80,9 +80,9 @@ else:
 
 # ── Plan catalogue (plan slug → tier label) ───────────────────────────────────
 PLAN_PRICES: dict[str, dict[str, Any]] = {
-    "trial":    {"priceUsd": 0,  "label": "Ghost Trial"},
-    "pro":      {"priceUsd": 7,  "label": "Ghost Pro (monthly)"},
-    "lifetime": {"priceUsd": 79, "label": "Ghost Lifetime"},
+    "trial":    {"priceUsd": 0,  "label": "Ghost Trial",            "tier": "TRIAL"},
+    "pro":      {"priceUsd": 7,  "label": "Ghost Pro (monthly)",    "tier": "PRO"},
+    "lifetime": {"priceUsd": 79, "label": "Ghost Lifetime",         "tier": "PRO"},
 }
 
 _ALLOWED_TOKEN_PREFIXES  = ("paypal:", "stripe:", "cashapp:", "crypto:")
@@ -344,6 +344,7 @@ def confirm_payment_and_deliver(
             "paypal_order_id":  paypal_order_id or (data_extra or {}).get("paypal_order_id", ""),
             "plan":             plan,
             "plan_label":       plan_label,
+            "tier":             PLAN_PRICES[plan]["tier"],
             "email":            email,
             "discord":          discord,
             "price_usd":        resolved_price,
@@ -380,11 +381,14 @@ def _persist_order(order_id: str, record: dict, existing: dict | None) -> None:
 
 
 def _safe_response(record: dict) -> dict:
+    plan = record.get("plan", "")
+    tier = record.get("tier") or PLAN_PRICES.get(plan, {}).get("tier", "PRO")
     return {
         "ok":              True,
         "key":             record.get("license_key"),
+        "tier":            tier,
         "order_id":        record.get("order_id"),
-        "plan":            record.get("plan"),
+        "plan":            plan,
         "plan_label":      record.get("plan_label"),
         "email":           record.get("email"),
         "discord":         record.get("discord"),
