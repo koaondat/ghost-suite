@@ -545,6 +545,34 @@ app.get('/api/admin/stats', _requireAdminSession, async (req, res) => {
 // Ghost key format: at least 3 dash-separated alphanumeric segments (e.g. GHOST-XXXXX-XXXXX)
 const _GHOST_KEY_RE = /^[A-Z0-9]{4,}-[A-Z0-9]{4,}-[A-Z0-9]{4,}/i;
 
+/**
+ * Normalize a plan label/slug to its canonical backend value.
+ * Must mirror inventory.py normalize_plan() exactly.
+ *
+ * Canonical values: 'pro', 'lifetime', 'trial'
+ */
+const _PLAN_ALIASES = {
+  pro:                 'pro',
+  monthly:             'pro',
+  ghost_pro_monthly:   'pro',
+  'ghost pro monthly': 'pro',
+  'ghost pro (monthly)': 'pro',
+  ghost_pro:           'pro',
+  'ghost pro':         'pro',
+  lifetime:            'lifetime',
+  ghost_lifetime:      'lifetime',
+  'ghost lifetime':    'lifetime',
+  trial:               'trial',
+  ghost_trial:         'trial',
+  'ghost trial':       'trial',
+};
+
+function _normalizePlan (plan) {
+  if (!plan) return '';
+  const key = String(plan).trim().toLowerCase();
+  return _PLAN_ALIASES[key] || key;
+}
+
 app.get('/api/admin/inventory', _requireAdminSession, async (req, res) => {
   const raw = await _redisGet('ghost:inventory');
 
@@ -645,7 +673,7 @@ app.post('/api/admin/inventory/import', _requireAdminSession, async (req, res) =
       if (existing.has(k))        { duplicateKeys.push(k); continue; }
       inventory.push({
         key:          k,
-        plan:         (plan || 'pro').toLowerCase(),
+        plan:         _normalizePlan(plan || 'pro'),
         status:       'available',
         customer:     null,
         hwid:         null,
@@ -750,7 +778,7 @@ app.post('/api/admin/inventory/generate', _requireAdminSession, async (req, res)
 
   try {
     const {
-      plan       = 'ghost_pro_monthly',
+      plan       = 'pro',
       quantity   = 100,
       prefix     = 'GHOST',
       format     = 'seg4x4',
@@ -843,7 +871,7 @@ app.post('/api/admin/inventory/generate', _requireAdminSession, async (req, res)
       generated.push(k);
       const record = {
         key:          k,
-        plan:         String(plan).toLowerCase(),
+        plan:         _normalizePlan(plan),
         status:       'available',
         customer:     null,
         hwid:         null,

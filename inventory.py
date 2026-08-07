@@ -41,6 +41,42 @@ _KEY_RE = re.compile(r'^[A-Z0-9]{4,}-[A-Z0-9]{4,}-[A-Z0-9]{4,}', re.IGNORECASE)
 
 VALID_STATUSES = {'available', 'reserved', 'sold', 'activated', 'revoked', 'expired'}
 
+# ── Plan normalisation ────────────────────────────────────────────────────────
+# All of these must resolve to the same canonical slug used by the checkout.
+# Canonical values: 'pro', 'lifetime', 'trial'
+_PLAN_ALIASES: dict[str, str] = {
+    # pro variants
+    "pro":                  "pro",
+    "monthly":              "pro",
+    "ghost_pro_monthly":    "pro",
+    "ghost pro monthly":    "pro",
+    "ghost pro (monthly)":  "pro",
+    "ghost_pro":            "pro",
+    "ghost pro":            "pro",
+    # lifetime variants
+    "lifetime":             "lifetime",
+    "ghost_lifetime":       "lifetime",
+    "ghost lifetime":       "lifetime",
+    # trial variants
+    "trial":                "trial",
+    "ghost_trial":          "trial",
+    "ghost trial":          "trial",
+}
+
+
+def normalize_plan(plan: str) -> str:
+    """
+    Return the canonical plan slug for any human-readable or legacy plan name.
+
+    Canonical values: 'pro', 'lifetime', 'trial'.
+    Unknown values are returned as-is (lowercased + stripped) so that new
+    plans don't silently break — the caller's validation layer will catch them.
+    """
+    if not plan:
+        return ""
+    key = plan.strip().lower()
+    return _PLAN_ALIASES.get(key, key)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -117,7 +153,7 @@ def import_keys(keys: list[str], plan: str, notes: str = "") -> dict:
 
     Returns: { added: int, skipped: int, invalid: int, duplicates: [str], invalid_keys: [str] }
     """
-    plan = plan.strip().lower()
+    plan = normalize_plan(plan)
     now  = _now_iso()
 
     with _inventory_lock:
@@ -173,7 +209,7 @@ def get_next_unused(plan: str) -> Optional[dict]:
     Return the first available key matching the given plan, or None if out of stock.
     Does NOT mark it — call assign_key() after payment verification.
     """
-    plan = plan.strip().lower()
+    plan = normalize_plan(plan)
     records = _load_migrated()
     return next(
         (r for r in records if r.get("plan") == plan and r.get("status") in ('available', 'unused')),
@@ -296,7 +332,8 @@ def list_keys(
     if status:
         records = [r for r in records if r.get("status") == status.lower()]
     if plan:
-        records = [r for r in records if r.get("plan") == plan.lower()]
+        canonical = normalize_plan(plan)
+        records = [r for r in records if normalize_plan(r.get("plan", "")) == canonical]
     if search:
         q = search.strip().lower()
         records = [r for r in records if (

@@ -88,7 +88,8 @@ PLAN_PRICES: dict[str, dict[str, Any]] = {
 _ALLOWED_TOKEN_PREFIXES  = ("paypal:", "stripe:", "cashapp:", "crypto:")
 _ALLOWED_TOKEN_LITERALS  = {"FREE_TRIAL"}
 
-_orders_lock = threading.Lock()
+_orders_lock     = threading.Lock()
+_inventory_lock  = threading.Lock()
 
 
 # ── Redis helpers ─────────────────────────────────────────────────────────────
@@ -194,6 +195,112 @@ def _find_order(order_id: str, records: list[dict]) -> dict | None:
     return next((r for r in records if r.get("order_id", "") == order_id.strip()), None)
 
 
+# ── Redis inventory helpers ───────────────────────────────────────────────────
+# The admin panel (server.js) stores generated keys in Redis under the key
+# "ghost:inventory".  When Redis is configured, the delivery backend reads
+# and writes inventory there so that both halves see the same stock.
+# When Redis is not configured, we fall back to inventory.py (local JSON file).
+
+_REDIS_INVENTORY_KEY = "ghost:inventory"
+
+
+def _redis_get_inventory() -> list[dict]:
+    """Load inventory array from Redis. Returns [] on any error."""
+    try:
+        raw = _redis_request(["GET", urllib.parse.quote(_REDIS_INVENTORY_KEY, safe="")])
+    except Exception as exc:
+        log.error("Redis GET inventory failed: %s", exc)
+        return []
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _redis_set_inventory(records: list[dict]) -> None:
+    """Persist inventory array to Redis."""
+    value   = json.dumps(records, default=str)
+    payload = json.dumps([["SET", _REDIS_INVENTORY_KEY, value]]).encode()
+    req = urllib.request.Request(
+        f"{_REDIS_URL}/pipeline",
+        data=payload,
+        headers={"Authorization": f"Bearer {_REDIS_TOKEN}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+        for item in (result if isinstance(result, list) else []):
+            if isinstance(item, dict) and "error" in item:
+                raise RuntimeError(f"Redis pipeline error: {item['error']}")
+    except Exception as exc:
+        raise RuntimeError(f"Redis SET inventory failed: {exc}") from exc
+
+
+def _inv_get_next_available(plan: str) -> dict | None:
+    """
+    Return the first available inventory record matching the canonical plan slug.
+    Uses Redis when configured; falls back to local inventory.py.
+    """
+    canonical = _inv.normalize_plan(plan)
+    if not _USE_REDIS:
+        return _inv.get_next_unused(canonical)
+    records = _redis_get_inventory()
+    return next(
+        (r for r in records
+         if _inv.normalize_plan(r.get("plan", "")) == canonical
+         and r.get("status") in ("available", "unused")),
+        None,
+    )
+
+
+def _inv_assign_key(key: str, order_id: str, customer_email: str,
+                    assigned_user: str, purchase_date: str) -> bool:
+    """
+    Mark a key as sold.  Writes to Redis when configured, local file otherwise.
+    Returns True on success, False if key not found or already sold.
+    """
+    if not _USE_REDIS:
+        return _inv.assign_key(
+            key=key,
+            order_id=order_id,
+            customer_email=customer_email,
+            assigned_user=assigned_user,
+            purchase_date=purchase_date,
+        )
+
+    clean = key.strip().upper()
+    with _inventory_lock:
+        records = _redis_get_inventory()
+        for r in records:
+            if r.get("key", "").upper() == clean:
+                if r.get("status") == "sold" and r.get("order_id") == order_id:
+                    return True   # idempotent
+                if r.get("status") not in ("available", "unused", "reserved"):
+                    return False
+                r["status"]         = "sold"
+                r["order_id"]       = order_id
+                r["customer_email"] = customer_email
+                r["customer"]       = customer_email or assigned_user
+                r["assigned_user"]  = assigned_user
+                r["purchase_date"]  = purchase_date
+                r["purchaseDate"]   = purchase_date  # legacy alias used by server.js
+                _redis_set_inventory(records)
+                return True
+    return False
+
+
+def _inv_load_all() -> list[dict]:
+    """Load all inventory records. Uses Redis when configured."""
+    if _USE_REDIS:
+        return [_inv._migrate_record(r) for r in _redis_get_inventory()]
+    return _inv._load_migrated()
+
+
 def _log_delivery_failure(order_id: str, reason: str, detail: str = "") -> None:
     try:
         records: list[dict] = []
@@ -247,7 +354,8 @@ def confirm_payment_and_deliver(
     One order may only ever receive one key.
     """
     order_id = order_id.strip() if order_id else ""
-    plan     = (plan or "").strip().lower()
+    # Normalise the plan slug — generator may store 'ghost_pro_monthly', checkout sends 'pro'.
+    plan     = _inv.normalize_plan((plan or "").strip().lower())
 
     if not order_id:
         return {"ok": False, "error": "order_id is required"}
@@ -276,8 +384,21 @@ def confirm_payment_and_deliver(
                 # Try to fulfill from inventory now that more keys may be stocked
                 pass  # fall through to inventory lookup below
 
+        # ── Inventory diagnostic logging ──────────────────────────────────
+        all_inv        = _inv_load_all()
+        inv_total      = len(all_inv)
+        inv_available  = [r for r in all_inv if r.get("status") in ("available", "unused")]
+        avail_total    = len(inv_available)
+        plan_available = [r for r in inv_available if _inv.normalize_plan(r.get("plan", "")) == plan]
+        match_count    = len(plan_available)
+        log.info(
+            "fulfill_diagnostic order=%s order_plan=%s inventory_total=%d "
+            "available_total=%d matching_plan_available=%d",
+            order_id, plan, inv_total, avail_total, match_count,
+        )
+
         # ── Check inventory for an unused key ────────────────────────────
-        inv_record = _inv.get_next_unused(plan)
+        inv_record = _inv_get_next_available(plan)
         created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         if inv_record is None:
@@ -321,7 +442,7 @@ def confirm_payment_and_deliver(
             }
 
         # ── Assign the key ────────────────────────────────────────────────
-        assigned = _inv.assign_key(
+        assigned = _inv_assign_key(
             key=inv_record["key"],
             order_id=order_id,
             customer_email=email,
@@ -330,14 +451,26 @@ def confirm_payment_and_deliver(
         )
         if not assigned:
             # Race condition — another request grabbed the same key; retry once
-            inv_record = _inv.get_next_unused(plan)
+            inv_record = _inv_get_next_available(plan)
             if inv_record is None:
                 _log_delivery_failure(order_id, "out_of_stock_race", f"plan={plan}")
                 return {"ok": False, "error": "Temporarily out of stock. Contact support."}
-            _inv.assign_key(inv_record["key"], order_id, email, discord, created_at)
+            assigned = _inv_assign_key(inv_record["key"], order_id, email, discord, created_at)
 
         assigned_key = inv_record["key"]
+        log.info(
+            "fulfill_diagnostic order=%s selected_license=true assignment_saved=%s",
+            order_id, str(assigned).lower(),
+        )
 
+        # Preserve payment_status='completed' if already set by the capture step;
+        # otherwise fall back to 'verified' (legacy token-based path).
+        existing_payment_status = (existing or {}).get("payment_status", "")
+        payment_status_final = (
+            "completed"
+            if existing_payment_status == "completed" or payment_token.startswith("paypal:")
+            else "verified"
+        )
         order_record = {
             "order_id":         order_id,
             "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else "",
@@ -350,7 +483,7 @@ def confirm_payment_and_deliver(
             "price_usd":        resolved_price,
             "currency":         "USD",
             "created_at":       created_at,
-            "payment_status":   "verified",
+            "payment_status":   payment_status_final,
             "payment_verified": True,
             "delivery_status":  "delivered",
             "license_key":      assigned_key,
@@ -366,7 +499,11 @@ def confirm_payment_and_deliver(
             # Key was already assigned — return it anyway; admin can repair the order record
             pass
 
-    log.info("License assigned — order=%s plan=%s key=%s", order_id, plan, assigned_key)
+    log.info(
+        "fulfill_diagnostic order=%s delivery_status=%s",
+        order_id, order_record.get("delivery_status", "unknown"),
+    )
+    log.info("License assigned — order=%s plan=%s key=[redacted]", order_id, plan)
     return _safe_response(order_record)
 
 
@@ -575,7 +712,7 @@ if _flask_available:
                 safe["download_url"] = f"/api/order/{order_id}/download"
             return jsonify(safe), 200
 
-        if record.get("payment_status") != "verified":
+        if record.get("payment_status") not in ("verified", "completed"):
             return jsonify({
                 "ok": False,
                 "error": "Payment is not yet verified for this order.",
@@ -583,11 +720,11 @@ if _flask_available:
             }), 409
 
         # Try to assign from inventory
-        plan = record.get("plan", "")
+        plan = _inv.normalize_plan(record.get("plan", ""))
         if not plan or plan not in PLAN_PRICES:
             return jsonify({"ok": False, "error": f"Unknown plan '{plan}' on stored order"}), 500
 
-        inv_record = _inv.get_next_unused(plan)
+        inv_record = _inv_get_next_available(plan)
         if inv_record is None:
             return jsonify({
                 "ok": False,
@@ -596,7 +733,7 @@ if _flask_available:
             }), 200
 
         created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        assigned   = _inv.assign_key(
+        assigned   = _inv_assign_key(
             key=inv_record["key"],
             order_id=order_id,
             customer_email=record.get("email", ""),
