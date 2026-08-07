@@ -28,6 +28,11 @@ const stripeWebhook  = require('./api/stripe_webhook');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// On Vercel the working directory is the project root, not necessarily the
+// directory that contains server.js.  Resolve the web/ root relative to this
+// file so that sendFile / express.static work in both local dev and serverless.
+const WEB_ROOT = __dirname;
+
 // Base URL of the Ghost shared Python API (api.py)
 const GHOST_API_URL = (process.env.GHOST_API_URL || 'http://localhost:5056').replace(/\/$/, '');
 
@@ -101,19 +106,28 @@ app.all('/api/admin/*',     (req, res) => _proxyToApi(req, res));
 // The explicit GET / handler ensures bare-domain requests and Vercel's
 // root path always resolve to index.html instead of "Cannot GET /".
 app.get('/', (_req, res) =>
-  res.sendFile(path.join(__dirname, 'index.html')),
+  res.sendFile(path.join(WEB_ROOT, 'index.html')),
 );
 
 // Clean-path aliases: /login, /register, /dashboard, /pricing, /checkout
 // Let users navigate to these without the .html extension.
 app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
-  res.sendFile(path.join(__dirname, `${req.params.page}.html`), err => {
-    if (err) res.status(404).sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(WEB_ROOT, `${req.params.page}.html`), err => {
+    if (err) res.status(404).sendFile(path.join(WEB_ROOT, 'index.html'));
   }),
 );
 
-// Serve everything else (CSS, JS, fonts, images) directly from web/
-app.use(express.static(path.join(__dirname), { index: 'index.html' }));
+// Serve everything else (CSS, JS, fonts, images) directly from web/.
+// setHeaders ensures correct MIME types are forwarded (critical for Vercel).
+app.use(express.static(WEB_ROOT, {
+  index: 'index.html',
+  setHeaders (res, filePath) {
+    if (filePath.endsWith('.css'))  res.set('Content-Type', 'text/css');
+    if (filePath.endsWith('.js'))   res.set('Content-Type', 'application/javascript');
+    if (filePath.endsWith('.woff2')) res.set('Content-Type', 'font/woff2');
+    if (filePath.endsWith('.woff'))  res.set('Content-Type', 'font/woff');
+  },
+}));
 
 // ── Health & status endpoints ────────────────────────────────────────────────
 const _START_TIME = Date.now();

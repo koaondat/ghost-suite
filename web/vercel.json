@@ -3,10 +3,25 @@
   "builds": [
     {
       "src": "server.js",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "index.html",
+          "login.html",
+          "register.html",
+          "dashboard.html",
+          "pricing.html",
+          "checkout.html",
+          "assets/**"
+        ]
+      }
     }
   ],
   "routes": [
+    {
+      "src": "/assets/(.*)",
+      "dest": "/assets/$1"
+    },
     {
       "src": "/api/(.*)",
       "dest": "server.js"
@@ -21,10 +36,6 @@
     },
     {
       "src": "/(login|register|dashboard|pricing|checkout)",
-      "dest": "server.js"
-    },
-    {
-      "src": "/assets/(.*)",
       "dest": "server.js"
     },
     {
