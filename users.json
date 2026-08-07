@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "username": "admin",
+    "salt": "0515493aac711c8f5c8ce53d16ba4932",
+    "pw_hash": "f75c1e837df1e861c5f964f63da1c34af7948d23da67978031303a6b5b1a7264",
+    "key": "GHOST-AAFUS-6UAAA-AAAAE-5IHP2",
+    "tier": "ADMIN",
+    "created": "2025-07-14"
+  }
+]

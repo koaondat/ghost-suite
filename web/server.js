@@ -26,8 +26,10 @@ const paypal   = require('./api/paypal');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// Admin panel password (set ADMIN_PANEL_PASSWORD in .env)
-const ADMIN_PANEL_PASSWORD = (process.env.ADMIN_PANEL_PASSWORD || '').trim();
+// Admin panel password hash (set ADMIN_PANEL_PASSWORD_HASH in .env).
+// Store a SHA-256 hex digest of the password — never the plain-text secret.
+// Generate: node -e "const c=require('crypto');console.log(c.createHash('sha256').update('YOUR_PASSWORD').digest('hex'))"
+const ADMIN_PANEL_PASSWORD_HASH = (process.env.ADMIN_PANEL_PASSWORD_HASH || '').trim().toLowerCase();
 // In-memory session tokens: token → expiry (Date.now() + TTL)
 const _adminSessions = new Map();
 const ADMIN_SESSION_TTL = 4 * 60 * 60 * 1000; // 4 hours
@@ -192,14 +194,25 @@ app.get('/api/config/audit', (req, res) => {
 
 // ── Admin panel auth ─────────────────────────────────────────────────────────
 app.post('/api/admin/panel/auth', (req, res) => {
-  if (!ADMIN_PANEL_PASSWORD) {
-    return res.status(503).json({ ok: false, error: 'Admin panel not configured (ADMIN_PANEL_PASSWORD not set).' });
+  if (!ADMIN_PANEL_PASSWORD_HASH) {
+    return res.status(503).json({ ok: false, error: 'Admin panel not configured (ADMIN_PANEL_PASSWORD_HASH not set).' });
   }
   const { password } = req.body || {};
-  if (!password || !crypto.timingSafeEqual(
-    Buffer.from(password),
-    Buffer.from(ADMIN_PANEL_PASSWORD),
-  )) {
+  if (!password) {
+    return res.status(401).json({ ok: false, error: 'Invalid password.' });
+  }
+  // Hash the submitted password and compare digests — never compare plain text
+  const submitted = crypto.createHash('sha256').update(password).digest('hex');
+  let match = false;
+  try {
+    match = crypto.timingSafeEqual(
+      Buffer.from(submitted),
+      Buffer.from(ADMIN_PANEL_PASSWORD_HASH),
+    );
+  } catch (_) {
+    // length mismatch → not equal
+  }
+  if (!match) {
     console.warn('[ghost/admin] Login failed — wrong password');
     return res.status(401).json({ ok: false, error: 'Invalid password.' });
   }
@@ -316,9 +329,9 @@ app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
   }),
 );
 
-// Warn if admin panel password is not set
-if (!ADMIN_PANEL_PASSWORD) {
-  console.warn('[ghost/server] WARNING: ADMIN_PANEL_PASSWORD not set — /admin panel will be unavailable');
+// Warn if admin panel password hash is not set
+if (!ADMIN_PANEL_PASSWORD_HASH) {
+  console.warn('[ghost/server] WARNING: ADMIN_PANEL_PASSWORD_HASH not set — /admin panel will be unavailable');
 }
 
 app.use(express.static(WEB_ROOT, {
