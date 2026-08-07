@@ -31,6 +31,10 @@
       "dest": "server.js"
     },
     {
+      "src": "/assets/(.*)",
+      "dest": "/assets/$1"
+    },
+    {
       "src": "/(.*)",
       "dest": "server.js"
     }
