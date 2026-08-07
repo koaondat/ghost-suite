@@ -43,6 +43,7 @@ const crypto       = require('crypto');
 const cookieParser = require('cookie-parser');
 const paypal       = require('./api/paypal');
 const { fulfillOrder } = paypal;
+const { GHOST_KEY_RE: _GHOST_KEY_RE } = require('./assets/js/license-format');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -536,8 +537,8 @@ app.get('/api/admin/stats', _requireAdminSession, async (req, res) => {
 });
 
 // ── Inventory endpoints ───────────────────────────────────────────────────────
-// Ghost key format: at least 3 dash-separated alphanumeric segments (e.g. GHOST-XXXXX-XXXXX)
-const _GHOST_KEY_RE = /^[A-Z0-9]{4,}-[A-Z0-9]{4,}-[A-Z0-9]{4,}/i;
+// Ghost key format: GHOST-XXXX-XXXX-XXXX-XXXX (4 groups of exactly 4 alphanumeric chars).
+// _GHOST_KEY_RE is imported from ./assets/js/license-format.js — single source of truth.
 
 /**
  * Normalize a plan label/slug to its canonical backend value.
@@ -1829,6 +1830,27 @@ app.get('/order-success', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'order
 // ═════════════════════════════════════════════════════════════════════════════
 
 /** Derive a strong hash from password+salt using scrypt. */
+// ── Customer session verifier ─────────────────────────────────────────────────
+// Verifies the token issued by POST /api/auth/login (payload.sig format).
+// Returns the decoded claims { sub, username, tier, iat } or null.
+function _verifyCustomerToken (token) {
+  if (!token || typeof token !== 'string') return null;
+  const dot = token.lastIndexOf('.');
+  if (dot < 1) return null;
+  const payload = token.slice(0, dot);
+  const sig     = token.slice(dot + 1);
+  const sessionSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  if (sessionSecret && sig !== 'nosig') {
+    const expected = crypto.createHmac('sha256', sessionSecret).update(payload).digest('base64url');
+    let ok = false;
+    try { ok = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)); } catch (_) {}
+    if (!ok) return null;
+  }
+  try {
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  } catch (_) { return null; }
+}
+
 function _hashPassword (password, salt) {
   return new Promise((resolve, reject) => {
     crypto.scrypt(password, salt, 64, { N: 16384, r: 8, p: 1 }, (err, derived) => {
@@ -1888,6 +1910,41 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(409).json({ ok: false, field: 'username', error: 'That username is already taken.' });
     }
 
+    // ── License key lookup (Redis is the source of truth) ─────────────────
+    // No format pre-rejection: trim + uppercase then look up directly in Redis.
+    let resolvedTier = 'free';
+    const cleanKey = license_key ? license_key.trim().toUpperCase() : null;
+    if (cleanKey) {
+      console.log('[ghost/register] license_key_lookup key=%s', cleanKey);
+      const inventory = await _redisGet('ghost:inventory');
+      const inventoryArr = Array.isArray(inventory) ? inventory : [];
+      const keyRecord = inventoryArr.find(k => k && k.key && k.key.toUpperCase() === cleanKey);
+      if (!keyRecord) {
+        console.log('[ghost/register] license_key_not_found key=%s', cleanKey);
+        return res.status(400).json({ ok: false, field: 'license_key', error: 'License key not found.' });
+      }
+      // Revoked/banned keys are unusable
+      if (keyRecord.status === 'revoked' || keyRecord.status === 'banned') {
+        console.log('[ghost/register] license_key_revoked key=%s status=%s', cleanKey, keyRecord.status);
+        return res.status(400).json({ ok: false, field: 'license_key', error: 'License key has been revoked.' });
+      }
+      // Expired keys are unusable
+      if (keyRecord.expiration && new Date(keyRecord.expiration) < new Date()) {
+        console.log('[ghost/register] license_key_expired key=%s', cleanKey);
+        return res.status(400).json({ ok: false, field: 'license_key', error: 'License key has expired.' });
+      }
+      // Already activated/sold — check if bound to another account
+      if (keyRecord.status === 'activated' || keyRecord.status === 'sold') {
+        const alreadyBound = users.some(u => u.licenseKey === cleanKey);
+        if (alreadyBound) {
+          console.log('[ghost/register] license_key_already_in_use key=%s', cleanKey);
+          return res.status(409).json({ ok: false, field: 'license_key', error: 'License key already in use.' });
+        }
+      }
+      resolvedTier = keyRecord.plan || keyRecord.tier || 'pro';
+      console.log('[ghost/register] license_key_valid key=%s tier=%s', cleanKey, resolvedTier);
+    }
+
     // ── Hash password ──────────────────────────────────────────────────────
     const salt         = crypto.randomBytes(32).toString('hex');
     const passwordHash = await _hashPassword(password, salt);
@@ -1899,9 +1956,9 @@ app.post('/api/auth/register', async (req, res) => {
       email:        cleanEmail,
       passwordHash,
       passwordSalt: salt,
-      tier:         'free',
+      tier:         resolvedTier,
       createdAt:    new Date().toISOString(),
-      licenseKey:   license_key ? license_key.trim().toUpperCase() : null,
+      licenseKey:   cleanKey,
     };
 
     users.push(user);
@@ -1912,7 +1969,20 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(500).json({ ok: false, error: 'Account could not be saved. Please try again.' });
     }
 
-    console.log('[ghost/register] user_saved id=%s username=%s email=%s', user.id, user.username, user.email);
+    // ── Mark key as activated in inventory ────────────────────────────────
+    if (cleanKey) {
+      try {
+        const inv = await _redisGet('ghost:inventory');
+        const invArr = Array.isArray(inv) ? inv : [];
+        const ki = invArr.findIndex(k => k && k.key && k.key.toUpperCase() === cleanKey);
+        if (ki !== -1) {
+          invArr[ki] = { ...invArr[ki], status: 'activated', customer_email: cleanEmail, activated_at: new Date().toISOString() };
+          await _redisSet('ghost:inventory', invArr);
+        }
+      } catch (_) { /* non-fatal — user account is already saved */ }
+    }
+
+    console.log('[ghost/register] user_saved id=%s username=%s email=%s tier=%s', user.id, user.username, user.email, user.tier);
     console.log('[ghost/register] registration_complete username=%s', user.username);
 
     return res.status(201).json({ ok: true });
@@ -1999,6 +2069,166 @@ app.get('/dl/GhostConfig.exe', (req, res) => {
       res.status(404).json({ ok: false, error: 'Download file not found. Please contact support.' });
     }
   });
+});
+
+// ── GET /api/customer/dashboard ───────────────────────────────────────────────
+// Authenticated customer dashboard data — reads from Redis directly.
+// All tabs (License, Downloads, Purchases, Support, Settings) are served
+// from one endpoint. Returns empty collections for new users with no data.
+app.get('/api/customer/dashboard', async (req, res) => {
+  console.log('[ghost/dashboard] dashboard_request ip=%s', req.ip);
+
+  // ── Auth: Bearer token or ghost_token cookie ─────────────────────────────
+  const authHeader = req.headers['authorization'] || '';
+  const rawToken   = authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7).trim()
+    : (req.cookies && req.cookies['ghost_token']) || '';
+
+  const claims = _verifyCustomerToken(rawToken);
+  const userAuthenticated = Boolean(claims);
+  console.log('[ghost/dashboard] user_authenticated=%s', userAuthenticated);
+
+  if (!userAuthenticated) {
+    return res.status(401).json({ ok: false, error: 'Authentication required.' });
+  }
+
+  const userId   = claims.sub;
+  const username = claims.username || '';
+  console.log('[ghost/dashboard] user_id=%s username=%s', userId, username);
+
+  try {
+    // ── Load users ────────────────────────────────────────────────────────
+    const raw   = await _redisGet('ghost:users');
+    const users = Array.isArray(raw) ? raw : [];
+    const user  = users.find(u => u.id === userId || u.username === username);
+    const accountFound = Boolean(user);
+    console.log('[ghost/dashboard] account_found=%s', accountFound);
+
+    if (!accountFound) {
+      return res.status(404).json({ ok: false, error: 'Account not found.' });
+    }
+
+    const licenseKey = user.licenseKey || null;
+
+    // ── License ───────────────────────────────────────────────────────────
+    let license = {
+      key:         null,
+      tier:        user.tier || 'free',
+      status:      'none',
+      activatedAt: user.createdAt || null,
+      expiresAt:   null,
+      valid:       false,
+      banned:      false,
+      expired:     false,
+    };
+    let licensesFound = 0;
+
+    if (licenseKey) {
+      const inventory = await _redisGet('ghost:inventory');
+      const invArr    = Array.isArray(inventory) ? inventory : [];
+      const keyRecord = invArr.find(k => k && k.key && k.key.toUpperCase() === licenseKey.toUpperCase());
+      if (keyRecord) {
+        licensesFound = 1;
+        const now     = new Date();
+        const expiry  = keyRecord.expiration ? new Date(keyRecord.expiration) : null;
+        const expired = expiry ? now > expiry : false;
+        const banned  = keyRecord.status === 'revoked';
+        license = {
+          key:         keyRecord.key,
+          tier:        keyRecord.plan || keyRecord.tier || user.tier || 'pro',
+          status:      banned ? 'banned' : expired ? 'expired' : (keyRecord.status === 'activated' ? 'active' : keyRecord.status || 'active'),
+          activatedAt: keyRecord.activated_at || user.createdAt || null,
+          expiresAt:   keyRecord.expiration || null,
+          valid:       !banned && !expired,
+          banned,
+          expired,
+        };
+      }
+    }
+    console.log('[ghost/dashboard] licenses_found=%d', licensesFound);
+
+    // ── Orders / Purchases ────────────────────────────────────────────────
+    let orders = [];
+    let ordersFound = 0;
+    try {
+      if (_redisConfigured()) {
+        const redis = _getRedisClient();
+        const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+        if (Array.isArray(ids) && ids.length) {
+          const recs = await Promise.all(
+            ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+          );
+          const allOrders = recs.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+          // Match orders by email or license key
+          orders = allOrders.filter(o =>
+            (o.email && user.email && o.email.toLowerCase() === user.email.toLowerCase()) ||
+            (licenseKey && o.license_key && o.license_key.toUpperCase() === licenseKey.toUpperCase())
+          );
+          ordersFound = orders.length;
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+    console.log('[ghost/dashboard] orders_found=%d', ordersFound);
+
+    // ── Downloads ─────────────────────────────────────────────────────────
+    let downloads = [];
+    let downloadsFound = 0;
+    try {
+      const dlData = await _redisGet('ghost:downloads');
+      if (Array.isArray(dlData)) {
+        downloads     = dlData;
+        downloadsFound = dlData.length;
+      }
+    } catch (_) { /* non-fatal */ }
+    console.log('[ghost/dashboard] downloads_found=%d', downloadsFound);
+
+    // ── Settings ──────────────────────────────────────────────────────────
+    const settings = await _redisGet('ghost:settings').catch(() => null) || {};
+
+    // ── Format purchases list ─────────────────────────────────────────────
+    const purchases = orders.map(o => ({
+      orderId:       o.order_id || o.stripe_session_id || '',
+      purchaseDate:  (o.created_at || o.purchase_date || '').slice(0, 10),
+      plan:          o.plan_label || o.plan || '',
+      planTier:      o.plan || 'pro',
+      billingPeriod: o.plan === 'lifetime' ? 'Once' : o.plan === 'trial' ? '7 days' : 'Monthly',
+      amount:        o.price_usd != null ? Number(o.price_usd) : 0,
+      paymentStatus: (o.payment_status === 'COMPLETED' || o.payment_status === 'verified') ? 'paid' : o.payment_status || 'pending',
+      licenseKey:    licenseKey || '',
+      licenseStatus: license.valid ? 'active' : license.status,
+      receiptToken:  `rcpt:${(o.order_id || '').replace(/^#/, '')}`,
+    }));
+
+    const payload = {
+      ok:       true,
+      username: user.username,
+      email:    user.email || '',
+      memberSince: (user.createdAt || '').slice(0, 10),
+      tier:     user.tier || 'free',
+      license,
+      purchases,
+      downloads,
+      settings: {
+        version:       settings.ghost_latest_version || 'v2.4.1',
+        release_date:  settings.ghost_release_date   || '2025-07-01',
+        download_url:  settings.download_url         || null,
+      },
+      // empty-state friendly counts — never throw just because counts are 0
+      counts: {
+        licenses:  licensesFound,
+        orders:    ordersFound,
+        downloads: downloadsFound,
+      },
+    };
+
+    console.log('[ghost/dashboard] response_sent username=%s licenses=%d orders=%d downloads=%d',
+      user.username, licensesFound, ordersFound, downloadsFound);
+    return res.json(payload);
+
+  } catch (err) {
+    console.error('[ghost/dashboard] error name=%s message=%s', err.name, err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load dashboard. Please try again.' });
+  }
 });
 
 // ── Ghost shared Python API proxy routes ──────────────────────────────────────

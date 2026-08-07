@@ -269,7 +269,7 @@
         });
       }
 
-      /* ── 5. Real authenticated call — fetch license + purchases ─────── */
+      /* ── 5. Real authenticated call — single dashboard endpoint ─────── */
       if (!token) throw new Error('auth');
 
       const headers = {
@@ -277,57 +277,41 @@
         'Authorization': `Bearer ${token}`,
       };
 
-      const [licRes, purRes, dlRes] = await Promise.all([
-        fetch('/api/license/info',  { credentials: 'include', headers }),
-        fetch('/api/purchases',     { credentials: 'include', headers }),
-        fetch('/api/downloads',     { credentials: 'include', headers }),
-      ]);
+      const res  = await fetch('/api/customer/dashboard', { credentials: 'include', headers });
 
-      if (licRes.status === 401) throw new Error('auth');
+      if (res.status === 401) throw new Error('auth');
 
-      const licData = await licRes.json().catch(() => ({}));
-      const purData = await purRes.json().catch(() => ({}));
-      const dlData  = await dlRes.json().catch(() => ({}));
+      const data = await res.json().catch(() => ({}));
 
-      if (!licData.ok) throw new Error('load_failed');
+      if (!data.ok) throw new Error('load_failed');
 
-      const lic       = licData.license || {};
-      const purchases = (purData.purchases || []).map(p => ({
-        orderId:       p.order_id       || '',
-        purchaseDate:  (p.created_at    || '').slice(0, 10),
-        plan:          p.plan_label     || p.plan || '',
-        planTier:      p.plan           || 'pro',
-        billingPeriod: p.plan === 'lifetime' ? 'Once' : p.plan === 'trial' ? '7 days' : 'Monthly',
-        amount:        p.price_usd      != null ? Number(p.price_usd) : 0,
-        paymentStatus: p.payment_status === 'verified' ? 'paid' : p.payment_status || 'pending',
-        licenseKey:    lic.key          || '',
-        licenseStatus: lic.valid        ? 'active' : 'expired',
-        receiptToken:  `rcpt:${(p.order_id || '').replace(/^#/, '')}`,
-      }));
+      const lic       = data.license || {};
+      const purchases = (data.purchases || []);
 
       return {
-        username:    localStorage.getItem('ghost_username') || 'customer',
-        email:       '',
-        memberSince: lic.created || new Date().toISOString().slice(0, 10),
+        username:    data.username    || localStorage.getItem('ghost_username') || 'customer',
+        email:       data.email       || '',
+        memberSince: data.memberSince || new Date().toISOString().slice(0, 10),
         license: {
           key:         lic.key         || '',
           tier:        lic.tier        || 'Trial',
           status:      lic.banned      ? 'banned'
                      : lic.expired     ? 'expired'
-                     : lic.valid       ? 'active' : 'invalid',
-          activatedAt: lic.created     || '',
-          expiresAt:   lic.expiry      || null,
+                     : lic.valid       ? 'active' : 'none',
+          activatedAt: lic.activatedAt || '',
+          expiresAt:   lic.expiresAt   || null,
           seatsUsed:   1,
           seatsTotal:  3,
           hwid:        '—',
         },
         activity: [],
         releases:  Object.assign({}, PLACEHOLDER_ACCOUNT.releases,
-                    dlData.ok && dlData.downloads
+                    data.settings && data.settings.version
                       ? { latest: Object.assign({}, PLACEHOLDER_ACCOUNT.releases.latest,
-                            { version: dlData.downloads.latest.version }) }
+                            { version: data.settings.version }) }
                       : {}),
-        purchases: purchases.length ? purchases : PLACEHOLDER_ACCOUNT.purchases,
+        // Use server purchases; fall back to empty array (never show fake data for real users)
+        purchases: purchases,
       };
     },
 

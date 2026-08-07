@@ -36,8 +36,9 @@ INVENTORY_DB = _HERE / "key_inventory.json"
 
 _inventory_lock = threading.Lock()
 
-# Ghost key format: GHOST-XXXXX-XXXXX-XXXXX-XXXXX (alphanumeric segments)
-_KEY_RE = re.compile(r'^[A-Z0-9]{4,}-[A-Z0-9]{4,}-[A-Z0-9]{4,}', re.IGNORECASE)
+# Ghost key format: GHOST-XXXX-XXXX-XXXX-XXXX (4 groups of exactly 4 alphanumeric chars).
+# Canonical regex shared with web/assets/js/license-format.js.
+_KEY_RE = re.compile(r'^GHOST-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$', re.IGNORECASE)
 
 VALID_STATUSES = {'available', 'reserved', 'sold', 'activated', 'revoked', 'expired'}
 
@@ -105,7 +106,7 @@ def _normalize(key: str) -> str:
 
 
 def _is_valid_key(key: str) -> bool:
-    """Validate Ghost key format: requires at least 3 dash-separated segments."""
+    """Validate Ghost key format: GHOST-XXXX-XXXX-XXXX-XXXX (4×4 alphanumeric groups)."""
     return bool(_KEY_RE.match(key.strip()))
 
 

@@ -1729,7 +1729,7 @@ class AuthScreen(tk.Toplevel):
         self._si_frame = f
         self._si_user = self._field(f, "⊙", "Username")
         self._si_pass = self._field(f, "◈", "Password", show="\u2022")
-        self._si_key  = self._field(f, "◆", "License key  e.g. GHOST-XXXXX-XXXXX-XXXXX-XXXXX")
+        self._si_key  = self._field(f, "◆", "License key  e.g. GHOST-XXXX-XXXX-XXXX-XXXX")
         br = _frame(f, bg=BG)
         br.pack(fill="x", pady=(8, 0))
         sb = tk.Button(br, text="Sign in  →", command=self._do_signin,
@@ -1754,7 +1754,7 @@ class AuthScreen(tk.Toplevel):
         self._reg_user  = self._field(f, "⊙", "Username")
         self._reg_pass  = self._field(f, "◈", "Password",         show="\u2022")
         self._reg_pass2 = self._field(f, "◈", "Confirm password", show="\u2022")
-        self._reg_key   = self._field(f, "◆", "License key  e.g. GHOST-XXXXX-XXXXX-XXXXX-XXXXX")
+        self._reg_key   = self._field(f, "◆", "License key  e.g. GHOST-XXXX-XXXX-XXXX-XXXX")
         br = _frame(f, bg=BG)
         br.pack(fill="x", pady=(8, 0))
         rb = tk.Button(br, text="Create account  →", command=self._do_register,
@@ -1771,7 +1771,7 @@ class AuthScreen(tk.Toplevel):
         rb.bind("<Leave>", lambda _e: rb.configure(
             bg=SUCCESS, highlightbackground=SUCCESS))
 
-    # ── Admin-key pattern: GHOST-XXXXX-XXXXX-XXXXX-XXXXX or legacy QA- prefix
+    # ── Admin-key pattern: GHOST-XXXX-XXXX-XXXX-XXXX or legacy QA- prefix
     @staticmethod
     def _looks_like_admin_key(value: str) -> bool:
         """Return True if *value* looks like a GHOST/QA license key string."""

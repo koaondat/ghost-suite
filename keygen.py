@@ -1,10 +1,18 @@
 """
 keygen.py — Offline HMAC-SHA256 License Key Generator & Validator
 ==================================================================
-Keys are structured as:  GHOST-XXXXX-XXXXX-XXXXX-XXXXX
-Each segment is Base32-encoded.  The payload encodes a creation
-timestamp, an expiry date, and a tier tag.  The last segment is
-an 5-char HMAC-SHA256 checksum that lets the app verify offline.
+This tool generates HMAC-signed offline keys in the format:
+
+    GHOST-XXXXX-XXXXX-XXXXX-XXXXX   (5-char Base32 segments)
+
+These are structurally different from web-admin-generated keys:
+
+    GHOST-XXXX-XXXX-XXXX-XXXX       (4-char alphanumeric segments)
+
+IMPORTANT: Web-admin keys (4-char segments) are validated exclusively
+by looking them up in Upstash Redis (ghost:inventory).  They will NOT
+pass the HMAC signature check in this file — that is by design.
+Do NOT run web-admin-generated keys through this validator.
 
 Usage:
     python keygen.py generate [--expires-days 90] [--tier PRO]
@@ -162,8 +170,14 @@ def validate_key(key: str) -> dict:
             return result
 
         parts = payload_str.split("-")
+        # This validator is for HMAC-signed offline keys (5-char Base32 segments).
+        # Web-admin-generated keys use 4-char segments and are validated via Redis only.
         if len(parts) != 4 or any(len(p) != 5 for p in parts):
-            result["error"] = "Key format must be GHOST-XXXXX-XXXXX-XXXXX-XXXXX"
+            result["error"] = (
+                "Key format must be GHOST-XXXXX-XXXXX-XXXXX-XXXXX "
+                "(offline HMAC key). Web-admin keys (GHOST-XXXX-XXXX-XXXX-XXXX) "
+                "are validated via Redis, not this function."
+            )
             return result
 
         try:
