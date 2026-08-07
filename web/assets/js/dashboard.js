@@ -151,6 +151,12 @@
   /* ── Plan label helper ─────────────────────────────────────── */
   function _planLabel (planSlug) {
     const s   = (planSlug || '').toLowerCase();
+    // Normalise compound slugs like "ghost_pro_lifetime", "ghost_pro", "ghost_basic"
+    if (s.includes('lifetime')) return 'Lifetime';
+    if (s.includes('trial'))    return 'Trial';
+    if (s.includes('basic'))    return 'Basic';
+    if (s.includes('admin'))    return 'Admin';
+    if (s.includes('pro'))      return 'Pro';
     const map = { trial: 'Trial', pro: 'Pro', lifetime: 'Lifetime', admin: 'Admin', basic: 'Basic' };
     return map[s] || planSlug || 'Pro';
   }
@@ -285,8 +291,15 @@
 
       if (!data.ok) throw new Error('load_failed');
 
-      const lic       = data.license || {};
-      const purchases = (data.purchases || []);
+      const lic       = data.license  || {};
+      const purchases = data.purchases || [];
+      const settings  = data.settings  || {};
+      const downloads = data.downloads || [];
+      const counts    = data.counts    || {};
+
+      // Normalise tier slug from either the top-level or the license object
+      const rawTier    = lic.tier || data.tier || 'Pro';
+      const normTier   = _planLabel(rawTier);
 
       return {
         username:    data.username    || localStorage.getItem('ghost_username') || 'customer',
@@ -294,24 +307,26 @@
         memberSince: data.memberSince || new Date().toISOString().slice(0, 10),
         license: {
           key:         lic.key         || '',
-          tier:        lic.tier        || 'Trial',
+          tier:        normTier,
           status:      lic.banned      ? 'banned'
                      : lic.expired     ? 'expired'
-                     : lic.valid       ? 'active' : 'none',
+                     : lic.valid       ? 'active' : (lic.status || 'none'),
           activatedAt: lic.activatedAt || '',
-          expiresAt:   lic.expiresAt   || null,
+          expiresAt:   lic.expiresAt   || null,   // null = never expires
           seatsUsed:   1,
           seatsTotal:  3,
           hwid:        '—',
         },
         activity: [],
         releases:  Object.assign({}, PLACEHOLDER_ACCOUNT.releases,
-                    data.settings && data.settings.version
+                    settings.version
                       ? { latest: Object.assign({}, PLACEHOLDER_ACCOUNT.releases.latest,
-                            { version: data.settings.version }) }
+                            { version: settings.version }) }
                       : {}),
         // Use server purchases; fall back to empty array (never show fake data for real users)
         purchases: purchases,
+        downloads: downloads,
+        counts:    counts,
       };
     },
 
@@ -575,7 +590,7 @@
   /** Hydrate the stat cards on the Dashboard overview. */
   function renderStatCards (account) {
     const lic      = account.license;
-    const isLife   = lic.tier === 'Lifetime' || !lic.expiresAt;
+    const isLife   = lic.tier === 'Lifetime' || lic.expiresAt == null;
     const days     = isLife ? Infinity : _daysRemaining(lic.expiresAt);
 
     // Tier + status badge
@@ -608,7 +623,7 @@
 
     // License since
     const sinceEl = _el('stat-activated');
-    if (sinceEl) sinceEl.textContent = _fmtShort(lic.activatedAt);
+    if (sinceEl) sinceEl.textContent = lic.activatedAt ? _fmtShort(lic.activatedAt) : '—';
   }
 
   /** Hydrate the key card on the dashboard overview. */
@@ -631,9 +646,9 @@
     const tierEl      = _el('db-key-tier');
     const activatedEl = _el('db-key-activated');
     const expiresEl   = _el('db-key-expires');
-    const isLife = lic.tier === 'Lifetime' || !lic.expiresAt;
+    const isLife = lic.tier === 'Lifetime' || lic.expiresAt == null;
     if (tierEl)      tierEl.textContent      = lic.tier;
-    if (activatedEl) activatedEl.textContent = _fmtShort(lic.activatedAt);
+    if (activatedEl) activatedEl.textContent = lic.activatedAt ? _fmtShort(lic.activatedAt) : '—';
     if (expiresEl)   expiresEl.textContent   = isLife ? 'Never' : _fmtShort(lic.expiresAt);
 
     // Copy buttons
@@ -646,14 +661,14 @@
   /** Hydrate the License Details section. */
   function renderLicenseDetails (account) {
     const lic    = account.license;
-    const isLife = lic.tier === 'Lifetime' || !lic.expiresAt;
+    const isLife = lic.tier === 'Lifetime' || lic.expiresAt == null;
     const days   = isLife ? Infinity : _daysRemaining(lic.expiresAt);
 
     const set = (id, val) => { const el = _el(id); if (el) el.textContent = val; };
 
     set('detail-key',       lic.key);
     set('detail-tier',      lic.tier);
-    set('detail-activated', _fmt(lic.activatedAt));
+    set('detail-activated', lic.activatedAt ? _fmt(lic.activatedAt) : '—');
     set('detail-expires',   isLife ? 'Never' : _fmt(lic.expiresAt));
     set('detail-days',      isLife ? 'Lifetime' : `${days} day${days !== 1 ? 's' : ''}`);
     set('detail-seats',     `${lic.seatsUsed} of ${lic.seatsTotal} seat${lic.seatsTotal !== 1 ? 's' : ''}`);
@@ -987,14 +1002,15 @@
 
   /** Status metadata for both payment and license status. */
   const PUR_STATUS = {
-    paid:     { cls: 'db-status-badge--active',  label: 'Paid'     },
-    active:   { cls: 'db-status-badge--active',  label: 'Active'   },
-    expired:  { cls: 'db-status-badge--expired', label: 'Expired'  },
-    pending:  { cls: 'db-status-badge--pending', label: 'Pending'  },
-    refunded: { cls: 'db-status-badge--expired', label: 'Refunded' },
-    revoked:  { cls: 'db-status-badge--expired', label: 'Revoked'  },
-    trial:    { cls: 'db-status-badge--trial',   label: 'Trial'    },
-    banned:   { cls: 'db-status-badge--expired', label: 'Banned'   },
+    paid:      { cls: 'db-status-badge--active',  label: 'Paid'      },
+    completed: { cls: 'db-status-badge--active',  label: 'Paid'      },  // PayPal/Stripe "completed"
+    active:    { cls: 'db-status-badge--active',  label: 'Active'    },
+    expired:   { cls: 'db-status-badge--expired', label: 'Expired'   },
+    pending:   { cls: 'db-status-badge--pending', label: 'Pending'   },
+    refunded:  { cls: 'db-status-badge--expired', label: 'Refunded'  },
+    revoked:   { cls: 'db-status-badge--expired', label: 'Revoked'   },
+    trial:     { cls: 'db-status-badge--trial',   label: 'Trial'     },
+    banned:    { cls: 'db-status-badge--expired', label: 'Banned'    },
   };
 
   const PUR_PAGE_SIZE = 5;
@@ -1021,7 +1037,8 @@
     if (!tbody) return;
 
     // ── Summary stats ───────────────────────────────────────
-    const paidOrders  = allPurchases.filter(p => p.paymentStatus === 'paid');
+    const _isPaid = s => s === 'paid' || s === 'completed';
+    const paidOrders  = allPurchases.filter(p => _isPaid(p.paymentStatus));
     const totalSpent  = paidOrders.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
     const activeLics  = allPurchases.filter(p => p.licenseStatus === 'active').length;
     const latestPlan  = allPurchases.length ? allPurchases[0].plan : '—';
@@ -1061,10 +1078,10 @@
       const st  = statusFilter.toLowerCase();
       const pl  = planFilter.toLowerCase();
       return allPurchases.filter(p => {
-        const matchQ  = !q || [p.orderId, p.plan, p.licenseKey, p.amount.toString()]
-          .some(v => v.toLowerCase().includes(q));
-        const matchSt = !st || p.paymentStatus.toLowerCase() === st;
-        const matchPl = !pl || p.planTier.toLowerCase() === pl;
+        const matchQ  = !q || [p.orderId, p.plan, p.licenseKey, String(p.amount ?? '')]
+          .some(v => (v || '').toLowerCase().includes(q));
+        const matchSt = !st || (p.paymentStatus || '').toLowerCase() === st;
+        const matchPl = !pl || (p.planTier || '').toLowerCase() === pl;
         return matchQ && matchSt && matchPl;
       });
     }
