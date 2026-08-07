@@ -364,7 +364,7 @@ app.post('/api/admin/panel/auth', (req, res) => {
     console.error('[ghost/admin] login_fail reason=ADMIN_PANEL_PASSWORD_HASH_not_set ip=%s', req.ip);
     return res.status(503).json({ ok: false, error: 'Admin panel not configured. Set ADMIN_PANEL_PASSWORD_HASH.' });
   }
-  if (!ADMIN_SESSION_SECRET) {
+  if (!process.env.ADMIN_SESSION_SECRET) {
     console.error('[ghost/admin] login_fail reason=ADMIN_SESSION_SECRET_not_set ip=%s', req.ip);
     return res.status(503).json({ ok: false, error: 'Admin session secret not configured. Set ADMIN_SESSION_SECRET.' });
   }
@@ -612,14 +612,14 @@ app.use((err, _req, res, _next) => {
 if (!ADMIN_PANEL_PASSWORD_HASH) {
   console.warn('[ghost/server] WARNING: ADMIN_PANEL_PASSWORD_HASH not set — /admin panel login will return 503');
 }
-// Check ADMIN_SESSION_SECRET at startup for early warning, but do NOT cache its
-// value — _issueAdminSession / _verifyAdminSession read it fresh on every call.
-const _startupSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
-if (!_startupSecret) {
-  console.error('[ghost/server] CRITICAL: ADMIN_SESSION_SECRET not set — admin sessions will fail on EVERY request. Set this env var in Vercel and redeploy.');
-} else {
-  console.log('[ghost/server] ADMIN_SESSION_SECRET present length=%d', _startupSecret.length);
+// Validate ADMIN_SESSION_SECRET at startup — fail fast with a clear message
+// instead of a ReferenceError later when the first login attempt arrives.
+// _issueAdminSession / _verifyAdminSession still read it fresh on every call
+// (Vercel-safe); this guard only catches a missing/blank value at boot time.
+if (!process.env.ADMIN_SESSION_SECRET || !process.env.ADMIN_SESSION_SECRET.trim()) {
+  throw new Error('Missing ADMIN_SESSION_SECRET environment variable.');
 }
+console.log('[ghost/server] ADMIN_SESSION_SECRET present length=%d', process.env.ADMIN_SESSION_SECRET.trim().length);
 if (!GHOST_ADMIN_API_KEY) {
   console.warn('[ghost/server] WARNING: GHOST_ADMIN_API_KEY not set — Bearer API key auth will be unavailable');
 }
