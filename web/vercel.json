@@ -32,7 +32,7 @@
     },
     {
       "src": "/assets/(.*)",
-      "dest": "/assets/$1"
+      "dest": "server.js"
     },
     {
       "src": "/(.*)",
