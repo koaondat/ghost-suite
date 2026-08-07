@@ -180,9 +180,14 @@ async function _proxyToApi (req, res, pathOverride) {
 // Python API and this Node server share the same storage.
 //
 // The Redis key "ghost:inventory" maps 1-to-1 with the JSON array in that file.
-const fs   = require('fs');
+// ── Upstash Redis — persistent storage ───────────────────────────────────────
+// Uses the official @upstash/redis SDK (HTTP/REST — works in Vercel serverless).
+// Falls back to local JSON file when Redis env vars are not set (dev/CI only).
+const { Redis } = require('@upstash/redis');
+const fs        = require('fs');
 const _INV_FILE = path.resolve(__dirname, '..', 'key_inventory.json');
 
+// ── File fallback (dev only) ──────────────────────────────────────────────────
 function _fileGet (storeKey) {
   if (storeKey !== 'ghost:inventory') return null;
   try {
@@ -205,6 +210,10 @@ function _fileSet (storeKey, value) {
   }
 }
 
+// ── Redis client factory ──────────────────────────────────────────────────────
+// Lazily created and cached — one instance per Vercel function instance.
+let _redisClient = null;
+
 function _redisConfigured () {
   return !!(
     (process.env.UPSTASH_REDIS_REST_URL   || '').trim() &&
@@ -212,77 +221,68 @@ function _redisConfigured () {
   );
 }
 
-const _REDIS_TIMEOUT_MS = 8000; // 8 s — if Upstash doesn't respond, fail fast
+function _getRedisClient () {
+  if (!_redisClient) {
+    _redisClient = new Redis({
+      url:   (process.env.UPSTASH_REDIS_REST_URL   || '').trim(),
+      token: (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim(),
+    });
+  }
+  return _redisClient;
+}
 
+// ── Timeout wrapper ───────────────────────────────────────────────────────────
+// Races any Redis promise against a hard deadline.  If Upstash does not respond
+// within _REDIS_TIMEOUT_MS the call rejects with Error('redis_timeout').
+const _REDIS_TIMEOUT_MS = 8000; // 8 s
+
+function _withTimeout (promise) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('redis_timeout')), _REDIS_TIMEOUT_MS)
+    ),
+  ]);
+}
+
+// ── Public helpers ────────────────────────────────────────────────────────────
 async function _redisGet (key) {
   if (!_redisConfigured()) return _fileGet(key);
-  const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
-  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), _REDIS_TIMEOUT_MS);
   try {
-    const { default: fetch } = await import('node-fetch');
-    const res  = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal:  ctrl.signal,
-    });
-    const data = await res.json();
-    // Key not yet stored — return empty array (do NOT fall back to the local
-    // filesystem: Vercel's ephemeral FS is not reliable across invocations).
-    if (data.result === null || data.result === undefined) return [];
-    // Upstash stores values as JSON-serialized strings; parse once.
-    return typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+    const redis  = _getRedisClient();
+    const result = await _withTimeout(redis.get(key));
+    if (result === null || result === undefined) return [];
+    // SDK auto-parses JSON strings stored by set(); guard for unexpected types.
+    return Array.isArray(result) ? result : [];
   } catch (err) {
-    console.error('[ghost/redis] get error key=%s: %s', key, err.message);
+    console.error('[ghost/redis] get error key=%s name=%s message=%s', key, err.name, err.message);
     return [];
-  } finally {
-    clearTimeout(timer);
   }
 }
 
 async function _redisSet (key, value) {
   if (!_redisConfigured()) return _fileSet(key, value);
-  const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
-  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), _REDIS_TIMEOUT_MS);
   try {
-    const { default: fetch } = await import('node-fetch');
-    // Upstash REST /set/:key — body is the value serialized as JSON once.
-    // Previously this was JSON.stringify(JSON.stringify(value)), which double-
-    // serialized the array into a quoted string and caused Upstash to return
-    // a non-2xx response → _redisSet returned false → "Storage write failed".
-    const r = await fetch(`${url}/set/${encodeURIComponent(key)}`, {
-      method:  'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body:    JSON.stringify(value),
-      signal:  ctrl.signal,
-    });
-    if (!r.ok) {
-      const body = await r.text().catch(() => '(unreadable)');
-      console.error('[ghost/redis] set failed status=%d key=%s body=%s', r.status, key, body);
-      return false;
-    }
+    const redis = _getRedisClient();
+    // redis.set() serialises the value to JSON automatically.
+    await _withTimeout(redis.set(key, value));
     return true;
   } catch (err) {
-    console.error('[ghost/redis] set error key=%s: %s', key, err.message);
+    console.error('[ghost/redis] set error key=%s name=%s message=%s', key, err.name, err.message);
     return false;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
 async function _redisDel (key) {
   if (!_redisConfigured()) return false;
-  const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
-  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
   try {
-    const { default: fetch } = await import('node-fetch');
-    await fetch(`${url}/del/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const redis = _getRedisClient();
+    await _withTimeout(redis.del(key));
     return true;
-  } catch (_) { return false; }
+  } catch (err) {
+    console.error('[ghost/redis] del error key=%s name=%s message=%s', key, err.name, err.message);
+    return false;
+  }
 }
 
 // ── Body parsers ──────────────────────────────────────────────────────────────
@@ -551,95 +551,194 @@ app.get('/api/admin/inventory/stats', _requireAdminSession, async (req, res) => 
 });
 
 app.post('/api/admin/inventory/import', _requireAdminSession, async (req, res) => {
-  console.log('[ghost/inventory] import_request_received keys=%d plan=%s',
-    Array.isArray((req.body || {}).keys) ? (req.body || {}).keys.length : 0,
-    (req.body || {}).plan || 'pro');
+  // ── Hard deadline: respond within 10 s regardless of what hangs ──────────
+  // This fires only if the main try/catch itself somehow stalls (defensive).
+  let _responded = false;
+  const _guardTimer = setTimeout(() => {
+    if (!_responded) {
+      _responded = true;
+      console.error('[inventory/import] FAILED stage=guard name=Timeout message=handler exceeded 10 s');
+      res.status(503).json({ ok: false, error: 'redis_timeout' });
+    }
+  }, 10_000);
 
-  const { keys, plan = 'pro', notes = '' } = req.body || {};
-  if (!Array.isArray(keys) || !keys.length) {
-    return res.status(400).json({ ok: false, error: 'keys array required.' });
-  }
-
-  console.log('[ghost/inventory] redis_config_present=%s', _redisConfigured());
-
-  let inventory;
   try {
-    inventory = await _redisGet('ghost:inventory') || [];
-  } catch (err) {
-    console.error('[ghost/inventory] redis_get_error: %s', err.message);
-    inventory = [];
-  }
+    // ── stage: request_received ───────────────────────────────────────────
+    console.log('[inventory/import] request_received');
 
-  const existing       = new Set(inventory.map(k => k.key));
-  const added          = [];
-  const duplicateKeys  = [];
-  const invalidKeys    = [];
-  const now            = new Date().toISOString();
+    const { keys, plan = 'pro', notes = '' } = req.body || {};
 
-  for (const raw of keys) {
-    const k = String(raw).trim().toUpperCase();
-    if (!k) continue;
-    if (!_GHOST_KEY_RE.test(k)) { invalidKeys.push(k); continue; }
-    if (existing.has(k))        { duplicateKeys.push(k); continue; }
-    inventory.push({
-      key:           k,
-      plan:          (plan || 'pro').toLowerCase(),
-      status:        'available',
-      notes:         notes || '',
-      created_date:  now,
-      added_at:      now,
-      customer:      '',
-      hwid:          '',
-      purchase_date: '',
-      expiration:    '',
-      order_id:      '',
-      customer_email:'',
-      assigned_user: '',
-    });
-    existing.add(k);
-    added.push(k);
-  }
+    if (!Array.isArray(keys) || !keys.length) {
+      clearTimeout(_guardTimer);
+      _responded = true;
+      return res.status(400).json({ ok: false, error: 'keys array required.' });
+    }
 
-  const imported  = added.length;
-  const duplicates = duplicateKeys.length;
-  const invalid    = invalidKeys.length;
+    // ── stage: parsed ─────────────────────────────────────────────────────
+    console.log('[inventory/import] parsed count=%d', keys.length);
 
-  // Only persist — and only report success — when something was actually added.
-  if (imported > 0) {
-    console.log('[ghost/inventory] redis_write_started imported=%d', imported);
-    let saved = false;
+    // ── stage: redis_client_ready ─────────────────────────────────────────
+    console.log('[inventory/import] redis_client_ready configured=%s', _redisConfigured());
+
+    let inventory;
     try {
-      saved = await _redisSet('ghost:inventory', inventory);
+      inventory = await _redisGet('ghost:inventory');
     } catch (err) {
-      console.error('[ghost/inventory] redis_write_error: %s', err.message);
-      saved = false;
+      console.error('[inventory/import] FAILED stage=redis_read name=%s message=%s', err.name, err.message);
+      // If the read itself times out return a clear error — do NOT proceed.
+      if (err.message === 'redis_timeout') {
+        clearTimeout(_guardTimer);
+        _responded = true;
+        return res.status(503).json({ ok: false, error: 'redis_timeout' });
+      }
+      inventory = null;
     }
-    console.log('[ghost/inventory] redis_write_finished saved=%s', saved);
+    if (!Array.isArray(inventory)) inventory = [];
 
-    if (!saved) {
-      console.error('[ghost/inventory] import storage_write_failed imported=%d', imported);
-      console.log('[ghost/inventory] response_sent status=500 error=storage_write_failed');
-      return res.status(500).json({ ok: false, error: 'storage_write_failed' });
+    const existing      = new Set(inventory.map(k => k && k.key).filter(Boolean));
+    const added         = [];
+    const duplicateKeys = [];
+    const invalidKeys   = [];
+    const now           = new Date().toISOString();
+
+    for (const raw of keys) {
+      const k = String(raw).trim().toUpperCase();
+      if (!k) continue;
+      if (!_GHOST_KEY_RE.test(k)) { invalidKeys.push(k);  continue; }
+      if (existing.has(k))        { duplicateKeys.push(k); continue; }
+      inventory.push({
+        key:          k,
+        plan:         (plan || 'pro').toLowerCase(),
+        status:       'available',
+        customer:     null,
+        hwid:         null,
+        purchaseDate: null,
+        created:      now,
+        expiration:   null,
+        notes:        notes || '',
+        // legacy aliases kept so existing callers that read these fields still work
+        created_date:   now,
+        added_at:       now,
+        purchase_date:  '',
+        order_id:       '',
+        customer_email: '',
+        assigned_user:  '',
+      });
+      existing.add(k);
+      added.push(k);
+    }
+
+    const imported   = added.length;
+    const duplicates = duplicateKeys.length;
+    const invalid    = invalidKeys.length;
+
+    // ── stage: write_started ──────────────────────────────────────────────
+    if (imported > 0) {
+      console.log('[inventory/import] write_started count=%d total=%d', imported, inventory.length);
+
+      let saved = false;
+      try {
+        saved = await _redisSet('ghost:inventory', inventory);
+      } catch (err) {
+        console.error('[inventory/import] FAILED stage=redis_write name=%s message=%s', err.name, err.message);
+        if (err.message === 'redis_timeout') {
+          clearTimeout(_guardTimer);
+          _responded = true;
+          return res.status(503).json({ ok: false, error: 'redis_timeout' });
+        }
+        saved = false;
+      }
+
+      // ── stage: write_completed ────────────────────────────────────────
+      console.log('[inventory/import] write_completed saved=%s', saved);
+
+      if (!saved) {
+        clearTimeout(_guardTimer);
+        _responded = true;
+        console.error('[inventory/import] FAILED stage=redis_write name=Error message=storage_write_failed');
+        return res.status(500).json({ ok: false, error: 'storage_write_failed' });
+      }
+    }
+
+    // ── stage: inventory_count ────────────────────────────────────────────
+    console.log('[inventory/import] inventory_count=%d', inventory.length);
+
+    // ── stage: response_sent ──────────────────────────────────────────────
+    clearTimeout(_guardTimer);
+    _responded = true;
+    console.log('[inventory/import] response_sent imported=%d duplicates=%d invalid=%d',
+      imported, duplicates, invalid);
+
+    return res.json({
+      ok:              true,
+      imported,
+      duplicates,
+      invalid,
+      imported_count:  imported,
+      duplicate_count: duplicates,
+      invalid_count:   invalid,
+      added:           imported,
+      skipped:         duplicates,
+    });
+
+  } catch (err) {
+    clearTimeout(_guardTimer);
+    if (!_responded) {
+      _responded = true;
+      console.error('[inventory/import] FAILED stage=unhandled name=%s message=%s\n%s',
+        err.name, err.message, err.stack);
+      return res.status(500).json({ ok: false, error: err.message });
     }
   }
+});
 
-  console.log('[ghost/inventory] inventory_reload_started');
-  // inventory array is already up-to-date in memory — no second Redis call needed.
-  console.log('[ghost/inventory] response_sent status=200 imported=%d duplicates=%d invalid=%d',
-    imported, duplicates, invalid);
+// ── GET /api/admin/storage-test — diagnostic endpoint ────────────────────────
+// Verifies Upstash credentials and round-trip independently from inventory code.
+// Protected by admin session. Returns { ok, write, read, delete }.
+app.get('/api/admin/storage-test', _requireAdminSession, async (req, res) => {
+  if (!_redisConfigured()) {
+    return res.status(503).json({ ok: false, error: 'redis_not_configured' });
+  }
+  const testKey = 'ghost:storage_test_tmp';
+  const testVal = { ts: Date.now() };
+  let writeOk = false;
+  let readOk  = false;
+  let delOk   = false;
+  try {
+    const redis = _getRedisClient();
 
-  return res.json({
-    ok:         true,
-    imported,
-    duplicates,
-    invalid,
-    // Legacy aliases kept for other callers that may read these fields
-    imported_count:  imported,
-    duplicate_count: duplicates,
-    invalid_count:   invalid,
-    added:           imported,
-    skipped:         duplicates,
-  });
+    // write
+    try {
+      await _withTimeout(redis.set(testKey, testVal));
+      writeOk = true;
+    } catch (err) {
+      console.error('[storage-test] write error name=%s message=%s', err.name, err.message);
+    }
+
+    // read
+    if (writeOk) {
+      try {
+        const got = await _withTimeout(redis.get(testKey));
+        readOk = got !== null && got !== undefined;
+      } catch (err) {
+        console.error('[storage-test] read error name=%s message=%s', err.name, err.message);
+      }
+    }
+
+    // delete
+    try {
+      await _withTimeout(redis.del(testKey));
+      delOk = true;
+    } catch (err) {
+      console.error('[storage-test] del error name=%s message=%s', err.name, err.message);
+    }
+
+    const ok = writeOk && readOk && delOk;
+    return res.status(ok ? 200 : 500).json({ ok, write: writeOk, read: readOk, delete: delOk });
+  } catch (err) {
+    console.error('[storage-test] unexpected error name=%s message=%s', err.name, err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.post('/api/admin/inventory/bulk-delete', _requireAdminSession, async (req, res) => {
