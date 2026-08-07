@@ -105,4 +105,29 @@
     });
   });
 
+  /* ── Admin Panel button visibility ─────────────────────────
+     Show the Admin Panel nav button only when an active admin
+     session cookie is present.  The check is fire-and-forget:
+     a 401 simply means the button stays hidden (correct).
+     The button is hidden by default in HTML (style="display:none").
+  ─────────────────────────────────────────────────────────── */
+  (function () {
+    const adminBtns = [
+      document.getElementById('nav-admin-btn'),
+      document.getElementById('nav-admin-btn-mobile'),
+      document.getElementById('db-admin-nav-item'),
+    ].filter(Boolean);
+
+    if (!adminBtns.length) return;
+
+    fetch('/api/admin/session', { credentials: 'include' })
+      .then(r => r.json().catch(() => ({})))
+      .then(d => {
+        if (d && d.authenticated) {
+          adminBtns.forEach(el => { el.style.display = ''; });
+        }
+      })
+      .catch(() => { /* session not available — keep buttons hidden */ });
+  }());
+
 })();

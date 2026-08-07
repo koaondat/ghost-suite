@@ -134,23 +134,24 @@
   /* ── Login ─────────────────────────────────────────────────────────── */
   async function doLogin (e) {
     e.preventDefault();
-    const pw = $('adminPassword').value.trim();
-    if (!pw) return;
+    const key = $('adminApiKey').value.trim();
+    if (!key) return;
     setBusy('loginBtn', true);
     hideAlert('loginAlert');
     try {
-      // Step 1: POST credentials → server sets HttpOnly session cookie on success.
-      const { ok: authOk, data: authData } = await apiFetch('/api/admin/panel/auth', {
+      // POST admin API key → server verifies against GHOST_ADMIN_API_KEY,
+      // sets HttpOnly __Host-ghost_admin_session cookie on success.
+      const { ok: authOk, data: authData } = await apiFetch('/api/admin/login', {
         method: 'POST',
-        body:   JSON.stringify({ password: pw }),
+        body:   JSON.stringify({ key }),
       });
       if (!authOk) {
-        showAlert('loginAlert', 'error', authData.error || 'Invalid password.');
+        showAlert('loginAlert', 'error', authData.error || 'Invalid admin API key.');
         return;
       }
 
-      // Step 2: Verify the session cookie was actually set before rendering.
-      // This confirms the cookie round-trip works and avoids a flash+logout cycle.
+      // Verify the cookie was set before rendering the dashboard.
+      // Prevents flash+logout if the cookie round-trip fails.
       const verifyRes  = await fetch('/api/admin/session', { credentials: 'include' });
       const verifyData = await verifyRes.json().catch(() => ({}));
       if (!verifyRes.ok || !verifyData.authenticated) {
@@ -158,7 +159,7 @@
         return;
       }
 
-      // Session confirmed — now it is safe to render the dashboard.
+      // Session confirmed — safe to render.
       _loggedIn        = true;
       _sessionVerified = true;
       console.log('[admin] admin_ui_rendered source=login');
@@ -177,13 +178,13 @@
     console.log('[admin] logout_triggered_reason=user_requested');
     _loggedIn = false;
     _sessionVerified = false;
-    // POST to /api/admin/panel/logout so the server can expire the HttpOnly cookie.
+    // POST to /api/admin/logout so the server can clear the HttpOnly cookie.
     // JS cannot delete an HttpOnly cookie directly.
-    await fetch('/api/admin/panel/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+    await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     hide('adminShell');
     hide('adminLoading');
     show('adminLogin');
-    $('adminPassword').value = '';
+    $('adminApiKey').value = '';
   }
 
   /* ── Tab navigation ─────────────────────────────────────────────────── */
@@ -1229,9 +1230,9 @@
         _sessionVerified = true;   // check is complete; 401 handling can now activate
         hide('adminLoading');
         show('adminLogin');
-        // Attempt to focus the password field only if available.
-        const pwField = $('adminPassword');
-        if (pwField) pwField.focus();
+        // Focus the API key field for fast entry.
+        const keyField = $('adminApiKey');
+        if (keyField) keyField.focus();
       }
     } catch (_) {
       // Network error — hide loading screen, show login form so the user can retry.

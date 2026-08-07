@@ -29,14 +29,14 @@
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       </div>
       <h1 class="admin-login-title">Ghost Admin</h1>
-      <p class="admin-login-sub">Enter your administrator password to continue.</p>
+      <p class="admin-login-sub">Enter your admin API key to continue.</p>
       <div id="loginAlert" class="admin-alert admin-alert--error" style="display:none"></div>
       <form id="loginForm" class="admin-login-form" autocomplete="off">
         <div class="form-group">
-          <label class="form-label" for="adminPassword">Password</label>
+          <label class="form-label" for="adminApiKey">Admin API Key</label>
           <div class="input-wrap">
             <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            <input type="password" id="adminPassword" class="form-input has-icon" placeholder="Administrator password" />
+            <input type="password" id="adminApiKey" class="form-input has-icon" placeholder="ghost_admin_…" autocomplete="current-password" />
           </div>
         </div>
         <button type="submit" class="btn btn-primary admin-submit" id="loginBtn">

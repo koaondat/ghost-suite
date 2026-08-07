@@ -4,27 +4,33 @@
  * Express server that:
  *   • Serves the static web/ files
  *   • Provides PayPal Checkout session API (api/paypal.js)
- *   • Handles admin panel auth with cookie-based JWT sessions
+ *   • Admin authentication: POST /api/admin/login  (verifies GHOST_ADMIN_API_KEY)
+ *   • Admin session:        GET  /api/admin/session
+ *   • Admin logout:         POST /api/admin/logout
+ *   • All admin data endpoints handled INLINE (no proxy back to self)
  *   • Proxies /api/auth/*, /api/license/*, /api/purchases,
- *     /api/downloads/*, and explicitly named /api/admin/* routes
- *     to the Ghost shared Python backend (api.py) running at GHOST_API_URL.
+ *     /api/downloads/* to the Ghost shared Python backend (api.py)
+ *
+ * ── Authentication model ──────────────────────────────────────────────────────
+ * 1.  Admin visits /admin — sees loading screen while session is checked.
+ * 2.  Browser calls GET /api/admin/session → 401 (no cookie) → login form shown.
+ * 3.  Admin enters GHOST_ADMIN_API_KEY in the "Admin API Key" field.
+ * 4.  Browser POSTs { key } to POST /api/admin/login.
+ * 5.  Server compares key to process.env.GHOST_ADMIN_API_KEY with timingSafeEqual.
+ * 6.  On match: server issues a signed, short-lived HttpOnly __Host- cookie.
+ * 7.  Subsequent requests carry the cookie automatically; server verifies on each.
+ * 8.  Session lasts ADMIN_SESSION_TTL_SECS (12 hours).  Refresh keeps you logged in.
+ *
+ * ── Security properties ───────────────────────────────────────────────────────
+ * • GHOST_ADMIN_API_KEY is never returned through any endpoint, never logged.
+ * • Raw key is never stored in localStorage, sessionStorage, cookie, or HTML.
+ * • Session cookie: __Host- prefix → Secure, Path=/, no Domain, HttpOnly.
+ * • ADMIN_SESSION_SECRET read fresh on every sign/verify (Vercel-safe).
+ * • Admin login rate-limited: max 10 attempts per 15 minutes per IP.
+ * • All admin data is served directly from Upstash Redis (no self-proxy loop).
  *
  * Start:  node server.js
  * Deps:   npm install express node-fetch dotenv cookie-parser
- *
- * Environment variables: see .env.example
- *
- * ── Session model (Vercel-safe) ───────────────────────────────────────────────
- * Vercel serverless functions are stateless: each invocation is a fresh process.
- * An in-memory Map cannot survive across requests.  We use signed JWTs stored in
- * a server-side HttpOnly cookie instead — no shared state required.
- *
- * ── 508 / self-loop prevention ────────────────────────────────────────────────
- * If GHOST_API_URL points back at the same Vercel deployment, proxying any
- * /api/admin/* request would loop back through the catch-all and recurse until
- * Vercel reports 508 Loop Detected.  All admin routes are handled natively by
- * this file and NEVER forwarded to GHOST_API_URL.  Additionally, _proxyToApi()
- * detects same-host targets and refuses to forward.
  */
 
 'use strict';
@@ -40,159 +46,77 @@ const paypal       = require('./api/paypal');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// ── Secrets ──────────────────────────────────────────────────────────────────
-// Admin panel password hash (SHA-256 hex of the admin password).
-// NEVER store the plain-text password — only the digest.
-const ADMIN_PANEL_PASSWORD_HASH = (process.env.ADMIN_PANEL_PASSWORD_HASH || '').trim().toLowerCase();
+// ── Admin auth constants ──────────────────────────────────────────────────────
+// GHOST_ADMIN_API_KEY — read fresh in the login handler so it is always current.
+// NEVER captured into a module-level const that could be stale on Vercel cold-starts.
+// ADMIN_SESSION_SECRET — same: read inside _issueAdminSession / _verifyAdminSession.
 
-// Server-side admin API key for bot / CI integrations.
-// Accepted via: Authorization: Bearer <GHOST_ADMIN_API_KEY>
-// NEVER returned through any public endpoint, never logged.
-const GHOST_ADMIN_API_KEY = (process.env.GHOST_ADMIN_API_KEY || '').trim();
-
-// NOTE: ADMIN_SESSION_SECRET is intentionally NOT captured into a module-level
-// constant.  On Vercel, each serverless cold-start is a fresh Node process; if
-// the env var is read once at module load time and the var is missing (or not
-// yet injected), EVERY subsequent verify call would use an empty string and
-// fail — producing the 401 / "session expired" loop ~3 seconds after login.
-// Reading process.env.ADMIN_SESSION_SECRET inside _issueAdminSession and
-// _verifyAdminSession on every call guarantees the correct value is used
-// regardless of which Vercel instance handles the request.
-//
-// ADMIN_SESSION_TTL_SECS: 12 hours (requirement)
 const ADMIN_SESSION_TTL_SECS = 12 * 60 * 60; // 12 hours
-// __Host- prefix enforces: Secure, Path=/, no Domain attribute.
-// This is the strongest cookie security available in modern browsers.
-const ADMIN_COOKIE_NAME = '__Host-ghost_admin_session';
+const ADMIN_COOKIE_NAME      = '__Host-ghost_admin_session';
+
+// ── Rate limiter (login attempts per IP) ─────────────────────────────────────
+// Simple in-memory store — sufficient for Vercel (each instance is isolated; a
+// determined attacker hitting multiple instances still faces per-instance limits).
+// Window: 15 minutes, max: 10 attempts.
+const _loginAttempts = new Map(); // ip → { count, resetAt }
+const RATE_WINDOW_MS = 15 * 60 * 1000;
+const RATE_MAX       = 10;
+
+function _checkRateLimit (ip) {
+  const now   = Date.now();
+  const entry = _loginAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    _loginAttempts.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true; // allowed
+  }
+  entry.count++;
+  return entry.count <= RATE_MAX;
+}
 
 // ── Stateless signed session cookie helpers ───────────────────────────────────
-// The session token is a compact HMAC-signed structure:
-//   base64url(payload_json) + "." + base64url(hmac_sha256)
-// No in-memory state, no database — the signature proves authenticity and the
-// expiry claim proves freshness. Any Vercel instance can verify any token as
-// long as ADMIN_SESSION_SECRET is the same env var value across all instances.
+// Token format:  base64url(JSON payload) + "." + base64url(HMAC-SHA256)
+// No in-memory state required — any Vercel instance can verify any token as long
+// as ADMIN_SESSION_SECRET is the same env var value across all instances.
 //
-// CRITICAL: Both helpers read process.env.ADMIN_SESSION_SECRET on every call.
-// Do NOT hoist this into a module-level const — doing so would capture an empty
-// string on Vercel cold-starts where the env var arrives after module init, and
-// every subsequent verification would fail with a 401 loop.
+// CRITICAL: both helpers read process.env.ADMIN_SESSION_SECRET on every call.
+// DO NOT hoist this into a module-level const — if the var arrives after module
+// init on Vercel, every verify call would use an empty string and fail (401 loop).
 
 function _issueAdminSession () {
-  // Read secret fresh on every call — Vercel-safe.
   const secret = (process.env.ADMIN_SESSION_SECRET || '').trim();
-  const secretLen = secret.length;
-  console.log('[ghost/admin] issue_session secret_present=%s secret_len=%d', secretLen > 0, secretLen);
   if (!secret) {
-    console.error('[ghost/admin] CRITICAL: ADMIN_SESSION_SECRET is not set — cannot issue session. Set it in Vercel env vars and redeploy.');
+    console.error('[ghost/admin] CRITICAL: ADMIN_SESSION_SECRET not set — cannot issue session.');
     return null;
   }
-  const iat = Math.floor(Date.now() / 1000);
-  const exp = iat + ADMIN_SESSION_TTL_SECS;
-  const payload = Buffer.from(JSON.stringify({
-    sub: 'admin',
-    iat,
-    exp,
-  })).toString('base64url');
-  const sig = crypto
-    .createHmac('sha256', secret)
-    .update(payload)
-    .digest('base64url');
-  console.log('[ghost/admin] session_issued iat=%d exp=%d exp_iso=%s', iat, exp, new Date(exp * 1000).toISOString());
+  const iat     = Math.floor(Date.now() / 1000);
+  const exp     = iat + ADMIN_SESSION_TTL_SECS;
+  const payload = Buffer.from(JSON.stringify({ sub: 'admin', iat, exp })).toString('base64url');
+  const sig     = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
   return `${payload}.${sig}`;
 }
 
 function _verifyAdminSession (token) {
-  // Read secret fresh on every call — Vercel-safe.
   const secret = (process.env.ADMIN_SESSION_SECRET || '').trim();
-  const secretLen = secret.length;
-  console.log('[ghost/admin] verify_session secret_present=%s secret_len=%d cookie_present=%s', secretLen > 0, secretLen, Boolean(token));
-  if (!secret) {
-    console.error('[ghost/admin] CRITICAL: ADMIN_SESSION_SECRET not set — cannot verify session cookie. Set it in Vercel env vars and redeploy.');
-    return false;
-  }
-  if (!token || typeof token !== 'string') {
-    console.log('[ghost/admin] cookie_missing');
-    return false;
-  }
+  if (!secret) return false;
+  if (!token || typeof token !== 'string') return false;
   const dot = token.lastIndexOf('.');
-  if (dot < 1) {
-    console.log('[ghost/admin] signature_invalid reason=malformed');
-    return false;
-  }
-  const payload = token.slice(0, dot);
-  const sig     = token.slice(dot + 1);
-  const expected = crypto
-    .createHmac('sha256', secret)
-    .update(payload)
-    .digest('base64url');
+  if (dot < 1) return false;
+  const payload  = token.slice(0, dot);
+  const sig      = token.slice(dot + 1);
+  const expected = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
   let sigOk = false;
-  try {
-    sigOk = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-  } catch (_) {
-    // Buffer length mismatch — signature is wrong
-  }
-  if (!sigOk) {
-    console.log('[ghost/admin] signature_invalid reason=hmac_mismatch');
-    return false;
-  }
+  try { sigOk = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)); } catch (_) {}
+  if (!sigOk) return false;
   try {
     const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    const now    = Math.floor(Date.now() / 1000);
-    console.log('[ghost/admin] session_claims sub=%s iat=%d exp=%d iat_iso=%s exp_iso=%s now=%d',
-      claims.sub,
-      claims.iat || 0,
-      claims.exp || 0,
-      claims.iat ? new Date(claims.iat * 1000).toISOString() : 'none',
-      claims.exp ? new Date(claims.exp * 1000).toISOString() : 'none',
-      now,
-    );
-    if (claims.exp && now > claims.exp) {
-      console.log('[ghost/admin] session_expired sub=%s exp=%d now=%d delta_secs=%d', claims.sub, claims.exp, now, now - claims.exp);
-      return false;
-    }
-    console.log('[ghost/admin] session_verified sub=%s ttl_remaining_secs=%d', claims.sub, (claims.exp || 0) - now);
-    return true;
-  } catch (_) {
-    console.log('[ghost/admin] signature_invalid reason=payload_parse_error');
-    return false;
-  }
+    return !claims.exp || Math.floor(Date.now() / 1000) <= claims.exp;
+  } catch (_) { return false; }
 }
 
 // ── Session middleware ────────────────────────────────────────────────────────
 function _requireAdminSession (req, res, next) {
-  // Path 1: cookie-based session (human admin panel)
   const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
-  if (cookieToken) {
-    if (_verifyAdminSession(cookieToken)) return next();
-    return res.status(401).json({ ok: false, error: 'Admin session expired. Please log in again.' });
-  }
-
-  // Path 2: server-side API key via Authorization: Bearer (bot / CI)
-  const authHeader = (req.headers['authorization'] || '').trim();
-  if (authHeader.startsWith('Bearer ')) {
-    const providedKey = authHeader.slice(7).trim();
-    if (!GHOST_ADMIN_API_KEY) {
-      console.warn('[ghost/admin] bearer_presented but GHOST_ADMIN_API_KEY is not configured ip=%s', req.ip);
-      return res.status(401).json({ ok: false, error: 'Admin API key not configured on this server.' });
-    }
-    let match = false;
-    try {
-      match = crypto.timingSafeEqual(
-        Buffer.from(providedKey),
-        Buffer.from(GHOST_ADMIN_API_KEY),
-      );
-    } catch (_) {
-      // length mismatch → not equal
-    }
-    if (!match) {
-      console.warn('[ghost/admin] bearer_invalid ip=%s path=%s', req.ip, req.path);
-      return res.status(401).json({ ok: false, error: 'Invalid admin API key.' });
-    }
-    return next();
-  }
-
-  // Fallback: no credentials at all
-  console.log('[ghost/admin] cookie_missing ip=%s path=%s', req.ip, req.path);
+  if (cookieToken && _verifyAdminSession(cookieToken)) return next();
   return res.status(401).json({ ok: false, error: 'Admin session required. Please log in.' });
 }
 
@@ -201,101 +125,101 @@ const WEB_ROOT = __dirname;
 
 // ── Ghost Python API base URL ─────────────────────────────────────────────────
 const GHOST_API_URL = (process.env.GHOST_API_URL || '').replace(/\/$/, '');
-
-// Detect own base URL so we can refuse self-referencing proxy requests.
-const BASE_URL = (process.env.BASE_URL || '').replace(/\/$/, '').toLowerCase();
+const BASE_URL      = (process.env.BASE_URL || '').replace(/\/$/, '').toLowerCase();
+const GHOST_ADMIN_API_KEY = (process.env.GHOST_ADMIN_API_KEY || '').trim();
 
 if (!GHOST_API_URL) {
-  console.warn(
-    '[ghost/server] WARNING: GHOST_API_URL is not set. ' +
-    'Auth, license, and proxy routes will not work until this is configured. ' +
-    'Set it to the deployed URL of your Ghost Python backend (api.py).',
-  );
+  console.warn('[ghost/server] WARNING: GHOST_API_URL is not set. Auth and license routes will return 503.');
 }
 
-// ── Proxy helper — public API routes only (NOT admin routes) ─────────────────
+// ── Proxy helper — public API routes ONLY (never admin routes) ────────────────
 async function _proxyToApi (req, res, pathOverride) {
   if (!GHOST_API_URL) {
-    return res.status(503).json({
-      ok:    false,
-      error: 'API service unavailable: GHOST_API_URL is not configured on this server.',
-    });
+    return res.status(503).json({ ok: false, error: 'API service unavailable: GHOST_API_URL is not configured.' });
   }
-
   const targetPath = pathOverride || req.url;
   const targetUrl  = `${GHOST_API_URL}${targetPath}`;
 
-  // ── Self-loop guard ────────────────────────────────────────────────────────
-  // If GHOST_API_URL points at the same Vercel deployment, proxying /api/admin/*
-  // would recursively call this server and Vercel would report 508 Loop Detected.
-  // Admin routes must NEVER be forwarded through _proxyToApi.
+  // Self-loop guard
   const targetLower = targetUrl.toLowerCase();
-  const ownHosts    = ['localhost', '127.0.0.1', '::1'];
   if (BASE_URL && targetLower.startsWith(BASE_URL)) {
-    console.error('[ghost/proxy] SELF-LOOP DETECTED: GHOST_API_URL points back at this server. target=%s', targetUrl);
-    return res.status(508).json({
-      ok:    false,
-      error: 'Configuration error: GHOST_API_URL must not point to this server.',
-    });
-  }
-  for (const h of ownHosts) {
-    if (targetLower.includes(`//${h}`)) {
-      console.error('[ghost/proxy] SELF-LOOP (localhost) DETECTED: target=%s', targetUrl);
-      return res.status(508).json({
-        ok:    false,
-        error: 'Configuration error: GHOST_API_URL must not point to localhost in production.',
-      });
-    }
+    console.error('[ghost/proxy] SELF-LOOP: GHOST_API_URL points back at this server.');
+    return res.status(508).json({ ok: false, error: 'Configuration error: GHOST_API_URL must not point to this server.' });
   }
 
   const { default: fetch } = await import('node-fetch');
-
   const headers = { ...req.headers };
   delete headers['host'];
-  delete headers['cookie'];  // never forward the admin session cookie to the backend
-  // Inject the server-side admin API key so the Python backend can authenticate
-  // proxied admin requests (require_admin Path 2: X-Admin-Key).
-  if (GHOST_ADMIN_API_KEY) {
-    headers['x-admin-key'] = GHOST_ADMIN_API_KEY;
-  } else {
-    // Without the API key the Python require_admin will reject the request with 401.
-    // Log clearly so this misconfiguration is immediately visible in server logs.
-    console.error('[ghost/proxy] CRITICAL: GHOST_ADMIN_API_KEY not set — proxied admin requests will return 401. Set it in env vars.');
-  }
+  delete headers['cookie'];
+  if (GHOST_ADMIN_API_KEY) headers['x-admin-key'] = GHOST_ADMIN_API_KEY;
 
   const BODY_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE'];
   const hasBody = BODY_METHODS.includes(req.method) && req.body !== undefined;
-  if (hasBody) {
-    headers['content-type'] = 'application/json';
-  }
+  if (hasBody) headers['content-type'] = 'application/json';
 
   try {
     const upstream = await fetch(targetUrl, {
       method:  req.method,
-      headers: headers,
+      headers,
       body:    hasBody ? JSON.stringify(req.body) : undefined,
     });
-
     const data = await upstream.json().catch(() => ({}));
-
-    // Forward Set-Cookie (JWT cookie) from Python → browser
-    const setCookie = upstream.headers.raw()['set-cookie'];
-    if (setCookie) {
-      res.set('Set-Cookie', setCookie);
-    }
-
+    const setCookie = upstream.headers.raw?.()?.['set-cookie'];
+    if (setCookie) res.set('Set-Cookie', setCookie);
     return res.status(upstream.status).json(data);
   } catch (err) {
     console.error('[ghost/proxy] upstream error path=%s: %s', targetPath, err.message);
-    return res.status(502).json({
-      ok:    false,
-      error: 'API service unavailable. Please check your connection and try again.',
-    });
+    return res.status(502).json({ ok: false, error: 'API service unavailable. Please try again.' });
   }
 }
 
+// ── Upstash Redis helper ──────────────────────────────────────────────────────
+// Used by inline admin data endpoints to read/write production storage.
+// Falls back to empty/stub responses when Upstash is not configured (dev mode).
+async function _redisGet (key) {
+  const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
+  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+  if (!url || !token) return null;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const res  = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (data.result === null || data.result === undefined) return null;
+    return typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+  } catch (_) { return null; }
+}
+
+async function _redisSet (key, value) {
+  const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
+  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+  if (!url || !token) return false;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    await fetch(`${url}/set/${encodeURIComponent(key)}`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify(JSON.stringify(value)),
+    });
+    return true;
+  } catch (_) { return false; }
+}
+
+async function _redisDel (key) {
+  const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
+  const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+  if (!url || !token) return false;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    await fetch(`${url}/del/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return true;
+  } catch (_) { return false; }
+}
+
 // ── Body parsers ──────────────────────────────────────────────────────────────
-// Raw body capture for PayPal webhook signature verification.
 app.use((req, _res, next) => {
   if (req.path === '/api/paypal/webhook') {
     let raw = '';
@@ -318,264 +242,425 @@ app.use(cookieParser());
 app.get('/api/paypal/config', (req, res) => {
   const clientId = process.env.PAYPAL_CLIENT_ID || '';
   const env      = (process.env.PAYPAL_ENVIRONMENT || 'sandbox').toLowerCase();
-
   if (!clientId) {
-    console.error('[ghost/paypal-config] PAYPAL_CLIENT_ID is not set — payment will be unavailable');
-    return res.status(503).json({
-      configured: false,
-      clientId:   null,
-      environment: env,
-      error: 'Payment is not configured on this server. Please contact support.',
-    });
+    return res.status(503).json({ configured: false, clientId: null, environment: env,
+      error: 'Payment is not configured on this server. Please contact support.' });
   }
-
-  console.log('[ghost/paypal-config] config served env=%s', env);
   return res.json({ configured: true, clientId, environment: env });
 });
 
-// ── Runtime variable audit (presence only — never returns secret values) ──────
+// ── Runtime config audit (presence only — no secrets returned) ────────────────
 app.get('/api/config/audit', (req, res) => {
   const vars = [
-    'PAYPAL_CLIENT_ID',
-    'PAYPAL_CLIENT_SECRET',
-    'PAYPAL_ENVIRONMENT',
-    'PAYPAL_WEBHOOK_ID',
-    'GHOST_API_URL',
-    'GHOST_DELIVERY_URL',
-    'BASE_URL',
-    'ADMIN_PANEL_PASSWORD_HASH',
-    'ADMIN_SESSION_SECRET',
-    'GHOST_ADMIN_API_KEY',
+    'PAYPAL_CLIENT_ID', 'PAYPAL_CLIENT_SECRET', 'PAYPAL_ENVIRONMENT', 'PAYPAL_WEBHOOK_ID',
+    'GHOST_API_URL', 'GHOST_DELIVERY_URL', 'BASE_URL',
+    'ADMIN_SESSION_SECRET', 'GHOST_ADMIN_API_KEY',
+    'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN',
   ];
-
   const report = {};
   let allPresent = true;
   for (const name of vars) {
     const present = Boolean(process.env[name]);
     report[name] = { present };
-    if (!present) {
-      allPresent = false;
-      console.warn('[ghost/config-audit] MISSING env var: %s', name);
-    }
+    if (!present) allPresent = false;
   }
-
-  console.log('[ghost/config-audit] audit complete allPresent=%s', allPresent);
   return res.json({ ok: true, allPresent, vars: report });
 });
 
-// ── Admin panel auth ──────────────────────────────────────────────────────────
-// POST /api/admin/panel/auth  { password }
-// Issues a signed stateless HttpOnly session cookie valid for ADMIN_SESSION_TTL_SECS.
-// The cookie uses the __Host- prefix which enforces Secure, Path=/, no Domain.
-// Never returns the token in the JSON body — the browser reads it from the cookie.
-app.post('/api/admin/panel/auth', (req, res) => {
-  // ── Safe diagnostics — never log the password or actual hash values ──────────
-  const hashPresent    = ADMIN_PANEL_PASSWORD_HASH.length > 0;
-  const storedHashLen  = ADMIN_PANEL_PASSWORD_HASH.length;
-  console.log('[ghost/admin] auth_attempt hash_present=%s stored_hash_len=%d ip=%s',
-    hashPresent, storedHashLen, req.ip);
+// ═════════════════════════════════════════════════════════════════════════════
+// ADMIN AUTHENTICATION — single clean flow
+// ═════════════════════════════════════════════════════════════════════════════
 
-  if (!hashPresent) {
-    console.error('[ghost/admin] login_fail reason=ADMIN_PANEL_PASSWORD_HASH_not_set ip=%s', req.ip);
-    return res.status(503).json({ ok: false, error: 'Admin panel not configured. Set ADMIN_PANEL_PASSWORD_HASH.' });
-  }
-  // SHA-256 hex digest is always exactly 64 characters. Any other length means the
-  // env var holds the wrong value (e.g. plain-text password, partial hash, extra whitespace).
-  if (storedHashLen !== 64) {
-    console.error(
-      '[ghost/admin] login_fail reason=ADMIN_PANEL_PASSWORD_HASH_wrong_length stored_hash_len=%d expected=64 ip=%s ' +
-      '— The env var must contain a SHA-256 hex digest (64 chars), not the plain-text password.',
-      storedHashLen, req.ip,
-    );
-    return res.status(503).json({
-      ok: false,
-      error: 'Admin panel misconfigured: ADMIN_PANEL_PASSWORD_HASH must be a 64-character SHA-256 hex digest.',
+// ── POST /api/admin/login ─────────────────────────────────────────────────────
+// Body: { key: string }
+// Verifies key against GHOST_ADMIN_API_KEY.
+// On success: sets __Host-ghost_admin_session HttpOnly cookie, returns { ok: true }.
+// On failure: returns { ok: false, error: string }.
+// GHOST_ADMIN_API_KEY is NEVER returned in any response body.
+app.post('/api/admin/login', (req, res) => {
+  const ip = req.ip;
+
+  // Rate limit check
+  if (!_checkRateLimit(ip)) {
+    console.warn('[ghost/admin] login_rate_limited ip=%s', ip);
+    return res.status(429).json({
+      ok:    false,
+      error: 'Too many login attempts. Please wait 15 minutes and try again.',
     });
   }
 
+  // Server-side key — read fresh on every call (Vercel-safe)
+  const serverKey = (process.env.GHOST_ADMIN_API_KEY || '').trim();
+
+  if (!serverKey) {
+    console.error('[ghost/admin] GHOST_ADMIN_API_KEY not set — login blocked ip=%s', ip);
+    return res.status(503).json({ ok: false, error: 'Admin panel not configured. Set GHOST_ADMIN_API_KEY.' });
+  }
   if (!process.env.ADMIN_SESSION_SECRET) {
-    console.error('[ghost/admin] login_fail reason=ADMIN_SESSION_SECRET_not_set ip=%s', req.ip);
+    console.error('[ghost/admin] ADMIN_SESSION_SECRET not set — cannot issue session ip=%s', ip);
     return res.status(503).json({ ok: false, error: 'Admin session secret not configured. Set ADMIN_SESSION_SECRET.' });
   }
 
-  const { password } = req.body || {};
-  if (!password) {
-    return res.status(400).json({ ok: false, error: 'Password is required.' });
+  const { key } = req.body || {};
+  if (!key || typeof key !== 'string') {
+    return res.status(400).json({ ok: false, error: 'Admin API key is required.' });
   }
 
-  const submitted        = crypto.createHash('sha256').update(String(password)).digest('hex');
-  const calculatedHashLen = submitted.length; // always 64 for SHA-256 hex
+  // Constant-time comparison — prevents timing attacks
   let match = false;
   try {
     match = crypto.timingSafeEqual(
-      Buffer.from(submitted),
-      Buffer.from(ADMIN_PANEL_PASSWORD_HASH),
+      Buffer.from(key.trim()),
+      Buffer.from(serverKey),
     );
-  } catch (lengthErr) {
-    // This should never happen after the storedHashLen !== 64 guard above,
-    // but log it explicitly if it somehow does to make root-cause obvious.
-    console.error(
-      '[ghost/admin] login_fail reason=hash_length_mismatch calculated_len=%d stored_len=%d ip=%s',
-      calculatedHashLen, storedHashLen, req.ip,
-    );
-    return res.status(503).json({
-      ok: false,
-      error: 'Admin panel misconfigured: stored hash length does not match SHA-256 output.',
-    });
+  } catch (_) {
+    // Buffer length mismatch means wrong key
   }
 
-  // Safe diagnostic: log lengths and match result, never the values themselves.
-  console.log(
-    '[ghost/admin] auth_check hash_present=%s stored_hash_len=%d calculated_hash_len=%d password_match=%s ip=%s',
-    hashPresent, storedHashLen, calculatedHashLen, match, req.ip,
-  );
-
   if (!match) {
-    console.warn('[ghost/admin] login_rejected ip=%s reason=wrong_password', req.ip);
-    return res.status(401).json({ ok: false, error: 'Invalid password.' });
+    console.warn('[ghost/admin] login_rejected ip=%s reason=wrong_key', ip);
+    return res.status(401).json({ ok: false, error: 'Invalid admin API key.' });
   }
 
   const token = _issueAdminSession();
-  const cookieIssued = token !== null;
-  console.log('[ghost/admin] login cookie issued=%s ip=%s', cookieIssued, req.ip);
-
-  if (!cookieIssued) {
-    return res.status(500).json({ ok: false, error: 'Failed to issue admin session. Check ADMIN_SESSION_SECRET.' });
+  if (!token) {
+    return res.status(500).json({ ok: false, error: 'Failed to issue session. Check ADMIN_SESSION_SECRET.' });
   }
 
-  // __Host- cookie attributes: Secure (required), HttpOnly, SameSite=Lax,
-  // Path=/ (required), no Domain attribute (required for __Host-).
-  // maxAge: 4 hours in ms (matches requirement).
+  // __Host- cookie: Secure required, Path=/, no Domain, HttpOnly, SameSite=Lax
   res.cookie(ADMIN_COOKIE_NAME, token, {
     httpOnly: true,
-    secure:   true,    // required for __Host- prefix
+    secure:   true,
     sameSite: 'lax',
     path:     '/',
-    maxAge:   1000 * 60 * 60 * 4, // 4 hours in ms
-    // No domain attribute — __Host- prefix requires host-only binding
+    maxAge:   ADMIN_SESSION_TTL_SECS * 1000,
   });
 
-  // Safe diagnostic: confirm cookie was written to response (never log the value).
-  const setCookieHeader = res.getHeader('Set-Cookie');
-  const authSetCookie   = Array.isArray(setCookieHeader)
-    ? setCookieHeader.some(h => h.startsWith(ADMIN_COOKIE_NAME))
-    : (typeof setCookieHeader === 'string' && setCookieHeader.startsWith(ADMIN_COOKIE_NAME));
-  console.log('[ghost/admin] auth_set_cookie=%s ip=%s', authSetCookie, req.ip);
-
-  // Return ok:true — the session is in the cookie, not the body.
-  return res.json({ ok: true, auth_set_cookie: authSetCookie });
+  console.log('[ghost/admin] login_success ip=%s', ip);
+  return res.json({ ok: true });
 });
 
-// GET /api/admin/session  — canonical session validity check (called on page load)
-// Returns 200 + { authenticated: true } when session cookie is valid,
-// 401 + { authenticated: false } otherwise.
-// The frontend calls this once on load — it must not produce alerts on 401.
+// ── GET /api/admin/session ────────────────────────────────────────────────────
+// Returns 200 + { authenticated: true } if cookie is valid, 401 otherwise.
+// Called once on page load to determine whether to show dashboard or login form.
+// MUST NOT trigger session-expiry UI on 401 — it is expected before login.
 app.get('/api/admin/session', (req, res) => {
   const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
-  console.log('[ghost/admin] session_check cookie_present=%s ip=%s', Boolean(cookieToken), req.ip);
-  if (!cookieToken) {
-    return res.status(401).json({ ok: false, authenticated: false });
-  }
-  const valid = _verifyAdminSession(cookieToken);
-  console.log('[ghost/admin] session signature valid=%s ip=%s', valid, req.ip);
-  if (valid) {
+  if (cookieToken && _verifyAdminSession(cookieToken)) {
     return res.status(200).json({ ok: true, authenticated: true });
   }
   return res.status(401).json({ ok: false, authenticated: false });
 });
 
-// GET /api/admin/panel/verify  — legacy session check (kept for compatibility)
-app.get('/api/admin/panel/verify', _requireAdminSession, (_req, res) => {
-  res.json({ ok: true });
-});
-
-// GET /api/admin/debug-session — safe diagnostic endpoint
-// Returns boolean presence/validity flags only — never the cookie value or secret.
-app.get('/api/admin/debug-session', (req, res) => {
-  const cookieToken           = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
-  const dashboardCookiePresent = Boolean(cookieToken);
-  const sessionVerify          = dashboardCookiePresent ? _verifyAdminSession(cookieToken) : false;
-  const secretConfigured       = Boolean(process.env.ADMIN_SESSION_SECRET && process.env.ADMIN_SESSION_SECRET.trim());
-  const apiKeyConfigured       = Boolean(GHOST_ADMIN_API_KEY);
-  // auth_set_cookie is only knowable at login time; here we report the current cookie presence.
-  const authSetCookie          = dashboardCookiePresent;
-  console.log('[ghost/admin] debug_session dashboard_cookie_present=%s session_verify=%s auth_set_cookie=%s ip=%s',
-    dashboardCookiePresent, sessionVerify, authSetCookie, req.ip);
-  return res.json({
-    auth_set_cookie:          authSetCookie,
-    dashboard_cookie_present: dashboardCookiePresent,
-    session_verify:           sessionVerify,
-    secret_configured:        secretConfigured,
-    api_key_configured:       apiKeyConfigured,
-    cookie_name:              ADMIN_COOKIE_NAME,
-  });
-});
-
-// POST /api/admin/panel/logout — clear the session cookie
-app.post('/api/admin/panel/logout', (_req, res) => {
-  // Must match the exact attributes used when setting the cookie:
-  // __Host- requires Secure=true and Path=/ — mismatching these prevents clearing.
-  res.clearCookie(ADMIN_COOKIE_NAME, {
-    path:     '/',
-    secure:   true,
-    httpOnly: true,
-    sameSite: 'lax',
-  });
+// ── POST /api/admin/logout ────────────────────────────────────────────────────
+// Clears the session cookie.
+app.post('/api/admin/logout', (_req, res) => {
+  res.clearCookie(ADMIN_COOKIE_NAME, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' });
   console.log('[ghost/admin] logout ip=%s', _req.ip);
-  res.json({ ok: true });
+  return res.json({ ok: true });
 });
 
-// ── Admin panel data endpoints ────────────────────────────────────────────────
-// All of these require a valid session cookie.
-// IMPORTANT: These are registered BEFORE the app.all('/api/admin/*') that would
-// re-proxy them.  Express uses first-match routing, so specific routes win.
-// The catch-all below has been intentionally REMOVED to prevent the 508 loop.
+// ═════════════════════════════════════════════════════════════════════════════
+// ADMIN DATA ENDPOINTS — all served inline, no proxy to GHOST_API_URL
+// Prevents 508 loops when GHOST_API_URL == this Vercel deployment.
+// Uses Upstash Redis for production-grade persistence.
+// ═════════════════════════════════════════════════════════════════════════════
 
-// Dashboard
-app.get('/api/admin/dashboard', _requireAdminSession, (req, res) => {
-  const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
-  // Diagnostics: dashboard_cookie_present and session_verify — never log the value.
-  const dashboardCookiePresent = Boolean(cookieToken);
-  const sessionVerify          = dashboardCookiePresent ? _verifyAdminSession(cookieToken) : false;
-  console.log('[ghost/admin] dashboard_cookie_present=%s session_verify=%s ip=%s',
-    dashboardCookiePresent, sessionVerify, req.ip);
-  return _proxyToApi(req, res);
+// ── GET /api/admin/dashboard ──────────────────────────────────────────────────
+app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
+  try {
+    const [orders, inventory, activity] = await Promise.all([
+      _redisGet('ghost:orders'),
+      _redisGet('ghost:inventory'),
+      _redisGet('ghost:activity'),
+    ]);
+
+    const ordersArr    = Array.isArray(orders)    ? orders    : [];
+    const inventoryArr = Array.isArray(inventory) ? inventory : [];
+    const activityArr  = Array.isArray(activity)  ? activity  : [];
+
+    const now       = new Date();
+    const todayStr  = now.toISOString().slice(0, 10);
+    const monthStr  = now.toISOString().slice(0, 7);
+
+    const completed = ordersArr.filter(o => o.payment_status === 'COMPLETED');
+    const revenueToday  = completed.filter(o => (o.purchase_date || '').startsWith(todayStr))
+      .reduce((s, o) => s + parseFloat(o.amount || 0), 0);
+    const revenueMonth  = completed.filter(o => (o.purchase_date || '').startsWith(monthStr))
+      .reduce((s, o) => s + parseFloat(o.amount || 0), 0);
+    const revenueTotal  = completed.reduce((s, o) => s + parseFloat(o.amount || 0), 0);
+
+    const activeKeys = inventoryArr.filter(k => k.status === 'activated').length;
+    const availKeys  = inventoryArr.filter(k => k.status === 'available').length;
+    const soldKeys   = inventoryArr.filter(k => ['sold', 'activated'].includes(k.status)).length;
+
+    const customers = {};
+    completed.forEach(o => { if (o.email) customers[o.email] = true; });
+
+    const recent30  = Array.from({ length: 30 }, (_, i) => {
+      const d = new Date(now);
+      d.setDate(d.getDate() - (29 - i));
+      return d.toISOString().slice(0, 10);
+    });
+
+    const dailyRevenue   = recent30.map(d => completed.filter(o => (o.purchase_date || '').startsWith(d)).reduce((s, o) => s + parseFloat(o.amount || 0), 0));
+    const dailyOrders    = recent30.map(d => ordersArr.filter(o => (o.purchase_date || '').startsWith(d)).length);
+    const dailyCustomers = recent30.map(d => {
+      const seen = new Set();
+      completed.filter(o => (o.purchase_date || '').startsWith(d)).forEach(o => { if (o.email) seen.add(o.email); });
+      return seen.size;
+    });
+
+    return res.json({
+      ok:             true,
+      revenue_today:  revenueToday.toFixed(2),
+      revenue_month:  revenueMonth.toFixed(2),
+      revenue_total:  revenueTotal.toFixed(2),
+      total_orders:   ordersArr.length,
+      customers:      Object.keys(customers).length,
+      active_licenses:activeKeys,
+      available_keys: availKeys,
+      sold_keys:      soldKeys,
+      pending_orders: ordersArr.filter(o => o.delivery_status === 'delivery_pending').length,
+      failed_payments:ordersArr.filter(o => o.payment_status === 'FAILED').length,
+      recent_orders:  completed.slice(-10).reverse(),
+      recent_activity:activityArr.slice(-10).reverse(),
+      graph: { dates: recent30, revenue: dailyRevenue, orders: dailyOrders, customers: dailyCustomers },
+    });
+  } catch (err) {
+    console.error('[ghost/admin] dashboard error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load dashboard.' });
+  }
 });
-app.get('/api/admin/stats',                             _requireAdminSession, (req, res) => _proxyToApi(req, res));
 
-// Inventory
-app.get('/api/admin/inventory',                         _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.get('/api/admin/inventory/stats',                   _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/inventory/import',                 _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/inventory/bulk-delete',            _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.delete('/api/admin/inventory/:key',                 _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}`));
-app.patch('/api/admin/inventory/:key',                  _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}`));
-app.post('/api/admin/inventory/:key/revoke',            _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}/revoke`));
-app.post('/api/admin/inventory/:key/extend',            _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/inventory/${req.params.key}/extend`));
+// ── GET /api/admin/stats ──────────────────────────────────────────────────────
+app.get('/api/admin/stats', _requireAdminSession, async (req, res) => {
+  return res.redirect(307, '/api/admin/dashboard');
+});
 
-// Orders
-app.get('/api/admin/orders',                            _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.get('/api/admin/orders/:orderId',                   _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/orders/${req.params.orderId}`));
+// ── Inventory endpoints ───────────────────────────────────────────────────────
+app.get('/api/admin/inventory', _requireAdminSession, async (req, res) => {
+  const inventory = await _redisGet('ghost:inventory') || [];
+  return res.json({ ok: true, keys: inventory, total: inventory.length });
+});
 
-// Customers
-app.get('/api/admin/customers',                         _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/customers/:email/revoke',          _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/customers/${req.params.email}/revoke`));
-app.post('/api/admin/customers/:email/reset-hwid',      _requireAdminSession, (req, res) => _proxyToApi(req, res, `/api/admin/customers/${req.params.email}/reset-hwid`));
+app.get('/api/admin/inventory/stats', _requireAdminSession, async (req, res) => {
+  const inventory = await _redisGet('ghost:inventory') || [];
+  const counts = { available: 0, reserved: 0, sold: 0, activated: 0, revoked: 0, expired: 0 };
+  inventory.forEach(k => { if (counts[k.status] !== undefined) counts[k.status]++; });
+  return res.json({ ok: true, ...counts, total: inventory.length });
+});
 
-// Downloads
-app.get('/api/admin/downloads',                         _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/downloads',                        _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/downloads/increment',              _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/downloads/rollback',               _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/inventory/import', _requireAdminSession, async (req, res) => {
+  const { keys, plan = 'pro', notes = '' } = req.body || {};
+  if (!Array.isArray(keys) || !keys.length) {
+    return res.status(400).json({ ok: false, error: 'keys array required.' });
+  }
+  const inventory = await _redisGet('ghost:inventory') || [];
+  const existing  = new Set(inventory.map(k => k.key));
+  const added = [];
+  for (const raw of keys) {
+    const k = String(raw).trim().toUpperCase();
+    if (!k || existing.has(k)) continue;
+    const entry = { key: k, plan, status: 'available', notes, created_at: new Date().toISOString(),
+      customer: null, hwid: null, purchase_date: null, expiration: null };
+    inventory.push(entry);
+    existing.add(k);
+    added.push(k);
+  }
+  await _redisSet('ghost:inventory', inventory);
+  return res.json({ ok: true, added: added.length, skipped: keys.length - added.length });
+});
 
-// Settings
-app.get('/api/admin/settings',                          _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/settings',                         _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.post('/api/admin/settings/password',                _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/inventory/bulk-delete', _requireAdminSession, async (req, res) => {
+  const { keys } = req.body || {};
+  if (!Array.isArray(keys)) return res.status(400).json({ ok: false, error: 'keys array required.' });
+  const set = new Set(keys.map(k => String(k).trim().toUpperCase()));
+  let inventory = await _redisGet('ghost:inventory') || [];
+  const deleted  = inventory.filter(k => set.has(k.key));
+  inventory = inventory.filter(k => !set.has(k.key));
+  await _redisSet('ghost:inventory', inventory);
+  return res.json({ ok: true, deleted: deleted.map(k => k.key) });
+});
 
-// Activity log
-app.get('/api/admin/activity',                          _requireAdminSession, (req, res) => _proxyToApi(req, res));
-app.delete('/api/admin/activity',                       _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.delete('/api/admin/inventory/:key', _requireAdminSession, async (req, res) => {
+  const target = req.params.key.toUpperCase();
+  let inventory = await _redisGet('ghost:inventory') || [];
+  const before = inventory.length;
+  inventory = inventory.filter(k => k.key !== target);
+  await _redisSet('ghost:inventory', inventory);
+  return res.json({ ok: true, deleted: before - inventory.length });
+});
+
+app.patch('/api/admin/inventory/:key', _requireAdminSession, async (req, res) => {
+  const target = req.params.key.toUpperCase();
+  const inventory = await _redisGet('ghost:inventory') || [];
+  const idx = inventory.findIndex(k => k.key === target);
+  if (idx === -1) return res.status(404).json({ ok: false, error: 'Key not found.' });
+  Object.assign(inventory[idx], req.body, { key: target }); // preserve key value
+  await _redisSet('ghost:inventory', inventory);
+  return res.json({ ok: true, entry: inventory[idx] });
+});
+
+app.post('/api/admin/inventory/:key/revoke', _requireAdminSession, async (req, res) => {
+  const target = req.params.key.toUpperCase();
+  const inventory = await _redisGet('ghost:inventory') || [];
+  const idx = inventory.findIndex(k => k.key === target);
+  if (idx === -1) return res.status(404).json({ ok: false, error: 'Key not found.' });
+  inventory[idx].status = 'revoked';
+  await _redisSet('ghost:inventory', inventory);
+  return res.json({ ok: true, entry: inventory[idx] });
+});
+
+app.post('/api/admin/inventory/:key/extend', _requireAdminSession, async (req, res) => {
+  const target = req.params.key.toUpperCase();
+  const { days = 30 } = req.body || {};
+  const inventory = await _redisGet('ghost:inventory') || [];
+  const idx = inventory.findIndex(k => k.key === target);
+  if (idx === -1) return res.status(404).json({ ok: false, error: 'Key not found.' });
+  const base = inventory[idx].expiration ? new Date(inventory[idx].expiration) : new Date();
+  base.setDate(base.getDate() + parseInt(days, 10));
+  inventory[idx].expiration = base.toISOString().slice(0, 10);
+  await _redisSet('ghost:inventory', inventory);
+  return res.json({ ok: true, entry: inventory[idx] });
+});
+
+// ── Orders endpoints ──────────────────────────────────────────────────────────
+app.get('/api/admin/orders', _requireAdminSession, async (req, res) => {
+  const orders = await _redisGet('ghost:orders') || [];
+  return res.json({ ok: true, orders, total: orders.length });
+});
+
+app.get('/api/admin/orders/:orderId', _requireAdminSession, async (req, res) => {
+  const orders = await _redisGet('ghost:orders') || [];
+  const order  = orders.find(o => o.order_id === req.params.orderId || o.paypal_order_id === req.params.orderId);
+  if (!order) return res.status(404).json({ ok: false, error: 'Order not found.' });
+  return res.json({ ok: true, order });
+});
+
+// ── Customers endpoints ───────────────────────────────────────────────────────
+app.get('/api/admin/customers', _requireAdminSession, async (req, res) => {
+  const orders = await _redisGet('ghost:orders') || [];
+  const map    = {};
+  for (const o of orders) {
+    const email = o.email || '';
+    if (!email) continue;
+    if (!map[email]) {
+      map[email] = { email, discord: o.discord || '', orders: 0, total_spent: 0,
+        licenses: [], first_purchase: o.purchase_date, last_purchase: o.purchase_date };
+    }
+    const c = map[email];
+    c.orders++;
+    c.total_spent += parseFloat(o.amount || 0);
+    if (o.license_key) c.licenses.push(o.license_key);
+    if (o.purchase_date && o.purchase_date < c.first_purchase) c.first_purchase = o.purchase_date;
+    if (o.purchase_date && o.purchase_date > c.last_purchase)  c.last_purchase  = o.purchase_date;
+  }
+  const customers = Object.values(map);
+  return res.json({ ok: true, customers, total: customers.length });
+});
+
+app.post('/api/admin/customers/:email/revoke', _requireAdminSession, async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  const inventory = await _redisGet('ghost:inventory') || [];
+  let count = 0;
+  for (const k of inventory) {
+    if (k.customer === email && k.status === 'activated') { k.status = 'revoked'; count++; }
+  }
+  await _redisSet('ghost:inventory', inventory);
+  return res.json({ ok: true, revoked: count });
+});
+
+app.post('/api/admin/customers/:email/reset-hwid', _requireAdminSession, async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  const inventory = await _redisGet('ghost:inventory') || [];
+  let count = 0;
+  for (const k of inventory) {
+    if (k.customer === email && k.hwid) { k.hwid = null; count++; }
+  }
+  await _redisSet('ghost:inventory', inventory);
+  return res.json({ ok: true, reset: count });
+});
+
+// ── Downloads endpoints ───────────────────────────────────────────────────────
+app.get('/api/admin/downloads', _requireAdminSession, async (req, res) => {
+  const dl = await _redisGet('ghost:downloads') || {
+    version: '—', filename: '—', url: '', changelog: '', release_date: '', download_count: 0, history: [],
+  };
+  return res.json({ ok: true, ...dl });
+});
+
+app.post('/api/admin/downloads', _requireAdminSession, async (req, res) => {
+  const { version, filename, url, changelog, release_date } = req.body || {};
+  if (!version || !url) return res.status(400).json({ ok: false, error: 'version and url required.' });
+  const prev = await _redisGet('ghost:downloads') || { history: [], download_count: 0 };
+  const history = prev.history || [];
+  if (prev.version && prev.version !== '—') {
+    history.unshift({ version: prev.version, filename: prev.filename, url: prev.url,
+      changelog: prev.changelog, release_date: prev.release_date,
+      replaced_at: new Date().toISOString() });
+  }
+  const updated = { version, filename: filename || version, url, changelog: changelog || '',
+    release_date: release_date || new Date().toISOString().slice(0, 10),
+    download_count: prev.download_count || 0, history };
+  await _redisSet('ghost:downloads', updated);
+  return res.json({ ok: true, ...updated });
+});
+
+app.post('/api/admin/downloads/increment', _requireAdminSession, async (req, res) => {
+  const dl = await _redisGet('ghost:downloads') || { download_count: 0 };
+  dl.download_count = (dl.download_count || 0) + 1;
+  await _redisSet('ghost:downloads', dl);
+  return res.json({ ok: true, download_count: dl.download_count });
+});
+
+app.post('/api/admin/downloads/rollback', _requireAdminSession, async (req, res) => {
+  const { version } = req.body || {};
+  const dl = await _redisGet('ghost:downloads');
+  if (!dl || !Array.isArray(dl.history)) return res.status(404).json({ ok: false, error: 'No history.' });
+  const idx = version ? dl.history.findIndex(h => h.version === version) : 0;
+  if (idx === -1) return res.status(404).json({ ok: false, error: 'Version not found in history.' });
+  const [target] = dl.history.splice(idx, 1);
+  const current = { version: dl.version, filename: dl.filename, url: dl.url,
+    changelog: dl.changelog, release_date: dl.release_date };
+  dl.history.unshift({ ...current, replaced_at: new Date().toISOString() });
+  dl.version      = target.version;
+  dl.filename     = target.filename;
+  dl.url          = target.url;
+  dl.changelog    = target.changelog;
+  dl.release_date = target.release_date;
+  await _redisSet('ghost:downloads', dl);
+  return res.json({ ok: true, ...dl });
+});
+
+// ── Settings endpoints ────────────────────────────────────────────────────────
+app.get('/api/admin/settings', _requireAdminSession, async (req, res) => {
+  const settings = await _redisGet('ghost:settings') || {};
+  // Never return secrets — strip any that might have been stored
+  const { paypal_client_secret, admin_key, ...safe } = settings;
+  return res.json({ ok: true, ...safe });
+});
+
+app.post('/api/admin/settings', _requireAdminSession, async (req, res) => {
+  const prev = await _redisGet('ghost:settings') || {};
+  // Never allow overwriting secrets through this endpoint
+  const { paypal_client_secret, admin_key, ...updates } = req.body || {};
+  const merged = { ...prev, ...updates };
+  await _redisSet('ghost:settings', merged);
+  const { paypal_client_secret: _s, admin_key: _k, ...safe } = merged;
+  return res.json({ ok: true, ...safe });
+});
+
+// ── Activity log endpoints ────────────────────────────────────────────────────
+app.get('/api/admin/activity', _requireAdminSession, async (req, res) => {
+  const log = await _redisGet('ghost:activity') || [];
+  return res.json({ ok: true, log, total: log.length });
+});
+
+app.delete('/api/admin/activity', _requireAdminSession, async (req, res) => {
+  await _redisSet('ghost:activity', []);
+  return res.json({ ok: true });
+});
 
 // ── Admin panel HTML ──────────────────────────────────────────────────────────
 app.get('/admin', (_req, res) => {
@@ -626,32 +711,22 @@ app.get('/api/order/:orderId/download', (req, res) =>
 );
 
 // ── Checkout HTML ─────────────────────────────────────────────────────────────
-app.get('/checkout.html', (_req, res) => {
-  res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {
-    if (err) { console.error('[ghost/server] checkout.html send error:', err.message); res.status(500).send('Internal server error'); }
-  });
-});
-app.get('/checkout', (_req, res) => {
-  res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {
-    if (err) { console.error('[ghost/server] checkout.html send error:', err.message); res.status(500).send('Internal server error'); }
-  });
-});
+app.get('/checkout.html', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {
+  if (err) res.status(500).send('Internal server error');
+}));
+app.get('/checkout', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {
+  if (err) res.status(500).send('Internal server error');
+}));
 
 // ── Ghost shared Python API proxy routes ──────────────────────────────────────
-// Auth + customer-facing routes only — admin routes are handled above.
+// Auth + customer-facing routes only — admin routes are handled natively above.
 app.all('/api/auth/*',     (req, res) => _proxyToApi(req, res));
 app.all('/api/license/*',  (req, res) => _proxyToApi(req, res));
 app.all('/api/purchases',  (req, res) => _proxyToApi(req, res));
 app.all('/api/downloads*', (req, res) => _proxyToApi(req, res));
-// NOTE: /api/admin/* catch-all has been intentionally REMOVED.
-// All admin routes are explicitly registered above with authentication.
-// A catch-all here would re-proxy authenticated requests to GHOST_API_URL,
-// creating a loop when GHOST_API_URL == the Vercel deployment URL (508).
 
 // ── Serve static frontend ─────────────────────────────────────────────────────
-app.get('/', (_req, res) =>
-  res.sendFile(path.join(WEB_ROOT, 'index.html')),
-);
+app.get('/', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'index.html')));
 
 app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
   res.sendFile(path.join(WEB_ROOT, `${req.params.page}.html`), err => {
@@ -659,8 +734,6 @@ app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
   }),
 );
 
-// Suppress browser favicon 404 — no favicon file exists in this project.
-// Without this route every page load produces a 404 in logs and network inspector.
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
 app.use(express.static(WEB_ROOT, {
@@ -682,13 +755,13 @@ app.get('/health', (_req, res) =>
 
 app.get('/status', (_req, res) =>
   res.json({
-    ok:            true,
-    service:       'ghost-web',
-    status:        'ready',
-    uptime_secs:   Math.floor((Date.now() - _START_TIME) / 1000),
-    ghost_api_url: GHOST_API_URL || '(not configured)',
-    paypal_env:    process.env.PAYPAL_ENVIRONMENT || 'sandbox',
-    node_version:  process.version,
+    ok:           true,
+    service:      'ghost-web',
+    status:       'ready',
+    uptime_secs:  Math.floor((Date.now() - _START_TIME) / 1000),
+    ghost_api_url:GHOST_API_URL || '(not configured)',
+    paypal_env:   process.env.PAYPAL_ENVIRONMENT || 'sandbox',
+    node_version: process.version,
   }),
 );
 
@@ -699,31 +772,21 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ ok: false, error: 'Internal server error' });
 });
 
-// ── Startup ───────────────────────────────────────────────────────────────────
-if (!ADMIN_PANEL_PASSWORD_HASH) {
-  console.warn('[ghost/server] WARNING: ADMIN_PANEL_PASSWORD_HASH not set — /admin panel login will return 503');
-}
-// Validate ADMIN_SESSION_SECRET at startup — fail fast with a clear message
-// instead of a ReferenceError later when the first login attempt arrives.
-// _issueAdminSession / _verifyAdminSession still read it fresh on every call
-// (Vercel-safe); this guard only catches a missing/blank value at boot time.
+// ── Startup validation ────────────────────────────────────────────────────────
 if (!process.env.ADMIN_SESSION_SECRET || !process.env.ADMIN_SESSION_SECRET.trim()) {
-  throw new Error('Missing ADMIN_SESSION_SECRET environment variable.');
+  throw new Error(
+    'Missing ADMIN_SESSION_SECRET environment variable. ' +
+    'Generate with: node -e "const c=require(\'crypto\');console.log(c.randomBytes(64).toString(\'hex\'))" ' +
+    'then add to Vercel: vercel env add ADMIN_SESSION_SECRET',
+  );
 }
-console.log('[ghost/server] ADMIN_SESSION_SECRET present length=%d', process.env.ADMIN_SESSION_SECRET.trim().length);
 if (!GHOST_ADMIN_API_KEY) {
-  console.warn('[ghost/server] WARNING: GHOST_ADMIN_API_KEY not set — Bearer API key auth will be unavailable');
+  console.warn('[ghost/server] WARNING: GHOST_ADMIN_API_KEY not set — admin panel login will return 503.');
 }
 
 app.listen(PORT, () => {
   console.log(`[ghost/server] Listening on http://localhost:${PORT}`);
   console.log(`[ghost/server] PayPal environment: ${process.env.PAYPAL_ENVIRONMENT || 'sandbox'}`);
-  console.log(`[ghost/server] Ghost shared API proxy: ${GHOST_API_URL || '(GHOST_API_URL not set — auth/license proxy will return 503)'}`);
-  if (!process.env.PAYPAL_CLIENT_ID)   console.warn('[ghost/server] WARNING: PAYPAL_CLIENT_ID not set — payment routes will fail');
-  if (!process.env.PAYPAL_CLIENT_SECRET) console.warn('[ghost/server] WARNING: PAYPAL_CLIENT_SECRET not set — payment routes will fail');
-  if (!process.env.GHOST_API_URL)      console.warn('[ghost/server] WARNING: GHOST_API_URL not set — auth/license proxy will return 503');
-  if (!process.env.GHOST_DELIVERY_URL) console.warn('[ghost/server] WARNING: GHOST_DELIVERY_URL not set — license delivery will fail');
-  if (BASE_URL && GHOST_API_URL && GHOST_API_URL.toLowerCase().startsWith(BASE_URL.toLowerCase())) {
-    console.error('[ghost/server] CRITICAL: GHOST_API_URL points back at BASE_URL — all proxy requests will loop (508). Fix GHOST_API_URL in environment variables.');
-  }
+  console.log(`[ghost/server] Admin panel: http://localhost:${PORT}/admin`);
+  console.log(`[ghost/server] GHOST_ADMIN_API_KEY configured: ${Boolean(GHOST_ADMIN_API_KEY)}`);
 });
