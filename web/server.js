@@ -187,29 +187,53 @@ async function _proxyToApi (req, res, pathOverride) {
 // Falls back to local JSON file when Redis env vars are not set (dev/CI only).
 const { Redis } = require('@upstash/redis');
 const fs        = require('fs');
-const _INV_FILE = path.resolve(__dirname, '..', 'key_inventory.json');
+const _INV_FILE   = path.resolve(__dirname, '..', 'key_inventory.json');
+const _USERS_FILE = path.resolve(__dirname, '..', 'users.json');
 
-// ── File fallback (dev only) ──────────────────────────────────────────────────
+// ── File fallback (dev only — when Redis is not configured) ───────────────────
+// Supports ghost:inventory (key_inventory.json) and ghost:users (users.json).
 function _fileGet (storeKey) {
-  if (storeKey !== 'ghost:inventory') return null;
-  try {
-    const raw = fs.readFileSync(_INV_FILE, 'utf8');
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch (_) { return []; }
+  if (storeKey === 'ghost:inventory') {
+    try {
+      const raw = fs.readFileSync(_INV_FILE, 'utf8');
+      const data = JSON.parse(raw);
+      return Array.isArray(data) ? data : [];
+    } catch (_) { return []; }
+  }
+  if (storeKey === 'ghost:users') {
+    try {
+      const raw = fs.readFileSync(_USERS_FILE, 'utf8');
+      const data = JSON.parse(raw);
+      return Array.isArray(data) ? data : [];
+    } catch (_) { return []; }
+  }
+  return null;
 }
 
 function _fileSet (storeKey, value) {
-  if (storeKey !== 'ghost:inventory') return false;
-  try {
-    const tmp = _INV_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
-    fs.renameSync(tmp, _INV_FILE);
-    return true;
-  } catch (err) {
-    console.error('[ghost/inventory] file write error:', err.message);
-    return false;
+  if (storeKey === 'ghost:inventory') {
+    try {
+      const tmp = _INV_FILE + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+      fs.renameSync(tmp, _INV_FILE);
+      return true;
+    } catch (err) {
+      console.error('[ghost/inventory] file write error:', err.message);
+      return false;
+    }
   }
+  if (storeKey === 'ghost:users') {
+    try {
+      const tmp = _USERS_FILE + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+      fs.renameSync(tmp, _USERS_FILE);
+      return true;
+    } catch (err) {
+      console.error('[ghost/users] file write error:', err.message);
+      return false;
+    }
+  }
+  return false;
 }
 
 // ── Redis client factory ──────────────────────────────────────────────────────
@@ -1835,15 +1859,25 @@ app.get('/order-success', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'order
 // Returns the decoded claims { sub, username, tier, iat } or null.
 function _verifyCustomerToken (token) {
   if (!token || typeof token !== 'string') return null;
+  // Strip "Bearer " prefix if caller forgot to strip it
+  if (token.startsWith('Bearer ')) token = token.slice(7).trim();
+
   const dot = token.lastIndexOf('.');
   if (dot < 1) return null;
   const payload = token.slice(0, dot);
   const sig     = token.slice(dot + 1);
   const sessionSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
   if (sessionSecret && sig !== 'nosig') {
+    // Use base64url encoding for both sides of the comparison so buffer
+    // lengths always match (base64url output is deterministic length).
     const expected = crypto.createHmac('sha256', sessionSecret).update(payload).digest('base64url');
     let ok = false;
-    try { ok = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)); } catch (_) {}
+    try {
+      ok = crypto.timingSafeEqual(
+        Buffer.from(sig,      'base64url'),
+        Buffer.from(expected, 'base64url'),
+      );
+    } catch (_) {}
     if (!ok) return null;
   }
   try {
@@ -2071,38 +2105,57 @@ app.get('/dl/GhostConfig.exe', (req, res) => {
   });
 });
 
-// ── GET /api/customer/dashboard ───────────────────────────────────────────────
-// Authenticated customer dashboard data — reads from Redis directly.
-// All tabs (License, Downloads, Purchases, Support, Settings) are served
-// from one endpoint. Returns empty collections for new users with no data.
-app.get('/api/customer/dashboard', async (req, res) => {
-  console.log('[ghost/dashboard] dashboard_request ip=%s', req.ip);
-
-  // ── Auth: Bearer token or ghost_token cookie ─────────────────────────────
+// ── Shared customer auth middleware ───────────────────────────────────────────
+// Used by /api/customer/dashboard and all /api/account/* aliases.
+// Sets req.customerClaims on success or calls next() with 401 response.
+function _requireCustomerSession (req, res, next) {
+  console.log('[customer] request_received path=%s ip=%s', req.path, req.ip);
   const authHeader = req.headers['authorization'] || '';
   const rawToken   = authHeader.startsWith('Bearer ')
     ? authHeader.slice(7).trim()
     : (req.cookies && req.cookies['ghost_token']) || '';
 
-  const claims = _verifyCustomerToken(rawToken);
-  const userAuthenticated = Boolean(claims);
-  console.log('[ghost/dashboard] user_authenticated=%s', userAuthenticated);
+  const sessionPresent = Boolean(rawToken);
+  console.log('[customer] session_present=%s', sessionPresent);
 
-  if (!userAuthenticated) {
+  if (!sessionPresent) {
     return res.status(401).json({ ok: false, error: 'Authentication required.' });
   }
 
+  const claims = _verifyCustomerToken(rawToken);
+  const sessionValid = Boolean(claims);
+  console.log('[customer] session_valid=%s', sessionValid);
+
+  if (!sessionValid) {
+    return res.status(401).json({ ok: false, error: 'Session expired or invalid.' });
+  }
+
+  console.log('[customer] user_id=%s', claims.sub || '');
+  req.customerClaims = claims;
+  next();
+}
+
+// ── GET /api/customer/dashboard ───────────────────────────────────────────────
+// Authenticated customer dashboard data — reads from Redis directly.
+// All tabs (License, Downloads, Purchases, Support, Settings) are served
+// from one endpoint. Returns empty collections for new users with no data.
+// ── Shared dashboard data handler — called by both /api/customer/dashboard and
+// the /api/account/* aliases so all tabs use identical auth + Redis reads.
+async function _serveDashboard (req, res) {
+  const claims   = req.customerClaims;
   const userId   = claims.sub;
   const username = claims.username || '';
-  console.log('[ghost/dashboard] user_id=%s username=%s', userId, username);
 
   try {
-    // ── Load users ────────────────────────────────────────────────────────
+    // ── Load users from the same Redis key used by registration/login ─────
     const raw   = await _redisGet('ghost:users');
     const users = Array.isArray(raw) ? raw : [];
+    // Match by user id (primary) or username (fallback for older tokens)
     const user  = users.find(u => u.id === userId || u.username === username);
+    const emailPresent = Boolean(user && user.email);
+    console.log('[customer] email_present=%s', emailPresent);
     const accountFound = Boolean(user);
-    console.log('[ghost/dashboard] account_found=%s', accountFound);
+    console.log('[customer] account_found=%s', accountFound);
 
     if (!accountFound) {
       return res.status(404).json({ ok: false, error: 'Account not found.' });
@@ -2145,30 +2198,41 @@ app.get('/api/customer/dashboard', async (req, res) => {
         };
       }
     }
-    console.log('[ghost/dashboard] licenses_found=%d', licensesFound);
+    console.log('[customer] licenses_count=%d', licensesFound);
 
     // ── Orders / Purchases ────────────────────────────────────────────────
+    // A brand-new account legitimately has 0 orders — never error on empty.
     let orders = [];
     let ordersFound = 0;
     try {
       if (_redisConfigured()) {
         const redis = _getRedisClient();
-        const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+        // Try sorted-set index first; fall back to flat ghost:orders list
+        let ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => null);
         if (Array.isArray(ids) && ids.length) {
           const recs = await Promise.all(
             ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
           );
           const allOrders = recs.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
-          // Match orders by email or license key
           orders = allOrders.filter(o =>
             (o.email && user.email && o.email.toLowerCase() === user.email.toLowerCase()) ||
             (licenseKey && o.license_key && o.license_key.toUpperCase() === licenseKey.toUpperCase())
           );
           ordersFound = orders.length;
+        } else {
+          // Fallback: flat ghost:orders array
+          const flat = await _withTimeout(redis.get('ghost:orders')).catch(() => null);
+          if (Array.isArray(flat)) {
+            orders = flat.filter(o =>
+              (o.email && user.email && o.email.toLowerCase() === user.email.toLowerCase()) ||
+              (licenseKey && o.license_key && o.license_key.toUpperCase() === licenseKey.toUpperCase())
+            );
+            ordersFound = orders.length;
+          }
         }
       }
-    } catch (_) { /* non-fatal */ }
-    console.log('[ghost/dashboard] orders_found=%d', ordersFound);
+    } catch (_) { /* non-fatal — empty orders is valid for new accounts */ }
+    console.log('[customer] orders_count=%d', ordersFound);
 
     // ── Downloads ─────────────────────────────────────────────────────────
     let downloads = [];
@@ -2180,7 +2244,6 @@ app.get('/api/customer/dashboard', async (req, res) => {
         downloadsFound = dlData.length;
       }
     } catch (_) { /* non-fatal */ }
-    console.log('[ghost/dashboard] downloads_found=%d', downloadsFound);
 
     // ── Settings ──────────────────────────────────────────────────────────
     const settings = await _redisGet('ghost:settings').catch(() => null) || {};
@@ -2221,21 +2284,59 @@ app.get('/api/customer/dashboard', async (req, res) => {
       },
     };
 
-    console.log('[ghost/dashboard] response_sent username=%s licenses=%d orders=%d downloads=%d',
-      user.username, licensesFound, ordersFound, downloadsFound);
+    console.log('[customer] response_sent=true username=%s licenses=%d orders=%d',
+      user.username, licensesFound, ordersFound);
     return res.json(payload);
 
   } catch (err) {
-    console.error('[ghost/dashboard] error name=%s message=%s', err.name, err.message);
+    console.error('[customer] dashboard_error name=%s message=%s', err.name, err.message);
     return res.status(500).json({ ok: false, error: 'Failed to load dashboard. Please try again.' });
   }
+}
+
+app.get('/api/customer/dashboard', _requireCustomerSession, (req, res) => _serveDashboard(req, res));
+
+// ── /api/account/* aliases — same session system as /api/customer/dashboard ───
+// Every alias authenticates via _requireCustomerSession and delegates to the
+// same Redis data used by registration and the main dashboard endpoint.
+// This ensures all tabs use one unified auth and one data source.
+
+app.get('/api/account/me', _requireCustomerSession, async (req, res) => {
+  const { sub: userId, username } = req.customerClaims;
+  try {
+    const raw   = await _redisGet('ghost:users');
+    const users = Array.isArray(raw) ? raw : [];
+    const user  = users.find(u => u.id === userId || u.username === username);
+    if (!user) return res.status(404).json({ ok: false, error: 'Account not found.' });
+    return res.json({ ok: true, id: user.id, username: user.username, email: user.email,
+                      tier: user.tier, memberSince: (user.createdAt || '').slice(0, 10) });
+  } catch (err) {
+    console.error('[customer] /api/account/me error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load account.' });
+  }
+});
+
+// /api/account/dashboard, /api/account/licenses, /api/account/orders,
+// /api/account/downloads, /api/account/settings all delegate to the shared
+// dashboard handler so a single Redis read serves all tabs.
+['dashboard', 'licenses', 'orders', 'downloads', 'settings'].forEach(tab => {
+  app.get(`/api/account/${tab}`, _requireCustomerSession, (req, res) => _serveDashboard(req, res));
+});
+
+// ── POST /api/auth/logout — native handler (no proxy needed) ─────────────────
+// Clears the ghost_token cookie. The JS client also removes it from localStorage.
+// Defined before the catch-all proxy so it runs natively without a Python backend.
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('ghost_token', { path: '/', sameSite: 'Lax' });
+  console.log('[customer] logout ip=%s', req.ip);
+  return res.json({ ok: true });
 });
 
 // ── Ghost shared Python API proxy routes ──────────────────────────────────────
 // Auth + customer-facing routes only — admin routes are handled natively above.
-// NOTE: /api/auth/register and /api/auth/login are handled natively above;
-//       remaining /api/auth/* routes (logout, etc.) still proxy to Python backend
-//       if GHOST_API_URL is set.
+// NOTE: /api/auth/register, /api/auth/login, /api/auth/logout are handled natively
+//       above. Remaining /api/auth/* sub-routes (if any) proxy to Python backend
+//       only if GHOST_API_URL is set.
 app.all('/api/auth/*',     (req, res) => _proxyToApi(req, res));
 app.all('/api/license/*',  (req, res) => _proxyToApi(req, res));
 app.all('/api/purchases',  (req, res) => _proxyToApi(req, res));
