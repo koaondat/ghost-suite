@@ -712,3 +712,183 @@ class TestAPIHealth:
         assert r.status_code == 405
         data = r.get_json()
         assert data["ok"] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin panel cookie-based auth — full production sequence trace
+# POST /api/admin/panel/auth → GET /api/admin/session → GET /api/admin/dashboard
+# → GET /api/admin/inventory  (all must return 200)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAdminCookieAuth:
+    """
+    Covers every step of the required production auth trace:
+      1. POST /api/admin/panel/auth  → 200, Set-Cookie __Host-ghost_admin_session present
+      2. GET  /api/admin/session     → 200, authenticated=true  (cookie sent automatically)
+      3. GET  /api/admin/dashboard   → 200  (cookie sent automatically)
+      4. GET  /api/admin/inventory   → 200  (cookie sent automatically)
+
+    Also verifies the debug endpoint and logout.
+    """
+
+    # The GHOST_ADMIN_API_KEY set in conftest/env
+    _PASSWORD = "test-admin-key-abcdef"
+
+    def _login(self, client):
+        """POST to /api/admin/panel/auth and return the response."""
+        return client.post(
+            "/api/admin/panel/auth",
+            json={"password": self._PASSWORD},
+        )
+
+    # ── Step 1 ────────────────────────────────────────────────────────────────
+    def test_panel_auth_returns_200(self, api_client):
+        r = self._login(api_client)
+        assert r.status_code == 200, f"Expected 200 from /api/admin/panel/auth, got {r.status_code}: {r.data}"
+        data = r.get_json()
+        assert data["ok"] is True
+
+    def test_panel_auth_sets_cookie(self, api_client):
+        r = self._login(api_client)
+        assert r.status_code == 200
+        # Flask test client stores cookies in r.headers["Set-Cookie"]
+        cookie_header = r.headers.get("Set-Cookie", "")
+        assert "__Host-ghost_admin_session" in cookie_header, (
+            f"Set-Cookie header missing __Host-ghost_admin_session.\n"
+            f"Got: {cookie_header!r}"
+        )
+
+    def test_panel_auth_cookie_is_httponly(self, api_client):
+        r = self._login(api_client)
+        cookie_header = r.headers.get("Set-Cookie", "")
+        assert "HttpOnly" in cookie_header, (
+            f"Cookie must be HttpOnly. Got: {cookie_header!r}"
+        )
+
+    def test_panel_auth_cookie_is_secure(self, api_client):
+        r = self._login(api_client)
+        cookie_header = r.headers.get("Set-Cookie", "")
+        assert "Secure" in cookie_header, (
+            f"Cookie must be Secure. Got: {cookie_header!r}"
+        )
+
+    def test_panel_auth_cookie_samesite_lax(self, api_client):
+        r = self._login(api_client)
+        cookie_header = r.headers.get("Set-Cookie", "")
+        assert "SameSite=Lax" in cookie_header, (
+            f"Cookie must be SameSite=Lax. Got: {cookie_header!r}"
+        )
+
+    def test_panel_auth_cookie_path_root(self, api_client):
+        r = self._login(api_client)
+        cookie_header = r.headers.get("Set-Cookie", "")
+        assert "Path=/" in cookie_header, (
+            f"Cookie must have Path=/. Got: {cookie_header!r}"
+        )
+
+    def test_panel_auth_no_token_in_body(self, api_client):
+        """The panel JWT must NOT be returned in the JSON body (security)."""
+        r = self._login(api_client)
+        data = r.get_json()
+        assert "token" not in data, (
+            "JWT must not be exposed in response body — browser should only know it via Set-Cookie"
+        )
+
+    def test_panel_auth_wrong_password_returns_401(self, api_client):
+        r = api_client.post("/api/admin/panel/auth", json={"password": "wrong-password"})
+        assert r.status_code == 401
+
+    # ── Step 2 ────────────────────────────────────────────────────────────────
+    def test_session_unauthenticated_returns_401(self, api_client):
+        r = api_client.get("/api/admin/session")
+        assert r.status_code == 401
+        data = r.get_json()
+        assert data["authenticated"] is False
+
+    def test_session_after_login_returns_authenticated(self, api_client):
+        self._login(api_client)   # sets cookie in Flask test client jar
+        r = api_client.get("/api/admin/session")
+        assert r.status_code == 200, (
+            f"GET /api/admin/session should return 200 after login, got {r.status_code}: {r.data}"
+        )
+        data = r.get_json()
+        assert data["authenticated"] is True
+
+    # ── Step 3 ────────────────────────────────────────────────────────────────
+    def test_dashboard_without_cookie_returns_401(self, api_client):
+        r = api_client.get("/api/admin/dashboard")
+        assert r.status_code == 401
+
+    def test_dashboard_after_login_returns_200(self, api_client):
+        self._login(api_client)
+        r = api_client.get("/api/admin/dashboard")
+        assert r.status_code == 200, (
+            f"GET /api/admin/dashboard should return 200 after login, got {r.status_code}: {r.data}"
+        )
+        data = r.get_json()
+        assert data["ok"] is True
+
+    # ── Step 4 ────────────────────────────────────────────────────────────────
+    def test_inventory_without_cookie_returns_401(self, api_client):
+        r = api_client.get("/api/admin/inventory")
+        assert r.status_code == 401
+
+    def test_inventory_after_login_returns_200(self, api_client):
+        self._login(api_client)
+        r = api_client.get("/api/admin/inventory")
+        assert r.status_code == 200, (
+            f"GET /api/admin/inventory should return 200 after login, got {r.status_code}: {r.data}"
+        )
+        data = r.get_json()
+        assert data["ok"] is True
+
+    # ── Debug endpoint ────────────────────────────────────────────────────────
+    def test_debug_session_no_cookie(self, api_client):
+        r = api_client.get("/api/admin/debug-session")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["cookiePresent"] is False
+        assert data["sessionValid"] is False
+        assert "secretConfigured" in data
+        # Must not expose any actual values
+        assert "token" not in data
+        assert "secret" not in data
+        assert "password" not in data
+        assert "hash" not in data
+
+    def test_debug_session_with_cookie(self, api_client):
+        self._login(api_client)
+        r = api_client.get("/api/admin/debug-session")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["cookiePresent"] is True
+        assert data["sessionValid"] is True
+        assert data["secretConfigured"] is True
+
+    # ── Logout ────────────────────────────────────────────────────────────────
+    def test_logout_clears_session(self, api_client):
+        self._login(api_client)
+        # Verify logged in
+        r = api_client.get("/api/admin/session")
+        assert r.status_code == 200
+
+        # Logout
+        lo = api_client.post("/api/admin/panel/logout")
+        assert lo.status_code == 200
+
+        # Cookie should be cleared — session endpoint must now return 401
+        r2 = api_client.get("/api/admin/session")
+        assert r2.status_code == 401
+
+    # ── CORS header check ─────────────────────────────────────────────────────
+    def test_cors_access_control_allow_credentials(self, api_client):
+        """credentials: 'include' requires Access-Control-Allow-Credentials: true."""
+        r = api_client.get(
+            "/api/admin/session",
+            headers={"Origin": "https://yourdomain.com"},
+        )
+        # 401 is fine here (no cookie) — we only check the CORS header
+        acao = r.headers.get("Access-Control-Allow-Credentials", "")
+        assert acao == "true", (
+            f"Access-Control-Allow-Credentials must be 'true'. Got: {acao!r}"
+        )

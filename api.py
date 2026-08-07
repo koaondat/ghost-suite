@@ -114,11 +114,19 @@ if not os.environ.get("GHOST_HMAC_SECRET"):
 API_AUDIT_LOG = _HERE / "api_audit.json"
 ORDERS_DB     = _HERE / "orders.json"
 
-# ── Admin panel token ─────────────────────────────────────────────────────────
-# A separate short-lived JWT used only by the web admin panel UI.
-# Issued by /api/admin/panel/auth and verified by require_admin via X-Admin-Panel-Token.
-_PANEL_JWT_ALGO = "HS256"
-_PANEL_JWT_TTL  = 8 * 3600   # 8 hours
+# ── Admin panel session cookie ────────────────────────────────────────────────
+# A short-lived JWT baked into the HttpOnly __Host-ghost_admin_session cookie.
+# Issued by POST /api/admin/panel/auth and verified by require_admin.
+# Cookie requirements (enforced here):
+#   • Name:      __Host-ghost_admin_session  (__Host- prefix → browser requires Secure + Path=/)
+#   • HttpOnly:  True
+#   • Secure:    True  (enforced by __Host- prefix; Flask sets it explicitly)
+#   • SameSite:  Lax
+#   • Path:      /  (enforced by __Host- prefix)
+#   • no Domain attribute  (required by __Host- prefix)
+_PANEL_JWT_ALGO     = "HS256"
+_PANEL_JWT_TTL      = 8 * 3600   # 8 hours
+_ADMIN_COOKIE_NAME  = "__Host-ghost_admin_session"
 
 # ── Thread lock for the audit log ─────────────────────────────────────────────
 _audit_lock = threading.Lock()
@@ -147,9 +155,18 @@ limiter = Limiter(
 # ── CORS ───────────────────────────────────────────────────────────────────────
 @app.after_request
 def _cors(response):
-    response.headers["Access-Control-Allow-Origin"]  = _ALLOWED_ORIGINS
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Admin-Key, Idempotency-Key"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,DELETE,PATCH,OPTIONS"
+    # credentials: "include" requires an explicit origin (never wildcard).
+    # If GHOST_ALLOWED_ORIGINS is "*" (dev default) we reflect the request origin
+    # so credentialed requests work locally.  In production set an exact origin.
+    origin = request.headers.get("Origin", "")
+    if _ALLOWED_ORIGINS == "*":
+        allowed = origin or "*"
+    else:
+        allowed = _ALLOWED_ORIGINS
+    response.headers["Access-Control-Allow-Origin"]       = allowed
+    response.headers["Access-Control-Allow-Credentials"]  = "true"
+    response.headers["Access-Control-Allow-Headers"]      = "Content-Type, Authorization, X-Admin-Key, Idempotency-Key"
+    response.headers["Access-Control-Allow-Methods"]      = "GET,POST,DELETE,PATCH,OPTIONS"
     return response
 
 
@@ -281,8 +298,9 @@ def require_session(f):
 def require_admin(f):
     """
     Require one of:
-      • X-Admin-Key header matching GHOST_ADMIN_API_KEY, OR
-      • X-Admin-Panel-Token header (signed panel JWT issued by /api/admin/panel/auth), OR
+      • __Host-ghost_admin_session cookie (HttpOnly panel session — primary web path), OR
+      • X-Admin-Key header matching GHOST_ADMIN_API_KEY (bot / CI scripts), OR
+      • X-Admin-Panel-Token header (legacy — panel JWT in header, kept for compat), OR
       • A valid JWT whose tier is ADMIN.
     Sets g.actor for audit logging.
     """
@@ -290,7 +308,17 @@ def require_admin(f):
     def wrapper(*args, **kwargs):
         import hmac as _hmac
 
-        # ── Path 1: raw API key (bot, desktop panel, CI scripts) ──────────────
+        # ── Path 1: HttpOnly session cookie (browser admin panel) ─────────────
+        cookie_token = request.cookies.get(_ADMIN_COOKIE_NAME, "").strip()
+        if cookie_token:
+            claims = _decode_panel_jwt(cookie_token)
+            if not claims:
+                return jsonify({"ok": False, "error": "Admin session expired. Please log in again."}), 401
+            g.actor = claims.get("sub", "admin")
+            g.tier  = "ADMIN"
+            return f(*args, **kwargs)
+
+        # ── Path 2: raw API key (bot, desktop panel, CI scripts) ──────────────
         api_key = request.headers.get("X-Admin-Key", "").strip()
         if api_key:
             if not _ADMIN_API_KEY:
@@ -301,7 +329,7 @@ def require_admin(f):
             g.actor = "__api_key__"
             return f(*args, **kwargs)
 
-        # ── Path 2: web admin panel JWT (X-Admin-Panel-Token) ─────────────────
+        # ── Path 3: web admin panel JWT header (legacy / non-browser clients) ──
         panel_token = request.headers.get("X-Admin-Panel-Token", "").strip()
         if panel_token:
             claims = _decode_panel_jwt(panel_token)
@@ -311,7 +339,7 @@ def require_admin(f):
             g.tier  = "ADMIN"
             return f(*args, **kwargs)
 
-        # ── Path 3: ADMIN-tier customer JWT ───────────────────────────────────
+        # ── Path 4: ADMIN-tier customer JWT ───────────────────────────────────
         token = _get_token()
         if not token:
             return jsonify({"ok": False, "error": "Admin authentication required"}), 401
@@ -420,8 +448,13 @@ def route_admin_panel_auth():
     POST /api/admin/panel/auth { password }
     Authenticates the admin panel UI.  Accepts either:
       • A raw GHOST_ADMIN_API_KEY as the password (always works when configured)
-      • A SHA-256 password hash stored in admin_settings.json (set via /api/admin/settings/password)
-    Returns a short-lived panel JWT that must be sent as X-Admin-Panel-Token.
+      • A SHA-256 password hash stored in admin_settings.json
+
+    On success sets the __Host-ghost_admin_session HttpOnly cookie so the
+    browser automatically includes it in subsequent same-origin admin requests.
+    Cookie properties:
+      HttpOnly, Secure, SameSite=Lax, Path=/, no Domain attribute.
+    The __Host- prefix additionally forces Path=/ and Secure in all browsers.
     """
     import hmac as _hmac
     data = request.get_json(silent=True) or {}
@@ -453,7 +486,75 @@ def route_admin_panel_auth():
     token = _issue_panel_jwt("admin")
     log.info("admin_panel_auth_success ip=%s", request.remote_addr)
     _audit("admin_panel_auth", "admin", "", "Panel login", ok=True)
-    return jsonify({"ok": True, "token": token, "ttl": _PANEL_JWT_TTL})
+
+    resp = jsonify({"ok": True, "ttl": _PANEL_JWT_TTL})
+    # __Host- prefix requires: Secure=True, Path="/", no Domain attribute.
+    # We never set Domain so that the __Host- contract is satisfied.
+    resp.set_cookie(
+        _ADMIN_COOKIE_NAME,
+        token,
+        httponly=True,
+        secure=True,
+        samesite="Lax",
+        path="/",
+        max_age=_PANEL_JWT_TTL,
+    )
+    return resp
+
+
+@app.route("/api/admin/panel/logout", methods=["POST"])
+def route_admin_panel_logout():
+    """
+    POST /api/admin/panel/logout
+    Clears the __Host-ghost_admin_session cookie.
+    JS cannot delete an HttpOnly cookie directly — this endpoint does it.
+    """
+    resp = jsonify({"ok": True})
+    resp.delete_cookie(
+        _ADMIN_COOKIE_NAME,
+        path="/",
+        samesite="Lax",
+        secure=True,
+    )
+    return resp
+
+
+@app.route("/api/admin/session", methods=["GET"])
+def route_admin_session():
+    """
+    GET /api/admin/session
+    Returns { authenticated: true } when the __Host-ghost_admin_session cookie
+    is present and valid; { authenticated: false } with HTTP 401 otherwise.
+    Used by the admin UI on page load to decide whether to show the login form.
+    Never triggers the session-expiry toast — the client handles 401 silently.
+    """
+    cookie_token = request.cookies.get(_ADMIN_COOKIE_NAME, "").strip()
+    if not cookie_token:
+        return jsonify({"authenticated": False}), 401
+    claims = _decode_panel_jwt(cookie_token)
+    if not claims:
+        return jsonify({"authenticated": False}), 401
+    return jsonify({"authenticated": True, "actor": claims.get("sub", "admin")})
+
+
+@app.route("/api/admin/debug-session", methods=["GET"])
+def route_admin_debug_session():
+    """
+    GET /api/admin/debug-session
+    Safe diagnostic endpoint.  Never returns cookie values, passwords, hashes,
+    or secrets — only boolean presence/validity flags.
+    """
+    cookie_token  = request.cookies.get(_ADMIN_COOKIE_NAME, "").strip()
+    cookie_present = bool(cookie_token)
+    session_valid  = False
+    if cookie_present:
+        session_valid = _decode_panel_jwt(cookie_token) is not None
+    secret_configured = bool(_JWT_SECRET and _JWT_SECRET != "INSECURE-FALLBACK-SET-GHOST_JWT_SECRET-IN-ENV")
+    return jsonify({
+        "cookiePresent":    cookie_present,
+        "sessionValid":     session_valid,
+        "secretConfigured": secret_configured,
+    })
 
 
 @app.route("/api/admin/panel/verify", methods=["GET"])

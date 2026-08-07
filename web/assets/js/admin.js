@@ -10,8 +10,9 @@
 (function () {
 
   /* ── State ─────────────────────────────────────────────────────────── */
-  // Session is managed by a server-side HttpOnly cookie (ghost_admin_session).
-  // The browser sends it automatically with every same-origin request.
+  // Session is managed by a server-side HttpOnly cookie (__Host-ghost_admin_session).
+  // The browser sends it automatically with every same-origin request because every
+  // admin fetch uses credentials: "include".
   // We track login state client-side only to control UI visibility — the cookie
   // is the real authority; the server validates it on every authenticated request.
   let _loggedIn   = false;
@@ -125,7 +126,9 @@
     setBusy('loginBtn', true);
     hideAlert('loginAlert');
     try {
-      // The server sets an HttpOnly cookie on success; we only check ok:true.
+      // credentials: "include" is set by apiFetch so the browser stores the
+      // __Host-ghost_admin_session HttpOnly cookie the server sets on success.
+      // We never read the cookie from JS — we only check ok:true.
       const { ok, data } = await apiFetch('/api/admin/panel/auth', {
         method: 'POST',
         body:   JSON.stringify({ password: pw }),
@@ -147,7 +150,8 @@
 
   async function doLogout () {
     _loggedIn = false;
-    // Ask the server to clear the HttpOnly cookie — JS cannot delete it directly.
+    // POST to /api/admin/panel/logout so the server can expire the HttpOnly cookie.
+    // JS cannot delete an HttpOnly cookie directly.
     await fetch('/api/admin/panel/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     hide('adminShell');
     show('adminLogin');
