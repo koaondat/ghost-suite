@@ -8,13 +8,13 @@
  * Routes (registered in server.js):
  *   POST /api/checkout/create-session   -> create a Stripe Checkout Session
  *   POST /api/checkout/validate-coupon  -> validate a Stripe coupon/promo code
- *   GET  /api/order/:sessionId          -> retrieve a stored order record
  *
  * Secrets required (via environment variables — never hardcoded):
  *   STRIPE_SECRET_KEY       sk_live_... or sk_test_...
  *   STRIPE_WEBHOOK_SECRET   whsec_...  (used only in stripe_webhook.js)
  *   BASE_URL                https://yourdomain.com
- *   GHOST_DELIVERY_URL      https://delivery.yourdomain.com  (never localhost in prod)
+ *   UPSTASH_REDIS_REST_URL  — Upstash Redis REST endpoint
+ *   UPSTASH_REDIS_REST_TOKEN— Upstash Redis REST bearer token
  * ================================================================
  */
 
@@ -56,33 +56,6 @@ const PLAN_CATALOGUE = {
 };
 
 
-/* ── Shared order storage proxy ─────────────────────────────────────────────
-   Calls forwarded to the Python license_delivery backend.
-   GHOST_DELIVERY_URL must be set to the deployed delivery server URL.
-   It must NOT be localhost in production — the delivery server is a
-   separate Python process and cannot run inside a Vercel serverless function.
-─────────────────────────────────────────────────────────────────────────── */
-const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-
-if (!DELIVERY_BACKEND_URL) {
-  console.error(
-    '[ghost/checkout] FATAL: GHOST_DELIVERY_URL is not set. ' +
-    'Set it to the URL of the deployed Python license_delivery server. ' +
-    'All checkout and order routes will return 503 until this is configured.',
-  );
-}
-
-
-/* ── Utility: safe fetch wrapper ────────────────────────────────────── */
-async function _deliveryFetch (path, init = {}) {
-  if (!DELIVERY_BACKEND_URL) {
-    throw new Error('GHOST_DELIVERY_URL is not configured.');
-  }
-  const fetch = (await import('node-fetch')).default;
-  return fetch(`${DELIVERY_BACKEND_URL}${path}`, init);
-}
-
-
 /**
  * POST /api/checkout/create-session
  * -----------------------------------
@@ -108,30 +81,54 @@ async function createSession (req, res) {
 
   const plan = PLAN_CATALOGUE[planId];
 
-  /* ── Free trial: bypass Stripe and issue key directly ────────────────── */
+  /* ── Free trial: bypass Stripe and issue key directly from Redis ─────── */
   if (plan.mode === 'free') {
     try {
+      // Import fulfillOrder from paypal.js — it reads ghost:inventory directly
+      const { fulfillOrder } = require('./paypal');
       const orderId = 'GHOST-TRIAL-' + Date.now().toString(36).toUpperCase();
-      const deliveryRes = await _deliveryFetch('/api/payment/confirm', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          order_id:      orderId,
-          payment_token: 'FREE_TRIAL',
-          plan:          planId,
-          email:         email.trim(),
-          discord:       discord.trim(),
-          price_usd:     0,
-        }),
-      });
-      const data = await deliveryRes.json();
-      if (!data.ok) {
-        return res.status(500).json({ ok: false, message: data.error || 'Trial activation failed.' });
+
+      // Write a minimal order record so fulfillOrder can find it
+      const _REDIS_URL   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
+      const _REDIS_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || '');
+
+      if (_REDIS_URL && _REDIS_TOKEN) {
+        const { default: fetch } = await import('node-fetch');
+        const orderRecord = {
+          order_id:        orderId,
+          plan:            planId,
+          plan_label:      plan.label,
+          tier:            plan.tier,
+          email:           email.trim(),
+          discord:         discord.trim(),
+          price_usd:       0,
+          currency:        'USD',
+          created_at:      new Date().toISOString(),
+          payment_status:  'completed',
+          payment_verified: true,
+          delivery_status: 'pending',
+          license_key:     null,
+          license_status:  'pending',
+        };
+        const pipeline = [
+          ['SET', `ghost:order:${orderId}`, JSON.stringify(orderRecord)],
+          ['ZADD', 'ghost:orders:index', String(Math.floor(Date.now() / 1000)), orderId],
+        ];
+        await fetch(`${_REDIS_URL}/pipeline`, {
+          method:  'POST',
+          headers: { Authorization: `Bearer ${_REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+          body:    JSON.stringify(pipeline),
+        }).catch(() => {});
       }
-      return res.json({ ok: true, free: true, orderId, key: data.key, tier: data.tier });
+
+      const result = await fulfillOrder(orderId);
+      if (!result.ok) {
+        return res.status(503).json({ ok: false, message: 'No trial keys available at this time.' });
+      }
+      return res.json({ ok: true, free: true, orderId, key: result.licenseKey, tier: plan.tier });
     } catch (err) {
-      console.error('[ghost/checkout] free-trial delivery error:', err);
-      return res.status(502).json({ ok: false, message: 'License delivery service unavailable.' });
+      console.error('[ghost/checkout] free-trial fulfillment error:', err);
+      return res.status(500).json({ ok: false, message: 'Trial activation failed.' });
     }
   }
 
@@ -139,15 +136,12 @@ async function createSession (req, res) {
   let stripeCouponId;
   if (coupon) {
     try {
-      // Validate the promo code against Stripe — never trust client-side discount amounts
       const promoCodes = await stripe.promotionCodes.list({ code: coupon.trim().toUpperCase(), limit: 1, active: true });
       if (promoCodes.data.length > 0) {
         stripeCouponId = promoCodes.data[0].id;
       }
-      // If not found as promo code, silently skip — invalid coupons are not applied
     } catch (err) {
       console.warn('[ghost/checkout] coupon lookup failed:', err.message);
-      // Non-fatal: proceed without discount
     }
   }
 
@@ -178,18 +172,14 @@ async function createSession (req, res) {
       discord: discord.trim(),
       coupon:  coupon ? coupon.trim().toUpperCase() : '',
     },
-    // Collect billing address for fraud prevention
     billing_address_collection: 'auto',
-    // Allow promotion codes to be applied at checkout if not already supplied
     allow_promotion_codes: !stripeCouponId,
   };
 
-  // Apply the validated coupon if one was resolved
   if (stripeCouponId) {
     sessionParams.discounts = [{ promotion_code: stripeCouponId }];
   }
 
-  // For subscriptions, allow customers to manage their sub via portal
   if (plan.mode === 'subscription') {
     sessionParams.subscription_data = {
       metadata: { plan: planId, discord: discord.trim() },
@@ -213,9 +203,6 @@ async function createSession (req, res) {
  * POST /api/checkout/validate-coupon
  * ------------------------------------
  * Validates a Stripe promotion code for a given plan.
- * Body:   { code: string, plan: string }
- * OK:     { ok: true, discountPct: number, label: string }
- * Error:  { ok: false, message: string }
  */
 async function validateCoupon (req, res) {
   const { code, plan: planRaw } = req.body || {};
@@ -257,27 +244,5 @@ async function validateCoupon (req, res) {
 }
 
 
-/**
- * GET /api/order/:sessionId
- * --------------------------
- * Proxy to the Python delivery backend order lookup.
- * Used by the checkout success page and dashboard to retrieve
- * order status + license key after a Stripe redirect.
- */
-async function getOrder (req, res) {
-  const { sessionId } = req.params || {};
-  if (!sessionId) return res.status(400).json({ ok: false, error: 'sessionId is required.' });
-
-  try {
-    const deliveryRes = await _deliveryFetch(`/api/order/${encodeURIComponent(sessionId)}`);
-    const data        = await deliveryRes.json();
-    return res.status(deliveryRes.status).json(data);
-  } catch (err) {
-    console.error('[ghost/checkout] getOrder proxy error:', err);
-    return res.status(502).json({ ok: false, error: 'Order lookup unavailable.' });
-  }
-}
-
-
 /* ── Exports ─────────────────────────────────────────────────────────────── */
-module.exports = { createSession, validateCoupon, getOrder, PLAN_CATALOGUE };
+module.exports = { createSession, validateCoupon, PLAN_CATALOGUE };

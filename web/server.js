@@ -42,6 +42,7 @@ const path         = require('path');
 const crypto       = require('crypto');
 const cookieParser = require('cookie-parser');
 const paypal       = require('./api/paypal');
+const { fulfillOrder } = paypal;
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -320,7 +321,7 @@ app.get('/api/paypal/config', (req, res) => {
 app.get('/api/config/audit', (req, res) => {
   const vars = [
     'PAYPAL_CLIENT_ID', 'PAYPAL_CLIENT_SECRET', 'PAYPAL_ENVIRONMENT', 'PAYPAL_WEBHOOK_ID',
-    'GHOST_API_URL', 'GHOST_DELIVERY_URL', 'BASE_URL',
+    'GHOST_API_URL', 'BASE_URL',
     'ADMIN_SESSION_SECRET', 'GHOST_ADMIN_API_KEY',
     'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN',
   ];
@@ -436,31 +437,25 @@ app.post('/api/admin/logout', (_req, res) => {
 // ── GET /api/admin/dashboard ──────────────────────────────────────────────────
 app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
   try {
-    const [ordersRemote, inventory, activity] = await Promise.all([
-      _fetchDeliveryOrders(),
+    const [inventory, activity] = await Promise.all([
       _redisGet('ghost:inventory'),
       _redisGet('ghost:activity'),
     ]);
 
-    // Orders come from the Python delivery backend; fall back to Redis index if unavailable
+    // Orders read directly from Redis — single source of truth
     let ordersArr = [];
-    if (ordersRemote && ordersRemote.ok && Array.isArray(ordersRemote.orders)) {
-      ordersArr = ordersRemote.orders;
-    } else {
-      // Direct Redis fallback — read ghost:order:{id} keys via sorted-set index
-      try {
-        const redis = _redisConfigured() ? _getRedisClient() : null;
-        if (redis) {
-          const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
-          if (Array.isArray(ids) && ids.length) {
-            const recs = await Promise.all(
-              ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
-            );
-            ordersArr = recs.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
-          }
+    try {
+      const redis = _redisConfigured() ? _getRedisClient() : null;
+      if (redis) {
+        const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+        if (Array.isArray(ids) && ids.length) {
+          const recs = await Promise.all(
+            ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+          );
+          ordersArr = recs.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
         }
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
 
     const inventoryArr = Array.isArray(inventory) ? inventory : [];
     const activityArr  = Array.isArray(activity)  ? activity  : [];
@@ -469,7 +464,6 @@ app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
     const todayStr  = now.toISOString().slice(0, 10);
     const monthStr  = now.toISOString().slice(0, 7);
 
-    // Delivery backend uses payment_status='verified'; legacy PayPal uses 'COMPLETED'
     const completed = ordersArr.filter(o =>
       o.payment_status === 'COMPLETED' || o.payment_status === 'verified' || o.payment_verified === true
     );
@@ -1053,22 +1047,9 @@ app.post('/api/admin/inventory/:key/extend', _requireAdminSession, async (req, r
 // The delivery backend is the authoritative store for all orders (ghost:order:{id}).
 // The Node server never writes order records — it only reads them via these proxies.
 
-async function _fetchDeliveryOrders () {
-  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-  if (!DELIVERY_BACKEND_URL) return null;
-  try {
-    const { default: fetch } = await import('node-fetch');
-    const res = await fetch(`${DELIVERY_BACKEND_URL}/api/admin/orders`, { method: 'GET' });
-    if (!res.ok) return null;
-    return await res.json().catch(() => null);
-  } catch (_) { return null; }
-}
-
 app.get('/api/admin/orders', _requireAdminSession, async (req, res) => {
-  // Primary: read directly from Redis (ghost:orders:index + ghost:order:{id}).
-  // This is always attempted first — it works whether or not the Python delivery
-  // backend is running, and it includes orders persisted directly by paypal.js.
-  let redisOrders = null;
+  // Read directly from Redis — single source of truth.
+  let redisOrders = [];
   if (_redisConfigured()) {
     try {
       const redis = _getRedisClient();
@@ -1078,47 +1059,17 @@ app.get('/api/admin/orders', _requireAdminSession, async (req, res) => {
           ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
         );
         redisOrders = records.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
-      } else {
-        redisOrders = [];
       }
     } catch (err) {
       console.error('[ghost/admin] Redis orders read error:', err.message);
     }
   }
 
-  // Secondary: also try the delivery backend and merge any orders not already in Redis
-  const remote = await _fetchDeliveryOrders();
-  if (remote && remote.ok && Array.isArray(remote.orders) && remote.orders.length) {
-    if (!Array.isArray(redisOrders)) {
-      redisOrders = remote.orders;
-    } else {
-      // Merge: delivery backend may have orders that Redis does not (e.g. older orders)
-      const existingIds = new Set(redisOrders.map(o => o.order_id));
-      for (const o of remote.orders) {
-        if (o.order_id && !existingIds.has(o.order_id)) redisOrders.push(o);
-      }
-    }
-  }
-
-  const orders = Array.isArray(redisOrders) ? redisOrders : [];
-  return res.json({ ok: true, orders, total: orders.length });
+  return res.json({ ok: true, orders: redisOrders, total: redisOrders.length });
 });
 
 app.get('/api/admin/orders/:orderId', _requireAdminSession, async (req, res) => {
   const orderId = req.params.orderId;
-  // Try delivery backend first
-  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-  if (DELIVERY_BACKEND_URL) {
-    try {
-      const { default: fetch } = await import('node-fetch');
-      const upstream = await fetch(`${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(orderId)}`);
-      if (upstream.ok) {
-        const data = await upstream.json().catch(() => null);
-        if (data && data.ok) return res.json({ ok: true, order: data });
-      }
-    } catch (_) {}
-  }
-  // Fallback: Redis direct
   try {
     const redis = _redisConfigured() ? _getRedisClient() : null;
     if (!redis) return res.status(404).json({ ok: false, error: 'Order not found.' });
@@ -1133,15 +1084,9 @@ app.get('/api/admin/orders/:orderId', _requireAdminSession, async (req, res) => 
 
 // ── POST /api/admin/orders/fulfill-pending ────────────────────────────────────
 // Retry license delivery for every paid order that does not yet have a key.
-// Never re-charges. Calls POST /api/order/:orderId/fulfill on the delivery
-// backend (idempotent — already-delivered orders are returned unchanged).
+// Uses the same fulfillOrder() function — never re-charges.
 app.post('/api/admin/orders/fulfill-pending', _requireAdminSession, async (req, res) => {
-  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-  if (!DELIVERY_BACKEND_URL) {
-    return res.status(503).json({ ok: false, error: 'Delivery backend not configured.' });
-  }
-
-  // Gather all orders that are paid but not yet delivered
+  // Gather all orders from Redis
   let allOrders = [];
   if (_redisConfigured()) {
     try {
@@ -1158,26 +1103,11 @@ app.post('/api/admin/orders/fulfill-pending', _requireAdminSession, async (req, 
     }
   }
 
-  // Also pull from delivery backend in case Redis is empty or partial
-  try {
-    const { default: fetch } = await import('node-fetch');
-    const remoteRes = await fetch(`${DELIVERY_BACKEND_URL}/api/admin/orders`);
-    if (remoteRes.ok) {
-      const remote = await remoteRes.json().catch(() => null);
-      if (remote && Array.isArray(remote.orders)) {
-        const existingIds = new Set(allOrders.map(o => o.order_id));
-        for (const o of remote.orders) {
-          if (o.order_id && !existingIds.has(o.order_id)) allOrders.push(o);
-        }
-      }
-    }
-  } catch (_) {}
-
   // Filter to orders that are paid but key not yet assigned
   const pending = allOrders.filter(o => {
     const ps = (o.payment_status || '').toLowerCase();
     const ds = (o.delivery_status || '').toLowerCase();
-    const paid = ps === 'completed' || ps === 'verified';
+    const paid = ps === 'completed' || ps === 'verified' || ps === 'captured';
     const noKey = !o.license_key || ds === 'pending' || ds === 'delivery_pending' || ds === 'out_of_stock';
     return paid && noKey;
   });
@@ -1188,25 +1118,19 @@ app.post('/api/admin/orders/fulfill-pending', _requireAdminSession, async (req, 
 
   let fulfilled = 0;
   let failed    = 0;
-  let skipped   = allOrders.length - pending.length;
-
-  const { default: fetch } = await import('node-fetch');
+  const skipped = allOrders.length - pending.length;
 
   for (const order of pending) {
     const orderId = order.order_id;
     try {
-      const fulfillRes = await fetch(
-        `${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(orderId)}/fulfill`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
-      );
-      const data = await fulfillRes.json().catch(() => ({}));
-      if (data.license_key && data.delivery_status === 'delivered') {
+      const result = await fulfillOrder(orderId);
+      if (result.ok) {
         fulfilled++;
         console.log('[ghost/admin] fulfill-pending: fulfilled orderId=%s', orderId);
       } else {
         failed++;
         console.warn('[ghost/admin] fulfill-pending: could not fulfill orderId=%s reason=%s',
-          orderId, data.error || data.delivery_status || 'unknown');
+          orderId, result.reason || 'unknown');
       }
     } catch (err) {
       failed++;
@@ -1226,14 +1150,24 @@ app.get('/api/admin/customer-licenses', _requireAdminSession, async (req, res) =
 
 // ── Customers endpoints ───────────────────────────────────────────────────────
 app.get('/api/admin/customers', _requireAdminSession, async (req, res) => {
-  // Build customer list from inventory (sold keys) + orders from delivery backend
-  const [inventoryRaw, ordersResult] = await Promise.all([
-    _redisGet('ghost:inventory'),
-    _fetchDeliveryOrders(),
-  ]);
+  // Build customer list from inventory (sold keys) + Redis orders — single source of truth
+  const inventoryRaw = await _redisGet('ghost:inventory');
   const inventory = Array.isArray(inventoryRaw) ? inventoryRaw : [];
-  const orders    = (ordersResult && ordersResult.ok && Array.isArray(ordersResult.orders))
-    ? ordersResult.orders : [];
+
+  // Load all orders from Redis
+  let orders = [];
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+      if (Array.isArray(ids) && ids.length) {
+        const records = await Promise.all(
+          ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+        );
+        orders = records.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+      }
+    } catch (_) {}
+  }
 
   const map = {};
 
@@ -1398,36 +1332,41 @@ app.delete('/api/admin/activity', _requireAdminSession, async (req, res) => {
   return res.json({ ok: true });
 });
 
-// ── Fulfillment Diagnostics — proxy to Python delivery backend ────────────────
-// Returns the last 20 fulfillment attempts from fulfillment_diag.json.
-// Falls back to an empty list when the delivery backend is unavailable.
+// ── Fulfillment Diagnostics — Redis-based log ─────────────────────────────────
+// Returns recent orders with their fulfillment state from Redis.
 app.get('/api/admin/fulfillment-log', _requireAdminSession, async (req, res) => {
-  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
   const limit = Math.min(parseInt(req.query.limit || '20', 10) || 20, 50);
 
-  if (DELIVERY_BACKEND_URL) {
+  let attempts = [];
+  if (_redisConfigured()) {
     try {
-      const { default: fetch } = await import('node-fetch');
-      const upstream = await fetch(
-        `${DELIVERY_BACKEND_URL}/api/admin/fulfillment-log?limit=${limit}`,
-        { method: 'GET' }
-      );
-      if (upstream.ok) {
-        const data = await upstream.json().catch(() => null);
-        if (data && data.ok) return res.json(data);
+      const redis = _getRedisClient();
+      // Most-recent orders: reverse the sorted set
+      const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, limit - 1, { rev: true })).catch(() => []);
+      if (Array.isArray(ids) && ids.length) {
+        const records = await Promise.all(
+          ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+        );
+        attempts = records.filter(Boolean)
+          .map(r => typeof r === 'string' ? JSON.parse(r) : r)
+          .map(o => ({
+            order_id:        o.order_id,
+            plan:            o.plan,
+            email:           o.email,
+            payment_status:  o.payment_status,
+            delivery_status: o.delivery_status,
+            license_key:     o.license_key ? '[present]' : null,
+            failure_reason:  o.failure_reason || null,
+            created_at:      o.created_at,
+            fulfilled_at:    o.fulfilled_at || null,
+          }));
       }
     } catch (err) {
-      console.warn('[ghost/admin] fulfillment-log fetch error:', err.message);
+      console.warn('[ghost/admin] fulfillment-log Redis error:', err.message);
     }
   }
 
-  // Delivery backend unavailable — return empty list with a note
-  return res.json({
-    ok:       true,
-    attempts: [],
-    total:    0,
-    note:     'Delivery backend unavailable. Set GHOST_DELIVERY_URL to enable diagnostics.',
-  });
+  return res.json({ ok: true, attempts, total: attempts.length });
 });
 
 // ── Admin panel HTML ──────────────────────────────────────────────────────────
@@ -1447,29 +1386,6 @@ app.post('/api/paypal/create-order',      paypal.createOrder);
 app.post('/api/paypal/capture-order',     paypal.captureOrder);
 app.post('/api/paypal/webhook',           paypal.handleWebhook);
 app.post('/api/paypal/retry-fulfillment', paypal.retryFulfillment);
-
-// ── Order lookup + download (proxy to delivery backend) ──────────────────────
-async function _proxyToDelivery (req, res, deliveryPath) {
-  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-  if (!DELIVERY_BACKEND_URL) {
-    return res.status(503).json({ ok: false, error: 'Order service unavailable: GHOST_DELIVERY_URL not configured.' });
-  }
-  try {
-    const { default: fetch } = await import('node-fetch');
-    const BODY_METHODS = ['POST', 'PATCH', 'PUT'];
-    const hasBody = BODY_METHODS.includes(req.method) && req.body !== undefined;
-    const upstream = await fetch(`${DELIVERY_BACKEND_URL}${deliveryPath}`, {
-      method:  req.method || 'GET',
-      headers: hasBody ? { 'Content-Type': 'application/json' } : {},
-      body:    hasBody ? JSON.stringify(req.body) : undefined,
-    });
-    const data = await upstream.json().catch(() => ({}));
-    return res.status(upstream.status).json(data);
-  } catch (err) {
-    console.error('[ghost/server] delivery proxy error path=%s: %s', deliveryPath, err.message);
-    return res.status(502).json({ ok: false, error: 'Service unavailable.' });
-  }
-}
 
 // ── Order access token store (in-memory, short-lived) ────────────────────────
 // Maps  token → { orderId, expiresAt }
@@ -1502,23 +1418,14 @@ setInterval(() => {
 
 // ── POST /api/order/:orderId/issue-token ──────────────────────────────────────
 // Called immediately after capture to obtain a short-lived access token for the
-// success page.  Requires a valid PayPal capture response echoed back (orderId
-// is verified to exist in Redis before a token is issued).
+// success page.  Order existence is verified in Redis before the token is issued.
 app.post('/api/order/:orderId/issue-token', async (req, res) => {
   const orderId = req.params.orderId;
   if (!orderId) return res.status(400).json({ ok: false, error: 'orderId required.' });
 
-  // Verify the order exists before issuing a token (prevents token farming)
+  // Verify the order exists in Redis (prevents token farming)
   let found = false;
-  const DELIVERY_BACKEND_URL_T = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-  if (DELIVERY_BACKEND_URL_T) {
-    try {
-      const { default: fetch } = await import('node-fetch');
-      const r = await fetch(`${DELIVERY_BACKEND_URL_T}/api/order/${encodeURIComponent(orderId)}`);
-      if (r.ok) found = true;
-    } catch (_) {}
-  }
-  if (!found && _redisConfigured()) {
+  if (_redisConfigured()) {
     try {
       const redis = _getRedisClient();
       const raw = await _withTimeout(redis.get(`ghost:order:${orderId}`)).catch(() => null);
@@ -1546,22 +1453,7 @@ app.get('/api/order/:orderId', async (req, res) => {
   const tokenOk = token && _verifyOrderToken(token, orderId);
   const fullAccess = adminOk || tokenOk;   // can see license_key + sensitive fields
 
-  // Try delivery backend first
-  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-  if (DELIVERY_BACKEND_URL) {
-    try {
-      const { default: fetch } = await import('node-fetch');
-      const upstream = await fetch(`${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(orderId)}`);
-      if (upstream.ok) {
-        const data = await upstream.json().catch(() => null);
-        if (data) {
-          if (!fullAccess) { delete data.license_key; delete data.key; }
-          return res.json(data);
-        }
-      }
-    } catch (_) {}
-  }
-  // Fallback: read from Redis directly (works even when delivery backend is down)
+  // Read directly from Redis — single source of truth
   if (_redisConfigured()) {
     try {
       const redis = _getRedisClient();
@@ -1580,9 +1472,27 @@ app.get('/api/order/:orderId', async (req, res) => {
   }
   return res.status(404).json({ ok: false, error: 'Order not found.' });
 });
-app.get('/api/order/:orderId/download', (req, res) =>
-  _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}/download`),
-);
+
+// ── GET /api/order/:orderId/download ──────────────────────────────────────────
+// Serves the download file directly (no delivery backend proxy needed).
+app.get('/api/order/:orderId/download', async (req, res) => {
+  const orderId = req.params.orderId;
+  // Verify the order is delivered before allowing a download
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      const raw = await _withTimeout(redis.get(`ghost:order:${orderId}`)).catch(() => null);
+      if (raw) {
+        const record = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (record.delivery_status === 'delivered' || record.license_key) {
+          // Redirect to the direct download
+          return res.redirect('/dl/GhostConfig.exe');
+        }
+      }
+    } catch (_) {}
+  }
+  return res.status(403).json({ ok: false, error: 'Order not delivered.' });
+});
 
 // ── Checkout / order-success HTML ────────────────────────────────────────────
 app.get('/checkout.html', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {

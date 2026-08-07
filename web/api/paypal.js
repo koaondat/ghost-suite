@@ -8,15 +8,19 @@
  *   POST /api/paypal/create-order      Create a PayPal order (server-controlled price)
  *   POST /api/paypal/capture-order     Capture an approved PayPal order + deliver license
  *   POST /api/paypal/webhook           PayPal webhook receiver (PAYMENT.CAPTURE.COMPLETED)
- *   GET  /api/order/:orderId           Retrieve a stored order record
+ *   POST /api/paypal/retry-fulfillment Retry/reissue license for a paid order
  *
  * Required env vars (never hardcode these):
  *   PAYPAL_CLIENT_ID        — from developer.paypal.com
  *   PAYPAL_CLIENT_SECRET    — NEVER expose in browser code
  *   PAYPAL_ENVIRONMENT      — 'sandbox' or 'live'  (default: sandbox)
  *   PAYPAL_WEBHOOK_ID       — webhook ID from PayPal dashboard (for signature verification)
- *   GHOST_DELIVERY_URL      — URL of the Python license_delivery server
+ *   UPSTASH_REDIS_REST_URL  — Upstash Redis REST endpoint
+ *   UPSTASH_REDIS_REST_TOKEN— Upstash Redis REST bearer token
  *   BASE_URL                — public URL of this web server
+ *
+ * NOTE: There is NO separate delivery backend. Fulfillment reads the same
+ * ghost:inventory key used by Admin → Key Inventory and assigns a key directly.
  */
 
 'use strict';
@@ -30,29 +34,21 @@ const PAYPAL_API_BASE = PAYPAL_ENV === 'live'
   ? 'https://api-m.paypal.com'
   : 'https://api-m.sandbox.paypal.com';
 
-const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-
 if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
   console.error(
     '[ghost/paypal] FATAL: PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET must be set. ' +
     'All PayPal routes will return 503 until they are configured.',
   );
 }
-if (!DELIVERY_BACKEND_URL) {
-  console.warn(
-    '[ghost/paypal] WARNING: GHOST_DELIVERY_URL is not set. ' +
-    'Orders will be persisted directly to Redis when delivery backend is unavailable.',
-  );
-}
 
 
-/* ── Redis-direct order persistence ─────────────────────────────────────────
-   Used as the primary persistence path so orders are NEVER lost, even when
-   the Python delivery backend is unreachable.  The delivery backend can read
-   from the same keys when it comes back online.
-   Keys mirror what license_delivery.py uses:
-     ghost:order:{order_id}      — the order hash
+/* ── Redis-direct order + inventory persistence ──────────────────────────────
+   Single source of truth for both orders and key inventory.
+   Keys:
+     ghost:order:{order_id}      — the order JSON object
      ghost:orders:index          — sorted set of order IDs (score = unix timestamp)
+     ghost:paypal-order:{ppId}   — maps PayPal order ID → our captureId
+     ghost:inventory             — JSON array of all license keys
 ─────────────────────────────────────────────────────────────────────────── */
 const _REDIS_URL   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
 const _REDIS_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || '');
@@ -60,13 +56,10 @@ const _REDIS_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || '');
 async function _redisSaveOrder (orderId, record) {
   if (!_REDIS_URL || !_REDIS_TOKEN) return false;
   const { default: fetch } = await import('node-fetch');
-  // Also store a secondary lookup key so we can find the order by PayPal Order ID
   const pipeline = [
     ['SET', `ghost:order:${orderId}`, JSON.stringify(record)],
     ['ZADD', 'ghost:orders:index', String(Math.floor(Date.now() / 1000)), orderId],
   ];
-  // If the record contains a paypal_order_id, store the mapping so idempotency
-  // checks by PayPal Order ID resolve instantly without scanning all orders.
   if (record.paypal_order_id) {
     pipeline.push(['SET', `ghost:paypal-order:${record.paypal_order_id}`, orderId]);
   }
@@ -106,11 +99,9 @@ async function _redisGetOrder (orderId) {
   } catch (_) { return null; }
 }
 
-// Look up an order by its PayPal Order ID (returns the order record, not just the captureId)
 async function _redisGetOrderByPaypalOrderId (paypalOrderId) {
   if (!_REDIS_URL || !_REDIS_TOKEN) return null;
   const { default: fetch } = await import('node-fetch');
-  // First: resolve the captureId from the secondary lookup key
   const mapKey = encodeURIComponent(`ghost:paypal-order:${paypalOrderId}`);
   try {
     const mapRes = await fetch(`${_REDIS_URL}/GET/${mapKey}`, {
@@ -124,11 +115,42 @@ async function _redisGetOrderByPaypalOrderId (paypalOrderId) {
   } catch (_) { return null; }
 }
 
+/** GET ghost:inventory — returns parsed array or [] */
+async function _redisGetInventory () {
+  if (!_REDIS_URL || !_REDIS_TOKEN) return [];
+  const { default: fetch } = await import('node-fetch');
+  const key = encodeURIComponent('ghost:inventory');
+  try {
+    const res = await fetch(`${_REDIS_URL}/GET/${key}`, {
+      headers: { Authorization: `Bearer ${_REDIS_TOKEN}` },
+    });
+    if (!res.ok) return [];
+    const body = await res.json().catch(() => null);
+    if (!body || body.result === null || body.result === undefined) return [];
+    const raw = typeof body.result === 'string' ? JSON.parse(body.result) : body.result;
+    return Array.isArray(raw) ? raw : (Array.isArray(raw?.keys) ? raw.keys : []);
+  } catch (_) { return []; }
+}
 
-/* ── Authoritative server-side plan catalogue ───────────────────────────────
-   NEVER trust plan name, price, or currency sent from the browser.
-   All billing values here are the single source of truth.
-─────────────────────────────────────────────────────────────────────────── */
+/** SET ghost:inventory — stores the full array */
+async function _redisSetInventory (inventory) {
+  if (!_REDIS_URL || !_REDIS_TOKEN) return false;
+  const { default: fetch } = await import('node-fetch');
+  try {
+    const res = await fetch(`${_REDIS_URL}/SET/ghost:inventory`, {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${_REDIS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(JSON.stringify(inventory)),
+    });
+    return res.ok;
+  } catch (_) { return false; }
+}
+
+
+/* ── Plan catalogue ──────────────────────────────────────────────────────── */
 const PLAN_CATALOGUE = {
   pro: {
     id:         'pro',
@@ -145,6 +167,31 @@ const PLAN_CATALOGUE = {
     expiryDays: 0,
   },
 };
+
+/**
+ * Normalize any plan string variant to a canonical slug.
+ * Must stay in sync with _normalizePlan() in server.js and _PLAN_ALIASES there.
+ */
+function _normalizePlan (plan) {
+  if (!plan) return '';
+  const aliases = {
+    pro:                     'pro',
+    monthly:                 'pro',
+    ghost_pro_monthly:       'pro',
+    'ghost pro monthly':     'pro',
+    'ghost pro (monthly)':   'pro',
+    ghost_pro:               'pro',
+    'ghost pro':             'pro',
+    lifetime:                'lifetime',
+    ghost_lifetime:          'lifetime',
+    'ghost lifetime':        'lifetime',
+    trial:                   'trial',
+    ghost_trial:             'trial',
+    'ghost trial':           'trial',
+  };
+  const key = String(plan).trim().toLowerCase();
+  return aliases[key] || key;
+}
 
 
 /* ── PayPal OAuth token cache ────────────────────────────────────────────── */
@@ -184,12 +231,11 @@ async function _getAccessToken () {
   const data = await res.json();
   _cachedToken    = data.access_token;
   _tokenExpiresAt = now + (data.expires_in || 32400) * 1000;
-  // Never log the token
   return _cachedToken;
 }
 
 
-/* ── PayPal Orders API helpers ───────────────────────────────────────────── */
+/* ── PayPal Orders API helper ────────────────────────────────────────────── */
 async function _paypalRequest (method, path, body, timeoutMs = 20_000) {
   const token  = await _getAccessToken();
   const { default: fetch } = await import('node-fetch');
@@ -225,22 +271,127 @@ async function _paypalRequest (method, path, body, timeoutMs = 20_000) {
   return data;
 }
 
-async function _deliveryFetch (path, init = {}, timeoutMs = 25_000) {
-  if (!DELIVERY_BACKEND_URL) throw new Error('GHOST_DELIVERY_URL is not configured.');
-  const { default: fetch } = await import('node-fetch');
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+/* ─────────────────────────────────────────────────────────────────────────
+   fulfillOrder(orderId)
+   ─────────────────────────────────────────────────────────────────────────
+   Single shared fulfillment function.  Called:
+     1. Immediately after PayPal capture succeeds
+     2. From /api/paypal/retry-fulfillment  (Reissue / Retry)
+     3. From /api/admin/orders/fulfill-pending  (Fulfill Pending Orders)
+     4. From the webhook handler
 
-  try {
-    const res = await fetch(`${DELIVERY_BACKEND_URL}${path}`, {
-      ...init,
-      signal: controller.signal,
-    });
-    return res;
-  } finally {
-    clearTimeout(timer);
+   Contract
+   --------
+   - Loads the order from Redis.
+   - If the order already has a license_key, returns it unchanged (idempotent).
+   - Confirms payment_status is completed / captured.
+   - Normalizes the plan.
+   - Loads ghost:inventory (the SAME array shown in Admin → Key Inventory).
+   - Finds the first key with status='available' and matching canonical plan.
+   - Assigns that one key:
+       inventory record: status='sold', customer=email, orderId, purchaseDate=now
+   - Updates the order record: licenseKey, deliveryStatus='delivered', status='completed'
+   - Saves BOTH records to Redis atomically (pipeline for inventory).
+   - Returns { ok, licenseKey?, deliveryStatus, reason? }
+
+   Returns:
+     { ok: true,  licenseKey: '...', deliveryStatus: 'delivered' }
+     { ok: false, deliveryStatus: 'out_of_stock',     reason: 'no_matching_inventory' }
+     { ok: false, deliveryStatus: 'pending',           reason: 'order_not_found' }
+     { ok: false, deliveryStatus: <unchanged>,         reason: 'payment_not_completed' }
+  ──────────────────────────────────────────────────────────────────────────*/
+async function fulfillOrder (orderId) {
+  console.log('[fulfill] order=%s', orderId);
+
+  // ── Load order ──────────────────────────────────────────────────────────
+  const order = await _redisGetOrder(orderId).catch(() => null);
+  if (!order) {
+    console.warn('[fulfill] order_not_found order=%s', orderId);
+    return { ok: false, deliveryStatus: 'pending', reason: 'order_not_found' };
   }
+
+  // ── Idempotency: already delivered ──────────────────────────────────────
+  if (order.license_key && order.delivery_status === 'delivered') {
+    console.log('[fulfill] already_delivered order=%s licenseKey=[present]', orderId);
+    return { ok: true, licenseKey: order.license_key, deliveryStatus: 'delivered' };
+  }
+
+  // ── Confirm payment ──────────────────────────────────────────────────────
+  const ps = (order.payment_status || '').toLowerCase();
+  if (ps !== 'completed' && ps !== 'captured' && ps !== 'verified') {
+    console.warn('[fulfill] payment_not_completed order=%s payment_status=%s', orderId, ps);
+    return { ok: false, deliveryStatus: order.delivery_status || 'pending', reason: 'payment_not_completed' };
+  }
+
+  // ── Normalize plan ───────────────────────────────────────────────────────
+  const rawPlan       = order.plan || '';
+  const canonicalPlan = _normalizePlan(rawPlan);
+  console.log('[fulfill] order_plan=%s (normalized=%s)', rawPlan, canonicalPlan);
+
+  // ── Load inventory ───────────────────────────────────────────────────────
+  const inventory = await _redisGetInventory();
+  console.log('[fulfill] inventory_total=%d', inventory.length);
+
+  const available = inventory.filter(k => (k.status || '').toLowerCase() === 'available');
+  console.log('[fulfill] available_total=%d', available.length);
+
+  const matching = available.filter(k => _normalizePlan(k.plan || k.tier || '') === canonicalPlan);
+  console.log('[fulfill] matching_available=%d', matching.length);
+
+  if (matching.length === 0) {
+    console.warn('[fulfill] no_matching_inventory order=%s plan=%s', orderId, canonicalPlan);
+    // Mark order as out-of-stock so admin sees it clearly
+    await _redisSaveOrder(orderId, {
+      ...order,
+      delivery_status: 'out_of_stock',
+      failure_reason:  'no_matching_inventory',
+    }).catch(() => {});
+    return { ok: false, deliveryStatus: 'out_of_stock', reason: 'no_matching_inventory' };
+  }
+
+  // ── Assign the first matching key ────────────────────────────────────────
+  const selectedKey = matching[0];
+  console.log('[fulfill] selected=true');
+
+  const now = new Date().toISOString();
+
+  // Update the inventory record in-place
+  const keyIdx = inventory.findIndex(k => k.key === selectedKey.key);
+  if (keyIdx === -1) {
+    // Extremely unlikely race — treat as out-of-stock
+    console.error('[fulfill] key_not_found_in_inventory order=%s key=[redacted]', orderId);
+    return { ok: false, deliveryStatus: 'out_of_stock', reason: 'no_matching_inventory' };
+  }
+
+  inventory[keyIdx] = {
+    ...inventory[keyIdx],
+    status:         'sold',
+    customer:       order.email || '',
+    customer_email: order.email || '',
+    order_id:       orderId,
+    purchase_date:  now,
+  };
+
+  // ── Save inventory ───────────────────────────────────────────────────────
+  const inventorySaved = await _redisSetInventory(inventory);
+  console.log('[fulfill] license_saved=%s', String(inventorySaved));
+
+  // ── Update order ─────────────────────────────────────────────────────────
+  const updatedOrder = {
+    ...order,
+    license_key:     selectedKey.key,
+    license_status:  'active',
+    delivery_status: 'delivered',
+    status:          'completed',
+    fulfilled_at:    now,
+  };
+
+  const orderSaved = await _redisSaveOrder(orderId, updatedOrder);
+  console.log('[fulfill] order_saved=%s', String(orderSaved));
+  console.log('[fulfill] final_status=delivered');
+
+  return { ok: true, licenseKey: selectedKey.key, deliveryStatus: 'delivered' };
 }
 
 
@@ -251,13 +402,8 @@ async function _deliveryFetch (path, init = {}, timeoutMs = 25_000) {
 const _captureInFlight = new Map();
 
 
-
 /* ─────────────────────────────────────────────────────────────────────────
    POST /api/paypal/create-order
-   ─────────────────────────────────────────────────────────────────────────
-   Body:   { plan: string, email: string, discord: string }
-   OK:     { ok: true, orderID: string }
-   Error:  { ok: false, message: string, stage: 'create-order' }
   ──────────────────────────────────────────────────────────────────────────*/
 async function createOrder (req, res) {
   const { plan: planRaw, email, discord } = req.body || {};
@@ -300,7 +446,7 @@ async function createOrder (req, res) {
         user_action:         'PAY_NOW',
         shipping_preference: 'NO_SHIPPING',
       },
-    }, 15_000);   // 15-second timeout for order creation
+    }, 15_000);
 
     console.log('[ghost/paypal] order created id=%s plan=%s env=%s', order.id, planId, PAYPAL_ENV);
     return res.json({ ok: true, orderID: order.id });
@@ -321,17 +467,6 @@ async function createOrder (req, res) {
 
 /* ─────────────────────────────────────────────────────────────────────────
    POST /api/paypal/capture-order
-   ─────────────────────────────────────────────────────────────────────────
-   Body:   { orderID: string, email: string, discord: string, plan: string }
-   OK:     { ok, paymentStatus, deliveryStatus, orderId, captureId, plan,
-             amount, currency, licenseKey, downloadUrl, ... }
-   Error:  { ok: false, message: string, stage: string }
-
-   Security: this endpoint calls PayPal's capture API and verifies the
-   returned capture status, amount, and currency BEFORE calling the
-   delivery backend.  The order ID from the browser is only used to
-   address the PayPal API call — all billing truth comes from PayPal's
-   response, never from the client payload.
   ──────────────────────────────────────────────────────────────────────────*/
 async function captureOrder (req, res) {
   const { orderID, email, discord, plan: planRaw } = req.body || {};
@@ -345,9 +480,7 @@ async function captureOrder (req, res) {
     return res.status(400).json({ ok: false, message: 'Invalid plan.', stage: 'validate' });
   }
 
-  // ── Idempotency: check Redis directly first, then delivery backend ────────
-  // Use the PayPal Order ID as the idempotency key — look for any stored order
-  // with matching paypal_order_id.
+  // ── Idempotency: check Redis directly ────────────────────────────────────
   const _buildIdempotentResponse = (existing, planMeta) => ({
     ok:             true,
     paymentStatus:  'COMPLETED',
@@ -376,35 +509,16 @@ async function captureOrder (req, res) {
     ] : null,
   });
 
-  // Check Redis first (fastest, no Python backend required)
-  // Use the secondary lookup key ghost:paypal-order:{orderID} -> captureId -> order record
   try {
     const redisOrder = await _redisGetOrderByPaypalOrderId(orderID);
     if (redisOrder && redisOrder.paypal_order_id === orderID) {
-      console.log('[ghost/paypal] captureOrder idempotent (Redis) — paypalOrderId=%s orderId=%s deliveryStatus=%s',
+      console.log('[ghost/paypal] captureOrder idempotent — paypalOrderId=%s orderId=%s deliveryStatus=%s',
         orderID, redisOrder.order_id, redisOrder.delivery_status);
       return res.json(_buildIdempotentResponse(redisOrder, plan));
     }
   } catch (_) {}
 
-  // Also check delivery backend for idempotency
-  try {
-    const existingRes = await _deliveryFetch(
-      `/api/order/paypal-order:${encodeURIComponent(orderID)}`, {}, 8_000
-    );
-    if (existingRes.ok) {
-      const existing = await existingRes.json().catch(() => null);
-      if (existing && existing.ok) {
-        console.log('[ghost/paypal] captureOrder idempotent (delivery) — paypalOrderId=%s orderId=%s',
-          orderID, existing.order_id);
-        return res.json(_buildIdempotentResponse(existing, plan));
-      }
-    }
-  } catch (_) {
-    // Idempotency check failed — proceed with normal capture
-  }
-
-  // ── Prevent concurrent double-capture for the same PayPal order ID ────────
+  // ── Prevent concurrent double-capture ────────────────────────────────────
   if (_captureInFlight.has(orderID)) {
     console.log('[ghost/paypal] capture already in-flight for orderID=%s — waiting', orderID);
     try {
@@ -433,14 +547,13 @@ async function captureOrder (req, res) {
     rejectCapture(err);
     return res.status(500).json({ ok: false, message: 'Internal error during capture.', stage: 'capture' });
   } finally {
-    // Remove the lock after a short delay so genuine retries still work
     setTimeout(() => _captureInFlight.delete(orderID), 60_000);
   }
 }
 
 
 async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
-  // ── Step 1: Capture the order via PayPal Orders API ──────────────────────
+  // ── Step 1: Capture via PayPal ────────────────────────────────────────────
   let capture;
   try {
     capture = await _paypalRequest('POST', `/v2/checkout/orders/${orderID}/capture`, {}, 30_000);
@@ -459,7 +572,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     };
   }
 
-  // ── Step 2: Verify the capture is COMPLETED ───────────────────────────────
+  // ── Step 2: Verify COMPLETED ──────────────────────────────────────────────
   console.log('[ghost/paypal] capture response orderID=%s status=%s', orderID, capture.status);
   if (capture.status !== 'COMPLETED') {
     console.warn('[ghost/paypal] capture not COMPLETED orderID=%s status=%s', orderID, capture.status);
@@ -472,50 +585,42 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     };
   }
 
-  // ── Step 3: Extract and verify the capture unit ───────────────────────────
+  // ── Step 3: Extract capture unit ─────────────────────────────────────────
   const pu = (capture.purchase_units || [])[0];
   if (!pu) {
     console.error('[ghost/paypal] no purchase_units in capture orderID=%s', orderID);
-    return {
-      ok: false, message: 'Payment capture data invalid. Contact support.',
-      stage: 'capture-parse', orderId: orderID, _status: 500,
-    };
+    return { ok: false, message: 'Payment capture data invalid. Contact support.',
+      stage: 'capture-parse', orderId: orderID, _status: 500 };
   }
 
   const captureUnit = (pu.payments?.captures || [])[0];
   if (!captureUnit || captureUnit.status !== 'COMPLETED') {
     console.error('[ghost/paypal] capture unit not COMPLETED orderID=%s unitStatus=%s',
       orderID, captureUnit?.status);
-    return {
-      ok: false, message: 'Capture unit is not complete. Contact support.',
-      stage: 'capture-unit', orderId: orderID, _status: 400,
-    };
+    return { ok: false, message: 'Capture unit is not complete. Contact support.',
+      stage: 'capture-unit', orderId: orderID, _status: 400 };
   }
 
   const captureId        = captureUnit.id;
   const capturedAmount   = captureUnit.amount?.value;
   const capturedCurrency = captureUnit.amount?.currency_code;
 
-  // ── Step 4: Verify amount and currency ───────────────────────────────────
+  // ── Step 4: Verify amount + currency ─────────────────────────────────────
   if (capturedCurrency !== 'USD') {
     console.error('[ghost/paypal] wrong currency orderID=%s currency=%s', orderID, capturedCurrency);
-    return {
-      ok: false, message: 'Unexpected payment currency. Contact support.',
-      stage: 'capture-currency', orderId: orderID, _status: 400,
-    };
+    return { ok: false, message: 'Unexpected payment currency. Contact support.',
+      stage: 'capture-currency', orderId: orderID, _status: 400 };
   }
   if (parseFloat(capturedAmount) !== parseFloat(plan.priceUsd)) {
     console.error('[ghost/paypal] amount mismatch orderID=%s expected=%s got=%s',
       orderID, plan.priceUsd, capturedAmount);
-    return {
-      ok: false, message: 'Payment amount mismatch. Contact support.',
-      stage: 'capture-amount', orderId: orderID, _status: 400,
-    };
+    return { ok: false, message: 'Payment amount mismatch. Contact support.',
+      stage: 'capture-amount', orderId: orderID, _status: 400 };
   }
 
   // ── Step 5: Resolve payer email ───────────────────────────────────────────
-  const payerEmail    = capture.payer?.email_address || email || '';
-  const resolvedEmail = payerEmail.trim() || (email || '').trim();
+  const payerEmail      = capture.payer?.email_address || email || '';
+  const resolvedEmail   = payerEmail.trim() || (email || '').trim();
   const resolvedDiscord = (discord || '').trim();
 
   console.log('[ghost/paypal] capture verified orderID=%s captureId=%s plan=%s amount=%s',
@@ -523,19 +628,15 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
 
   const purchaseDateNow = new Date().toISOString();
 
-  // ── Generate a stable invoice ID for this order ────────────────────────────
-  // Format: GHOST-INV-XXXXXXXX (8 hex chars from captureId)
+  // ── Generate invoice ID ───────────────────────────────────────────────────
   const _invoiceRaw  = captureId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
   const _invoiceSufx = _invoiceRaw.slice(-8).padStart(8, '0');
   const invoiceId    = `GHOST-INV-${_invoiceSufx}`;
 
-  // ── Step 6: Persist the order to Redis IMMEDIATELY after capture ──────────
-  // This is the idempotency key — using the PayPal Order ID ensures that
-  // even if the delivery backend call fails, the order is never lost.
-  // The delivery backend will find this record when retried.
+  // ── Step 6: Persist order to Redis (payment confirmed, delivery pending) ──
   const pendingOrderRecord = {
-    order_id:          captureId,          // capture transaction ID = our internal order ID
-    paypal_order_id:   orderID,            // PayPal order ID (idempotency key)
+    order_id:          captureId,
+    paypal_order_id:   orderID,
     paypal_capture_id: captureId,
     invoice_id:        invoiceId,
     plan:              planId,
@@ -548,7 +649,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     created_at:        purchaseDateNow,
     payment_status:    'completed',
     payment_verified:  true,
-    delivery_status:   'pending',          // will be updated to 'delivered' below
+    delivery_status:   'pending',
     license_key:       null,
     license_status:    'pending',
   };
@@ -557,47 +658,19 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
   if (savedToRedis) {
     console.log('[ghost/paypal] order persisted to Redis orderId=%s paypalOrderId=%s', captureId, orderID);
   } else {
-    console.warn('[ghost/paypal] could not persist order to Redis orderId=%s — will rely on delivery backend', captureId);
+    console.warn('[ghost/paypal] could not persist order to Redis orderId=%s', captureId);
   }
 
-  // ── Step 7: Call the delivery backend to assign a license key ────────────
-  let data;
-  let deliveryFailed = false;
-  try {
-    const deliveryRes = await _deliveryFetch('/api/payment/confirm', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        order_id:          captureId,
-        payment_token:     `paypal:${captureId}`,
-        plan:              planId,
-        email:             resolvedEmail,
-        discord:           resolvedDiscord,
-        price_usd:         parseFloat(capturedAmount),
-        paypal_order_id:   orderID,
-        paypal_capture_id: captureId,
-      }),
-    }, 25_000);
+  // ── Step 7: Fulfill immediately (assign license from Redis inventory) ─────
+  const fulfillResult = await fulfillOrder(captureId);
 
-    data = await deliveryRes.json();
-  } catch (err) {
-    const isTimeout = err.name === 'AbortError';
-    console.error('[ghost/paypal] delivery %s orderID=%s captureId=%s: %s',
-      isTimeout ? 'timeout' : 'exception', orderID, captureId, err.message);
-    // IMPORTANT: payment was captured and persisted to Redis — do NOT return ok:false.
-    // Show delivery_pending so the user can retry, and the order is already in admin panel.
-    deliveryFailed = true;
-    data = { ok: false, error: isTimeout ? 'delivery_timeout' : 'delivery_unavailable' };
-  }
-
-  if (!data.ok) {
-    console.error('[ghost/paypal] delivery failed orderID=%s captureId=%s error=%s — order saved as pending',
-      orderID, captureId, data.error);
-    // Order is already in Redis as pending — admin can retry from the Orders tab.
+  if (!fulfillResult.ok) {
+    console.warn('[ghost/paypal] fulfillment failed orderId=%s reason=%s — order saved as pending',
+      captureId, fulfillResult.reason);
     return {
       ok:             true,
       paymentStatus:  'COMPLETED',
-      deliveryStatus: 'delivery_pending',
+      deliveryStatus: fulfillResult.deliveryStatus || 'pending',
       orderId:        captureId,
       captureId,
       paypalOrderId:  orderID,
@@ -618,26 +691,23 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     };
   }
 
-  const purchaseDate = data.created_at || purchaseDateNow;
+  // ── Step 8: Build success response from the now-updated order ────────────
+  const deliveredOrder = await _redisGetOrder(captureId).catch(() => pendingOrderRecord);
 
-  // ── Step 8: Update Redis with the delivered state + license key ───────────
-  const deliveredOrderRecord = {
-    ...pendingOrderRecord,
-    delivery_status:  data.delivery_status || 'delivered',
-    license_key:      data.key             || null,
-    license_status:   data.key ? 'active'  : 'pending',
-    created_at:       purchaseDate,
-    tier:             data.tier            || plan.tier,
-    invoice_id:       invoiceId,           // always carry invoice_id through
-  };
-  await _redisSaveOrder(captureId, deliveredOrderRecord).catch(err =>
-    console.warn('[ghost/paypal] Redis update after delivery failed orderId=%s: %s', captureId, err.message)
+  console.log(
+    '[ghost/paypal] capture complete — orderId=%s paymentStatus=COMPLETED deliveryStatus=%s ' +
+    'plan=%s amount=%s licenseKey=%s',
+    captureId,
+    fulfillResult.deliveryStatus,
+    planId,
+    capturedAmount,
+    fulfillResult.licenseKey ? '[present]' : '[missing]',
   );
 
-  const successResponse = {
+  return {
     ok:             true,
     paymentStatus:  'COMPLETED',
-    deliveryStatus: data.delivery_status || 'delivered',
+    deliveryStatus: fulfillResult.deliveryStatus,
     orderId:        captureId,
     captureId,
     paypalOrderId:  orderID,
@@ -648,11 +718,11 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     currency:       capturedCurrency,
     email:          resolvedEmail,
     discord:        resolvedDiscord,
-    licenseKey:     data.key || null,
-    licenseStatus:  data.key ? 'active' : null,
-    purchaseDate,
-    downloadUrl:    data.key ? `/api/order/${encodeURIComponent(captureId)}/download` : null,
-    tier:           data.tier || plan.tier,
+    licenseKey:     fulfillResult.licenseKey || null,
+    licenseStatus:  fulfillResult.licenseKey ? 'active' : null,
+    purchaseDate:   deliveredOrder?.created_at || purchaseDateNow,
+    downloadUrl:    fulfillResult.licenseKey ? `/api/order/${encodeURIComponent(captureId)}/download` : null,
+    tier:           plan.tier,
     instructions: [
       'Download GhostConfig.exe.',
       'Open the application.',
@@ -661,153 +731,80 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
       'Activate your license.',
     ],
   };
-
-  console.log(
-    '[ghost/paypal] capture complete — orderId=%s paymentStatus=%s deliveryStatus=%s ' +
-    'plan=%s amount=%s licenseKey=%s',
-    successResponse.orderId,
-    successResponse.paymentStatus,
-    successResponse.deliveryStatus,
-    successResponse.plan,
-    successResponse.amount,
-    successResponse.licenseKey ? '[present]' : '[missing]',
-  );
-
-  return successResponse;
 }
 
 
 /* ─────────────────────────────────────────────────────────────────────────
    POST /api/paypal/retry-fulfillment
    ─────────────────────────────────────────────────────────────────────────
-   Retry license delivery for a PayPal order whose payment was captured
-   successfully but whose license delivery failed (delivery_pending).
-
-   Body:   { captureId: string }
-   OK:     { ok, paymentStatus, deliveryStatus, orderId, licenseKey, downloadUrl, ... }
-   Error:  { ok: false, message: string }
-
-   This endpoint NEVER re-captures or re-charges the customer.
-   It calls POST /api/order/:captureId/fulfill on the delivery backend,
-   which is idempotent — if the order already has a license it is returned
-   immediately without running keygen again.
+   Retry / Reissue — calls the same fulfillOrder() function.
+   Never re-captures or re-charges.
   ──────────────────────────────────────────────────────────────────────────*/
 async function retryFulfillment (req, res) {
   const { captureId } = req.body || {};
 
   if (!captureId || typeof captureId !== 'string' || !captureId.trim()) {
     return res.status(400).json({
-      ok: false,
+      ok:      false,
       message: 'captureId is required.',
-      stage: 'retry-fulfillment',
+      stage:   'retry-fulfillment',
     });
   }
 
   const id = captureId.trim();
 
-  // ── Try delivery backend first (it handles key assignment from inventory) ─
-  if (DELIVERY_BACKEND_URL) {
-    try {
-      const deliveryRes = await _deliveryFetch(`/api/order/${encodeURIComponent(id)}/fulfill`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({}),
-      }, 25_000);
-
-      const data = await deliveryRes.json().catch(() => ({}));
-
-      if (deliveryRes.status === 404) {
-        // Order not in delivery backend — fall through to check Redis directly
-        console.warn('[ghost/paypal] retry-fulfillment: not in delivery backend captureId=%s, checking Redis', id);
-      } else if (!data.ok) {
-        console.error('[ghost/paypal] retry-fulfillment failed captureId=%s error=%s',
-          id, data.error || data.message);
-        return res.status(deliveryRes.status || 500).json({
-          ok:      false,
-          message: data.error || data.message || 'Fulfillment retry failed.',
-          stage:   'retry-fulfillment',
-        });
-      } else {
-        console.log('[ghost/paypal] retry-fulfillment success (delivery) captureId=%s deliveryStatus=%s',
-          id, data.deliveryStatus || data.delivery_status);
-
-        // If delivery succeeded and returned a license key, update Redis too
-        if (data.key || data.license_key) {
-          const existingRecord = await _redisGetOrder(id).catch(() => null);
-          if (existingRecord) {
-            await _redisSaveOrder(id, {
-              ...existingRecord,
-              delivery_status: data.delivery_status || 'delivered',
-              license_key:     data.key || data.license_key || existingRecord.license_key,
-              license_status:  'active',
-            }).catch(() => {});
-          }
-        }
-
-        return res.json({
-          ok:             true,
-          paymentStatus:  data.paymentStatus  || 'COMPLETED',
-          deliveryStatus: data.deliveryStatus || data.delivery_status || 'delivered',
-          orderId:        data.orderId        || data.order_id        || id,
-          plan:           data.plan,
-          planLabel:      data.planLabel      || data.plan_label,
-          amount:         String(data.amount  || data.price_usd || ''),
-          currency:       data.currency       || 'USD',
-          purchaseDate:   data.purchaseDate   || data.created_at,
-          licenseKey:     data.licenseKey     || data.license_key  || data.key || null,
-          licenseStatus:  data.licenseStatus  || data.license_status || (data.licenseKey ? 'active' : null),
-          downloadUrl:    data.downloadUrl    || data.download_url  || (data.orderId || id ? `/api/order/${encodeURIComponent(data.orderId || id)}/download` : null),
-          tier:           data.tier,
-        });
-      }
-    } catch (err) {
-      const isTimeout = err.name === 'AbortError';
-      console.warn('[ghost/paypal] retry-fulfillment delivery %s captureId=%s — falling back to Redis: %s',
-        isTimeout ? 'timeout' : 'error', id, err.message);
-      // Fall through to Redis check below
-    }
-  }
-
-  // ── Redis-only path: return the stored order (fulfillment must happen via delivery backend) ─
-  // When the delivery backend is unavailable we can at least confirm what is stored.
+  // Load the stored order first (need it for response fields)
   const redisRecord = await _redisGetOrder(id).catch(() => null);
   if (!redisRecord) {
     return res.status(404).json({
       ok:      false,
-      message: 'Order not found. Ensure GHOST_DELIVERY_URL is configured and the delivery backend is running.',
+      message: 'Order not found.',
       stage:   'retry-fulfillment',
     });
   }
 
-  const licenseKey = redisRecord.license_key || null;
+  // Run fulfillment (idempotent — returns existing key if already delivered)
+  const result = await fulfillOrder(id);
+
+  // Re-read order to get final state
+  const finalOrder = await _redisGetOrder(id).catch(() => redisRecord);
+
+  if (!result.ok) {
+    return res.status(result.deliveryStatus === 'out_of_stock' ? 409 : 500).json({
+      ok:      false,
+      message: result.reason === 'no_matching_inventory'
+        ? 'No available keys match this plan. Add keys in Admin → Key Inventory.'
+        : result.reason === 'payment_not_completed'
+          ? 'Payment is not completed for this order.'
+          : 'Fulfillment failed.',
+      stage:   'retry-fulfillment',
+      deliveryStatus: result.deliveryStatus,
+    });
+  }
+
   return res.json({
     ok:             true,
-    paymentStatus:  redisRecord.payment_status  || 'COMPLETED',
-    deliveryStatus: redisRecord.delivery_status || 'pending',
-    orderId:        redisRecord.order_id        || id,
-    plan:           redisRecord.plan,
-    planLabel:      redisRecord.plan_label,
-    amount:         String(redisRecord.price_usd || ''),
-    currency:       redisRecord.currency        || 'USD',
-    purchaseDate:   redisRecord.created_at,
-    licenseKey:     licenseKey,
-    licenseStatus:  redisRecord.license_status  || (licenseKey ? 'active' : 'pending'),
-    downloadUrl:    licenseKey ? `/api/order/${encodeURIComponent(id)}/download` : null,
-    tier:           redisRecord.tier,
+    paymentStatus:  finalOrder?.payment_status  || 'COMPLETED',
+    deliveryStatus: result.deliveryStatus,
+    orderId:        finalOrder?.order_id        || id,
+    plan:           finalOrder?.plan,
+    planLabel:      finalOrder?.plan_label,
+    amount:         String(finalOrder?.price_usd || ''),
+    currency:       finalOrder?.currency        || 'USD',
+    purchaseDate:   finalOrder?.created_at,
+    licenseKey:     result.licenseKey           || null,
+    licenseStatus:  result.licenseKey ? 'active' : null,
+    downloadUrl:    result.licenseKey ? `/api/order/${encodeURIComponent(id)}/download` : null,
+    tier:           finalOrder?.tier,
   });
 }
 
 
 /* ─────────────────────────────────────────────────────────────────────────
    POST /api/paypal/webhook
-   ─────────────────────────────────────────────────────────────────────────
-   PayPal delivers PAYMENT.CAPTURE.COMPLETED events here.
-   Verifies the webhook signature before processing.
-   Returns 200 for all known events (including duplicates) so PayPal
-   does not retry.
   ──────────────────────────────────────────────────────────────────────────*/
 async function handleWebhook (req, res) {
-  // ── Step 1: Verify webhook signature ─────────────────────────────────────
+  // ── Verify webhook signature ──────────────────────────────────────────────
   const transmissionId   = req.headers['paypal-transmission-id']   || '';
   const transmissionTime = req.headers['paypal-transmission-time'] || '';
   const certUrl          = req.headers['paypal-cert-url']          || '';
@@ -820,9 +817,7 @@ async function handleWebhook (req, res) {
   }
 
   if (!PAYPAL_WEBHOOK_ID) {
-    console.warn('[ghost/paypal/webhook] PAYPAL_WEBHOOK_ID not set — cannot verify signature');
-    // In sandbox without a webhook ID, we log and skip verification
-    // but still process the event. In production this must be set.
+    console.warn('[ghost/paypal/webhook] PAYPAL_WEBHOOK_ID not set — skipping signature verification');
   } else {
     try {
       const rawBody = req.rawBody || JSON.stringify(req.body);
@@ -869,17 +864,15 @@ async function handleWebhook (req, res) {
 
   console.log('[ghost/paypal/webhook] received event_type=%s id=%s', eventType, event.id);
 
-  // ── Only process PAYMENT.CAPTURE.COMPLETED ────────────────────────────────
   if (eventType !== 'PAYMENT.CAPTURE.COMPLETED') {
-    // Acknowledge all other event types without processing
     return res.json({ ok: true, received: true, processed: false });
   }
 
-  const resource     = event.resource || {};
-  const captureId    = resource.id || '';
+  const resource      = event.resource || {};
+  const captureId     = resource.id || '';
   const captureStatus = resource.status || '';
-  const amount       = resource.amount?.value || '';
-  const currency     = resource.amount?.currency_code || 'USD';
+  const amount        = resource.amount?.value || '';
+  const currency      = resource.amount?.currency_code || 'USD';
 
   if (captureStatus !== 'COMPLETED') {
     console.log('[ghost/paypal/webhook] Capture not COMPLETED captureId=%s status=%s',
@@ -887,11 +880,8 @@ async function handleWebhook (req, res) {
     return res.json({ ok: true, received: true, processed: false });
   }
 
-  // ── Extract custom_id from the supplementary purchase unit ───────────────
-  const purchaseUnit = (resource.supplementary_data?.related_ids) || {};
-  const orderId      = resource.supplementary_data?.related_ids?.order_id || '';
+  const orderId = resource.supplementary_data?.related_ids?.order_id || '';
 
-  // Try to parse custom_id that was set during create-order
   let customId = {};
   try {
     const raw = resource.custom_id || '';
@@ -905,51 +895,58 @@ async function handleWebhook (req, res) {
   if (!plan || !email || !captureId) {
     console.warn('[ghost/paypal/webhook] Missing fields captureId=%s plan=%s email=[%s]',
       captureId, plan, email ? 'set' : 'empty');
-    // Still return 200 so PayPal doesn't retry; log for manual review
     return res.json({ ok: true, received: true, processed: false, note: 'missing_fields' });
   }
 
-  const planMeta = PLAN_CATALOGUE[plan];
+  const planMeta = PLAN_CATALOGUE[_normalizePlan(plan)];
   if (!planMeta) {
     console.warn('[ghost/paypal/webhook] Unknown plan=%s captureId=%s', plan, captureId);
     return res.json({ ok: true, received: true, processed: false, note: 'unknown_plan' });
   }
 
-  // ── Call delivery backend (idempotent — safe to call again for duplicates) ─
+  // ── Ensure order record exists in Redis before fulfilling ─────────────────
+  // If the capture-order route already wrote it we'll get idempotency from fulfillOrder.
+  // If the webhook fires first (race), write a minimal record so fulfillOrder can find it.
+  const existing = await _redisGetOrder(captureId).catch(() => null);
+  if (!existing) {
+    const invoiceRaw  = captureId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    const invoiceSufx = invoiceRaw.slice(-8).padStart(8, '0');
+    await _redisSaveOrder(captureId, {
+      order_id:          captureId,
+      paypal_order_id:   orderId,
+      paypal_capture_id: captureId,
+      invoice_id:        `GHOST-INV-${invoiceSufx}`,
+      plan:              _normalizePlan(plan),
+      plan_label:        planMeta.label,
+      tier:              planMeta.tier,
+      email,
+      discord,
+      price_usd:         parseFloat(amount),
+      currency,
+      created_at:        new Date().toISOString(),
+      payment_status:    'completed',
+      payment_verified:  true,
+      delivery_status:   'pending',
+      license_key:       null,
+      license_status:    'pending',
+    }).catch(() => {});
+  }
+
+  // ── Fulfill (idempotent) ──────────────────────────────────────────────────
   try {
-    const deliveryRes = await _deliveryFetch('/api/payment/confirm', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        order_id:          captureId,
-        payment_token:     `paypal:${captureId}`,
-        plan,
-        email,
-        discord,
-        price_usd:         parseFloat(amount),
-        paypal_order_id:   orderId,
-        paypal_capture_id: captureId,
-      }),
-    }, 25_000);
-
-    const data = await deliveryRes.json();
-
-    if (data.ok) {
-      console.log('[ghost/paypal/webhook] Delivery confirmed captureId=%s plan=%s', captureId, plan);
+    const result = await fulfillOrder(captureId);
+    if (result.ok) {
+      console.log('[ghost/paypal/webhook] Fulfillment confirmed captureId=%s plan=%s', captureId, plan);
     } else {
-      console.error('[ghost/paypal/webhook] Delivery failed captureId=%s error=%s',
-        captureId, data.error);
+      console.error('[ghost/paypal/webhook] Fulfillment failed captureId=%s reason=%s',
+        captureId, result.reason);
     }
-
-    return res.json({ ok: true, received: true, processed: data.ok });
-
+    return res.json({ ok: true, received: true, processed: result.ok });
   } catch (err) {
-    console.error('[ghost/paypal/webhook] Delivery error captureId=%s: %s',
-      captureId, err.message);
-    // Return 200 to prevent PayPal from retrying; delivery will be handled by support
-    return res.json({ ok: true, received: true, processed: false, error: 'delivery_unavailable' });
+    console.error('[ghost/paypal/webhook] Fulfillment error captureId=%s: %s', captureId, err.message);
+    return res.json({ ok: true, received: true, processed: false, error: 'fulfillment_error' });
   }
 }
 
 
-module.exports = { createOrder, captureOrder, handleWebhook, retryFulfillment, PLAN_CATALOGUE };
+module.exports = { createOrder, captureOrder, handleWebhook, retryFulfillment, fulfillOrder, PLAN_CATALOGUE };
