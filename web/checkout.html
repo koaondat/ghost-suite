@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Checkout — Ghost</title>
   <meta name="description" content="Complete your Ghost purchase securely. Pro or Lifetime — pay once, own it." />
+  <!--
+    PayPal Client ID is injected here by server.js at request time.
+    Set PAYPAL_CLIENT_ID in your Vercel environment variables.
+    NEVER put PAYPAL_CLIENT_SECRET here — server-side only.
+  -->
+  <meta name="paypal-client-id" content="__PAYPAL_CLIENT_ID__" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -147,37 +153,6 @@
               <p class="form-error" id="co-discord-err" role="alert"></p>
             </div>
 
-            <!-- Coupon code -->
-            <div class="form-group" id="fg-co-coupon">
-              <label class="form-label" for="co-coupon">
-                Coupon code
-                <span class="form-label-badge co-optional-badge">Optional</span>
-              </label>
-              <div class="co-coupon-row">
-                <div class="input-wrap" style="flex:1">
-                  <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-                  <input
-                    class="form-input input-mono"
-                    type="text"
-                    id="co-coupon"
-                    name="coupon"
-                    placeholder="GHOST-SAVE20"
-                    autocomplete="off"
-                    aria-describedby="co-coupon-err co-coupon-status"
-                    spellcheck="false"
-                  />
-                </div>
-                <button type="button" class="btn btn-ghost co-coupon-apply" id="co-coupon-btn" aria-label="Apply coupon code">
-                  Apply
-                </button>
-              </div>
-              <p class="form-error" id="co-coupon-err" role="alert"></p>
-              <p class="co-coupon-ok" id="co-coupon-status" hidden role="status" aria-live="polite">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-                <span id="co-coupon-msg"></span>
-              </p>
-            </div>
-
             <!-- Terms agreement -->
             <div class="form-check form-check--terms" id="fg-co-terms">
               <label class="check-label" for="co-terms">
@@ -194,18 +169,19 @@
               <p class="form-error" id="co-terms-err" role="alert"></p>
             </div>
 
-            <!-- Purchase button -->
-            <button
-              type="submit"
-              class="btn btn-primary co-submit-btn"
-              id="co-submit-btn"
-            >
-              <span class="btn-text" id="co-btn-text">Complete Purchase</span>
-              <span class="btn-spinner" hidden aria-hidden="true">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-              </span>
-              <span class="co-btn-label" id="co-btn-label" hidden>— processing</span>
-            </button>
+            <!-- Purchase button (triggers form validation then shows PayPal buttons) -->
+            <div id="co-submit-btn-wrap">
+              <button
+                type="submit"
+                class="btn btn-primary co-submit-btn"
+                id="co-submit-btn"
+              >
+                <span class="btn-text" id="co-btn-text">Pay with PayPal</span>
+              </button>
+            </div>
+
+            <!-- PayPal JS SDK buttons are rendered here after form validation passes -->
+            <div id="paypal-button-container" hidden style="margin-top:1rem;min-height:50px;"></div>
 
           </form><!-- /checkout-form -->
 

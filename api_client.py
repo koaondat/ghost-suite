@@ -18,8 +18,16 @@ import aiohttp
 
 log = logging.getLogger("ghost.api_client")
 
-# Default to the shared API running on the same host as the bot
-API_BASE = os.environ.get("GHOST_API_URL", "http://localhost:5056").rstrip("/")
+# GHOST_API_URL must be set to the deployed API URL.
+# Falling back to localhost is only valid for local dev — the bot cannot reach
+# a localhost address on any hosted platform.
+_api_url_raw = os.environ.get("GHOST_API_URL", "").strip()
+if not _api_url_raw:
+    log.warning(
+        "GHOST_API_URL is not set.  The bot cannot reach the Ghost API.  "
+        "Set GHOST_API_URL to the deployed URL of api.py (e.g. https://api.yourdomain.com)."
+    )
+API_BASE  = _api_url_raw.rstrip("/") if _api_url_raw else "http://localhost:5056"
 ADMIN_KEY = os.environ.get("GHOST_ADMIN_API_KEY", "").strip()
 
 

@@ -382,15 +382,19 @@ def route_register():
     lic_key  = (data.get("license_key") or "").strip()
 
     if not username or len(username) < 3:
+        log.info("register_fail ip=%s username=%r reason=username_too_short", request.remote_addr, username)
         return jsonify({"ok": False, "field": "username",
                         "error": "Username must be at least 3 characters"}), 400
     if not email or "@" not in email:
+        log.info("register_fail ip=%s username=%r reason=invalid_email", request.remote_addr, username)
         return jsonify({"ok": False, "field": "email",
                         "error": "A valid email address is required"}), 400
     if not password or len(password) < 8:
+        log.info("register_fail ip=%s username=%r reason=password_too_short", request.remote_addr, username)
         return jsonify({"ok": False, "field": "password",
                         "error": "Password must be at least 8 characters"}), 400
     if not lic_key:
+        log.info("register_fail ip=%s username=%r reason=missing_license_key", request.remote_addr, username)
         return jsonify({"ok": False, "field": "license_key",
                         "error": "A valid license key is required to register"}), 400
 
@@ -403,9 +407,11 @@ def route_register():
             field = "username"
         elif "key" in err.lower():
             field = "license_key"
+        log.info("register_fail ip=%s username=%r key=%s reason=%r", request.remote_addr, username, lic_key[:12] + "…", err)
         _audit("register", username, lic_key, err, ok=False)
         return jsonify({"ok": False, "field": field, "error": err}), 409
 
+    log.info("register_success ip=%s username=%r tier=%s", request.remote_addr, username, result.get("tier"))
     _audit("register", username, lic_key, f"tier={result.get('tier')}")
     token = _issue_jwt(username, result.get("tier", "PRO"))
     resp  = jsonify({"ok": True, "username": username, "tier": result.get("tier"), "token": token})
@@ -424,6 +430,7 @@ def route_login():
     lic_key   = (data.get("license_key") or "").strip()
 
     if not identity or not password:
+        log.info("login_fail ip=%s identity=%r reason=missing_credentials", request.remote_addr, identity)
         return jsonify({"ok": False, "error": "Username and password are required"}), 400
 
     # If the client omits the key, look it up from the users DB
@@ -435,14 +442,17 @@ def route_login():
             lic_key = user.get("key", "")
 
     if not lic_key:
+        log.info("login_fail ip=%s identity=%r reason=account_not_found", request.remote_addr, identity)
         return jsonify({"ok": False, "error": "Account not found or license key missing"}), 401
 
     result = keygen.login_user(identity, password, lic_key)
     if not result["ok"]:
+        log.info("login_fail ip=%s identity=%r reason=invalid_credentials", request.remote_addr, identity)
         _audit("login", identity, lic_key, result["error"], ok=False)
         # Generic message to avoid user enumeration
         return jsonify({"ok": False, "error": "Invalid credentials"}), 401
 
+    log.info("login_success ip=%s username=%r tier=%s", request.remote_addr, result["username"], result.get("tier"))
     _audit("login", result["username"], lic_key, f"tier={result.get('tier')}")
     token = _issue_jwt(result["username"], result.get("tier", "PRO"))
     resp  = jsonify({"ok": True, "username": result["username"],

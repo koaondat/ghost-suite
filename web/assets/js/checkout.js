@@ -1,70 +1,56 @@
 /* ============================================================
-   checkout.js — Ghost checkout page controller
+   checkout.js — Ghost checkout page controller (PayPal)
    ============================================================
    Architecture
    ------------
-   Stripe Checkout Sessions are created by the Node.js backend
-   (api/checkout.js → POST /api/checkout/create-session).  The
-   frontend collects email / discord / coupon, sends them to the
-   backend, and redirects to the Stripe-hosted checkout page.
+   PayPal orders are created by the Node.js backend
+   (api/paypal.js → POST /api/paypal/create-order).  The
+   frontend renders the official PayPal JS SDK button.
 
-   On return from Stripe:
-   • ?state=success&session_id=cs_…  → success state
-     The session_id is sent to the backend to retrieve the
-     generated license key via GET /api/order/<session_id>.
-   • ?state=cancelled                → cancelled state
+   Flow
+   ----
+   1. User fills in email + discord, agrees to terms.
+   2. On "Purchase" click, client-validates the form.
+   3. PayPal SDK calls our createOrder callback →
+      POST /api/paypal/create-order (plan + email + discord).
+      Backend returns { orderID }.
+   4. Customer logs into PayPal and approves.
+   5. PayPal SDK calls our onApprove callback →
+      POST /api/paypal/capture-order (orderID + plan + email + discord).
+      Backend captures, verifies amount/currency/status, then calls
+      license_delivery to generate and return the key.
+   6. Success state shown with the delivered key.
 
-   Coupon validation:
-     POST /api/checkout/validate-coupon
-     Calls Stripe promo-code lookup on the backend; discount
-     amounts are never calculated client-side.
+   If PayPal is cancelled:  onCancel → cancelled state.
+   If PayPal errors:        onError  → failed state.
 
    Security notes
    --------------
    • No payment card data is ever handled here.
    • No license keys are generated here.
-   • No prices, plan names, or payment status are trusted from
-     this file — everything is verified on the backend.
-   • STRIPE_PUBLISHABLE_KEY is the only Stripe value that may
-     appear in frontend code; all secret keys stay server-side.
+   • Prices, plan amounts, and capture verification all happen server-side.
+   • PAYPAL_CLIENT_ID is the only PayPal value that appears in frontend
+     code; PAYPAL_CLIENT_SECRET never leaves the server.
    ============================================================ */
 
 (function () {
   'use strict';
 
   /* ── Plan catalogue ─────────────────────────────────────────
-     Single source of truth for plan metadata used across the
-     order summary, button label, and success screen.
-     To add a plan, add a key here — nothing else needs changing.
+     Used only for display (labels, features, price strings).
+     The backend is the authoritative source for all billing.
   ─────────────────────────────────────────────────────────── */
   const PLANS = {
-    trial: {
-      id:          'trial',
-      name:        'Trial',
-      tagline:     'Free 7-day trial',
-      price:       0,
-      currency:    'USD',
-      symbol:      '$',
-      formatted:   'Free',
-      duration:    '7 days',
-      color:       'accent',
-      features: [
-        'Windows only',
-        'Core features',
-        '7-day access',
-        'Upgrade to Pro anytime',
-      ],
-    },
     pro: {
-      id:          'pro',
-      name:        'Pro',
-      tagline:     'Monthly subscription',
-      price:       7,
-      currency:    'USD',
-      symbol:      '$',
-      formatted:   '$7 / month',
-      duration:    'Active while subscription is live',
-      color:       'accent',   // 'accent' = purple, 'cyan' = cyan
+      id:        'pro',
+      name:      'Pro',
+      tagline:   'Monthly subscription',
+      price:     7,
+      currency:  'USD',
+      symbol:    '$',
+      formatted: '$7 / month',
+      duration:  'Active while subscription is live',
+      color:     'accent',
       features: [
         'Everything in Trial',
         'MAC address spoofing',
@@ -76,15 +62,15 @@
       ],
     },
     lifetime: {
-      id:          'lifetime',
-      name:        'Lifetime',
-      tagline:     'One-time payment — never pay again',
-      price:       79,
-      currency:    'USD',
-      symbol:      '$',
-      formatted:   '$79 one-time',
-      duration:    'Permanent — no expiry',
-      color:       'cyan',
+      id:        'lifetime',
+      name:      'Lifetime',
+      tagline:   'One-time payment — never pay again',
+      price:     79,
+      currency:  'USD',
+      symbol:    '$',
+      formatted: '$79 one-time',
+      duration:  'Permanent — no expiry',
+      color:     'cyan',
       features: [
         'Everything in Pro',
         'Permanent license key',
@@ -96,135 +82,25 @@
     },
   };
 
-  /* Default to 'pro' if no valid ?plan= param is present */
   const params      = new URLSearchParams(window.location.search);
   const planKey     = (params.get('plan') || 'pro').toLowerCase();
   const ACTIVE_PLAN = PLANS[planKey] || PLANS.pro;
 
-  /* Track applied coupon so we can include it in the payload */
-  let appliedCoupon = null;  // { code, discountPct, label } | null
+  /* ── PayPal Client ID (injected by server or set at build time) ─────────
+     The meta tag approach lets the Node server inject the sandbox/live
+     client ID without baking it into the static JS file.
+     The <meta name="paypal-client-id"> tag is added in checkout.html.
+  ──────────────────────────────────────────────────────────────────────── */
+  function _getPayPalClientId () {
+    const meta = document.querySelector('meta[name="paypal-client-id"]');
+    return meta ? meta.content : '';
+  }
 
-
-  /* ══════════════════════════════════════════════════════════
-     API STUB LAYER
-     Replace stub bodies to connect real payment provider.
-  ═════════════════════════════════════════════════════════ */
-  const GhostCheckout = {
-
-    /**
-     * Create a Stripe Checkout Session on the backend and redirect to it.
-     * The backend resolves price, plan, and mode — nothing from this
-     * function is trusted for billing.
-     *
-     * For the free trial plan the backend returns { ok, free, key, tier }
-     * and no redirect happens — the success state is shown inline.
-     *
-     * @param {{
-     *   plan:    string,
-     *   email:   string,
-     *   discord: string,
-     *   coupon?: string,
-     * }} payload
-     *
-     * @returns {Promise<{
-     *   ok:           boolean,
-     *   redirect?:    boolean,  // true when the browser is about to navigate to Stripe
-     *   free?:        boolean,  // true for trial plan (no redirect)
-     *   orderId?:     string,   // set for free trial
-     *   key?:         string,   // set for free trial
-     *   tier?:        string,   // set for free trial
-     *   message?:     string,   // error reason
-     * }>}
-     */
-    createSession: async function (payload) {
-      const res = await fetch('/api/checkout/create-session', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok || !data.ok) {
-        return { ok: false, message: data.message || 'Order creation failed.' };
-      }
-
-      // Free trial: key returned directly — no Stripe redirect
-      if (data.free) {
-        return { ok: true, free: true, orderId: data.orderId, key: data.key, tier: data.tier };
-      }
-
-      // Paid plan: redirect to Stripe Checkout
-      if (data.checkoutUrl) {
-        window.location.href = data.checkoutUrl;
-        return { ok: true, redirect: true };
-      }
-
-      return { ok: false, message: 'No checkout URL returned by server.' };
-    },
-
-    /**
-     * Fetch a completed order record from the backend after a Stripe redirect.
-     * Used on the success return URL (?state=success&session_id=cs_…).
-     *
-     * @param {string} sessionId  Stripe Checkout Session ID from the URL.
-     * @returns {Promise<{ok, key?, plan?, tier?, email?, discord?, price_usd?, order_id?, error?}>}
-     */
-    fetchOrder: async function (sessionId) {
-      try {
-        const res  = await fetch(`/api/order/${encodeURIComponent(sessionId)}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          return { ok: false, error: data.error || 'Order not found.' };
-        }
-        return { ok: true, ...data };
-      } catch (_) {
-        return { ok: false, error: 'Could not reach the server. Contact support with your Session ID.' };
-      }
-    },
-
-    /**
-     * Validate a coupon code server-side via POST /api/checkout/validate-coupon.
-     * The backend checks Stripe's promotion code API — discount amounts are
-     * never calculated client-side.
-     *
-     * @param {string} code  Raw coupon text entered by user.
-     * @param {string} plan  Plan ID ('pro' | 'lifetime').
-     *
-     * @returns {Promise<{
-     *   ok:           boolean,
-     *   discountPct?: number,
-     *   label?:       string,
-     *   message?:     string,
-     * }>}
-     */
-    validateCoupon: async function (code, plan) {
-      try {
-        const res = await fetch('/api/checkout/validate-coupon', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ code, plan }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) return { ok: false, message: data.message || 'Invalid coupon.' };
-        return data;
-      } catch (_) {
-        return { ok: false, message: 'Could not validate coupon. Please try again.' };
-      }
-    },
-  };
-
-
-  /* ══════════════════════════════════════════════════════════
-     STATE MACHINE
-  ═════════════════════════════════════════════════════════ */
-
-  /** All state panel IDs in order. */
+  /* ── State machine ──────────────────────────────────────────────────────
+     All state panel IDs.  Only one is visible at a time.
+  ──────────────────────────────────────────────────────────────────────── */
   const STATES = ['idle', 'loading', 'success', 'cancelled', 'failed'];
 
-  /**
-   * Switch the visible state panel.
-   * @param {'idle'|'loading'|'success'|'cancelled'|'failed'} name
-   */
   function showState (name) {
     STATES.forEach(s => {
       const el = document.getElementById('state-' + s);
@@ -233,12 +109,9 @@
   }
 
 
-  /* ══════════════════════════════════════════════════════════
-     ORDER SUMMARY RENDERER
-  ═════════════════════════════════════════════════════════ */
+  /* ── Order summary renderer ─────────────────────────────────────────── */
 
-  function renderSummary (plan, coupon) {
-    /* Plan header */
+  function renderSummary (plan) {
     const iconEl    = document.getElementById('co-summary-icon');
     const nameEl    = document.getElementById('co-summary-plan-name');
     const taglineEl = document.getElementById('co-summary-plan-tagline');
@@ -256,7 +129,6 @@
         </div>`;
     }
 
-    /* Features */
     const featList = document.getElementById('co-summary-features');
     if (featList) {
       const isCyan = plan.color === 'cyan';
@@ -267,63 +139,19 @@
         </li>`).join('');
     }
 
-    /* Price lines */
     const subtotalEl  = document.getElementById('co-price-subtotal');
     const totalEl     = document.getElementById('co-price-total');
     const discountRow = document.getElementById('co-discount-row');
-    const discountLbl = document.getElementById('co-discount-label');
-    const discountVal = document.getElementById('co-price-discount');
     const durationEl  = document.getElementById('co-license-duration-text');
 
-    const subtotal = plan.price;
-    let total      = subtotal;
-
-    if (subtotalEl) subtotalEl.textContent = plan.symbol + subtotal.toFixed(2);
-
-    if (coupon && coupon.discountPct) {
-      const saving = subtotal * coupon.discountPct / 100;
-      total        = subtotal - saving;
-      if (discountRow) discountRow.hidden = false;
-      if (discountLbl) discountLbl.textContent = 'Coupon (' + coupon.label + ')';
-      if (discountVal) discountVal.textContent  = '−' + plan.symbol + saving.toFixed(2);
-    } else {
-      if (discountRow) discountRow.hidden = true;
-    }
-
-    if (totalEl)   totalEl.textContent  = plan.symbol + total.toFixed(2);
-    if (durationEl) durationEl.textContent = 'License duration: ' + plan.duration;
+    if (subtotalEl) subtotalEl.textContent = plan.symbol + plan.price.toFixed(2);
+    if (totalEl)    totalEl.textContent    = plan.symbol + plan.price.toFixed(2);
+    if (discountRow) discountRow.hidden    = true;
+    if (durationEl)  durationEl.textContent = 'License duration: ' + plan.duration;
   }
 
 
-  /* ══════════════════════════════════════════════════════════
-     LOADING STEP ANIMATOR
-  ═════════════════════════════════════════════════════════ */
-
-  function animateLoadingSteps () {
-    const steps = ['lstep-1', 'lstep-2', 'lstep-3'];
-    let i = 0;
-    const tick = () => {
-      if (i > 0) {
-        const prev = document.getElementById(steps[i - 1]);
-        if (prev) { prev.classList.remove('active'); prev.classList.add('done'); }
-      }
-      const cur = document.getElementById(steps[i]);
-      if (cur) cur.classList.add('active');
-      i++;
-      if (i < steps.length) setTimeout(tick, 900);
-    };
-    // reset
-    steps.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) { el.classList.remove('active', 'done'); }
-    });
-    tick();
-  }
-
-
-  /* ══════════════════════════════════════════════════════════
-     FIELD HELPERS  (same pattern as auth.js)
-  ═════════════════════════════════════════════════════════ */
+  /* ── Field helpers ──────────────────────────────────────────────────── */
 
   function fieldState (groupId, errorId, message) {
     const group = document.getElementById(groupId);
@@ -359,29 +187,8 @@
     if (el) el.hidden = true;
   }
 
-  function setSubmitLoading (loading, label) {
-    const btn     = document.getElementById('co-submit-btn');
-    const text    = document.getElementById('co-btn-text');
-    const spinner = btn?.querySelector('.btn-spinner');
-    const lbl     = document.getElementById('co-btn-label');
-    if (!btn) return;
 
-    btn.disabled = loading;
-    if (loading) {
-      btn.setAttribute('disabled', '');
-    } else {
-      btn.removeAttribute('disabled');
-    }
-    if (text)    text.style.opacity = loading ? '0.7' : '1';
-    if (spinner) spinner.hidden     = !loading;
-    if (lbl)     lbl.hidden         = !loading;
-    if (lbl && label) lbl.textContent = '— ' + label;
-  }
-
-
-  /* ══════════════════════════════════════════════════════════
-     VALIDATION
-  ═════════════════════════════════════════════════════════ */
+  /* ── Form validation ────────────────────────────────────────────────── */
 
   function validateForm (email, discord, terms) {
     const errors = {};
@@ -402,283 +209,28 @@
   }
 
 
-  /* ══════════════════════════════════════════════════════════
-     COUPON HANDLER
-  ═════════════════════════════════════════════════════════ */
+  /* ── Read current form values ───────────────────────────────────────── */
 
-  function wireCouponButton () {
-    const btn    = document.getElementById('co-coupon-btn');
-    const input  = document.getElementById('co-coupon');
-    const errEl  = document.getElementById('co-coupon-err');
-    const okEl   = document.getElementById('co-coupon-status');
-    const msgEl  = document.getElementById('co-coupon-msg');
-
-    if (!btn || !input) return;
-
-    btn.addEventListener('click', async () => {
-      const code = input.value.trim();
-
-      /* Clear previous state */
-      if (errEl) errEl.textContent = '';
-      if (okEl)  okEl.hidden = true;
-
-      if (!code) {
-        /* Reset any applied coupon */
-        appliedCoupon = null;
-        renderSummary(ACTIVE_PLAN, null);
-        return;
-      }
-
-      btn.disabled = true;
-      btn.textContent = '…';
-
-      const result = await GhostCheckout.validateCoupon(code, ACTIVE_PLAN.id);
-
-      btn.disabled = false;
-      btn.textContent = 'Apply';
-
-      if (result.ok) {
-        appliedCoupon = { code, discountPct: result.discountPct, label: result.label };
-        renderSummary(ACTIVE_PLAN, appliedCoupon);
-        if (okEl)  okEl.hidden  = false;
-        if (msgEl) msgEl.textContent = result.label + ' applied!';
-        if (errEl) errEl.textContent = '';
-        /* Mark field valid */
-        const fg = document.getElementById('fg-co-coupon');
-        if (fg) { fg.classList.remove('is-invalid'); fg.classList.add('is-valid'); }
-      } else {
-        appliedCoupon = null;
-        renderSummary(ACTIVE_PLAN, null);
-        if (errEl) errEl.textContent = result.message || 'Invalid coupon.';
-        if (okEl)  okEl.hidden = true;
-        const fg = document.getElementById('fg-co-coupon');
-        if (fg) { fg.classList.add('is-invalid'); fg.classList.remove('is-valid'); }
-      }
-    });
-
-    /* Allow Enter key inside coupon input to trigger Apply */
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); btn.click(); }
-    });
-
-    /* Clear coupon if input is emptied */
-    input.addEventListener('input', () => {
-      if (!input.value.trim() && appliedCoupon) {
-        appliedCoupon = null;
-        renderSummary(ACTIVE_PLAN, null);
-        const okEl2 = document.getElementById('co-coupon-status');
-        if (okEl2) okEl2.hidden = true;
-        const fg = document.getElementById('fg-co-coupon');
-        if (fg) { fg.classList.remove('is-invalid', 'is-valid'); }
-      }
-    });
-  }
-
-
-  /* ══════════════════════════════════════════════════════════
-     FORM SUBMIT
-  ═════════════════════════════════════════════════════════ */
-
-  function wireForm () {
+  function _formValues () {
     const form = document.getElementById('checkout-form');
-    if (!form) return;
-
-    /* Inline validation on blur */
-    form.querySelector('#co-email')?.addEventListener('blur', function () {
-      const msg = !this.value.trim()
-        ? 'Email address is required.'
-        : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(this.value)
-          ? 'Please enter a valid email address.'
-          : '';
-      fieldState('fg-co-email', 'co-email-err', msg);
-    });
-
-    form.querySelector('#co-discord')?.addEventListener('blur', function () {
-      const msg = !this.value.trim() ? 'Discord username is required.' : '';
-      fieldState('fg-co-discord', 'co-discord-err', msg);
-    });
-
-    form.addEventListener('submit', async function (e) {
-      e.preventDefault();
-      hideAlert();
-
-      const email   = form.querySelector('#co-email').value.trim();
-      const discord = form.querySelector('#co-discord').value.trim();
-      const terms   = form.querySelector('#co-terms').checked;
-
-      /* Client-side validation */
-      const errors = validateForm(email, discord, terms);
-      fieldState('fg-co-email',    'co-email-err',   errors.email   || '');
-      fieldState('fg-co-discord',  'co-discord-err', errors.discord || '');
-      fieldState('fg-co-terms',    'co-terms-err',   errors.terms   || '');
-
-      if (Object.keys(errors).length) return;
-
-      /* ── Start loading state ── */
-      setSubmitLoading(true, 'processing');
-      showState('loading');
-      animateLoadingSteps();
-
-      const payload = {
-        plan:    ACTIVE_PLAN.id,
-        email,
-        discord,
-        coupon:  appliedCoupon ? appliedCoupon.code : undefined,
-      };
-
-      try {
-        const result = await GhostCheckout.createSession(payload);
-
-        if (result.redirect) {
-          /* Browser is navigating to Stripe — keep the loading state visible */
-          return;
-        }
-
-        if (result.ok && result.free) {
-          /* Free trial — key returned directly without redirect */
-          _setText('success-email',    email);
-          _setText('success-plan',     ACTIVE_PLAN.name);
-          _setText('success-order-id', result.orderId || '—');
-          _setText('success-duration', ACTIVE_PLAN.duration);
-          _setText('success-amount',   '$0.00');
-          showState('success');
-          setSubmitLoading(false);
-          _showDeliveredKey(result.key, result.tier, result.orderId, email, discord, 0);
-          return;
-        }
-
-        if (!result.ok) {
-          showState('failed');
-          _setText('failed-reason', result.message || 'Your payment could not be processed. No charge was made.');
-          setSubmitLoading(false);
-        }
-
-      } catch (_) {
-        showState('failed');
-        _setText('failed-reason', 'A network error occurred. Please check your connection and try again. No charge was made.');
-        setSubmitLoading(false);
-      }
-    });
+    if (!form) return {};
+    return {
+      email:   (form.querySelector('#co-email')?.value   || '').trim(),
+      discord: (form.querySelector('#co-discord')?.value || '').trim(),
+      terms:   form.querySelector('#co-terms')?.checked  || false,
+    };
   }
 
 
-  /* ══════════════════════════════════════════════════════════
-     RETRY / BACK BUTTONS
-  ═════════════════════════════════════════════════════════ */
+  /* ── License key display ────────────────────────────────────────────── */
 
-  function wireRetryButtons () {
-    ['failed-retry-btn', 'cancelled-retry-btn'].forEach(id => {
-      document.getElementById(id)?.addEventListener('click', () => {
-        showState('idle');
-        setSubmitLoading(false);
-        hideAlert();
-      });
-    });
-  }
-
-
-  /* ══════════════════════════════════════════════════════════
-     PLAN BADGE — style the summary card border for lifetime
-  ═════════════════════════════════════════════════════════ */
-
-  function applyPlanTheme () {
-    const card = document.getElementById('co-summary-card');
-    if (!card) return;
-    if (ACTIVE_PLAN.color === 'cyan') {
-      card.classList.add('co-summary-card--cyan');
-    }
-
-    /* Also theme the submit button */
-    const btn = document.getElementById('co-submit-btn');
-    if (btn && ACTIVE_PLAN.color === 'cyan') {
-      btn.classList.remove('btn-primary');
-      btn.classList.add('btn-secondary');
-    }
-  }
-
-
-  /* ══════════════════════════════════════════════════════════
-     LICENSE KEY DELIVERY
-     Called after createOrder succeeds.  Calls the backend,
-     then updates the success state UI with the returned key.
-     Never runs before payment is confirmed; never exposes secrets.
-   ═════════════════════════════════════════════════════════ */
-
-  /**
-   * Fetch the order from the backend using the Stripe session ID, then
-   * update the success UI with the license key.
-   * Called when the user returns from Stripe Checkout (?state=success).
-   *
-   * @param {string} sessionId  Stripe Checkout Session ID from the URL
-   */
-  async function _fetchAndShowOrder (sessionId) {
-    _show('co-key-pending');
-    _hide('co-key-delivery');
-    _hide('co-key-error');
-
-    // Poll up to ~20 s — the webhook may arrive a few seconds after redirect
-    const MAX_ATTEMPTS = 10;
-    const POLL_MS      = 2000;
-    let result;
-
-    for (let i = 0; i < MAX_ATTEMPTS; i++) {
-      result = await GhostCheckout.fetchOrder(sessionId);
-      if (result.ok && result.license_key) break;
-      // Order not yet delivered — wait before retrying
-      if (i < MAX_ATTEMPTS - 1) await _delay(POLL_MS);
-    }
-
-    _hide('co-key-pending');
-
-    if (result && result.ok && result.license_key) {
-      const plan = PLANS[(result.plan || '').toLowerCase()] || ACTIVE_PLAN;
-
-      /* Populate meta fields from backend-verified data */
-      _setText('success-email',    result.email    || '—');
-      _setText('success-plan',     plan.name       || result.plan || '—');
-      _setText('success-order-id', result.order_id || sessionId);
-      _setText('success-duration', plan.duration   || '—');
-      _setText('success-amount',   result.price_usd != null
-        ? '$' + Number(result.price_usd).toFixed(2) : '—');
-
-      /* Persist for the dashboard */
-      try {
-        sessionStorage.setItem('ghost_last_order', JSON.stringify({
-          orderId:   result.order_id || sessionId,
-          key:       result.license_key,
-          tier:      result.tier    || '',
-          plan:      result.plan    || '',
-          email:     result.email   || '',
-          discord:   result.discord || '',
-          priceUsd:  result.price_usd,
-          sessionId,
-        }));
-      } catch (_) { /* non-fatal */ }
-
-      _showDeliveredKey(result.license_key, result.tier, result.order_id, result.email, result.discord, result.price_usd);
-
-    } else {
-      const errMsg = (result && result.error) || 'License key delivery failed or is still processing.';
-      _setText('co-key-error-msg', errMsg + ' Your payment was received — please contact support with your Session ID: ' + sessionId);
-      _show('co-key-error');
-      const dashBtn = document.getElementById('success-dashboard-btn');
-      if (dashBtn) dashBtn.hidden = false;
-    }
-  }
-
-  /**
-   * Render a delivered key onto the success UI and wire copy buttons.
-   * Used both for free-trial (inline) and post-redirect Stripe purchases.
-   */
   function _showDeliveredKey (key, tier, orderId, email, discord, priceUsd) {
     _show('co-key-delivery');
     _setText('success-license-key', key);
 
-    /* Wire inline copy button */
     const inlineCopyBtn = document.getElementById('success-copy-btn');
     if (inlineCopyBtn) inlineCopyBtn.onclick = () => _copyKey(key, [inlineCopyBtn]);
 
-    /* Show action buttons */
     const copyBtn = document.getElementById('success-copy-key-btn');
     const dashBtn = document.getElementById('success-dashboard-btn');
     const dlBtn   = document.getElementById('success-download-btn');
@@ -688,7 +240,6 @@
     if (dlBtn)   dlBtn.hidden   = false;
   }
 
-  /** Copy text to clipboard with brief visual feedback on the button(s). */
   function _copyKey (text, btns) {
     navigator.clipboard.writeText(text).then(() => {
       btns.forEach(btn => {
@@ -709,24 +260,18 @@
     });
   }
 
-  /** Show an element by removing the hidden attribute. */
+
+  /* ── Utility ────────────────────────────────────────────────────────── */
+
   function _show (id) {
     const el = document.getElementById(id);
     if (el) el.hidden = false;
   }
 
-  /** Hide an element by setting the hidden attribute. */
   function _hide (id) {
     const el = document.getElementById(id);
     if (el) el.hidden = true;
   }
-
-
-  /* ══════════════════════════════════════════════════════════
-     UTILITY
-   ═════════════════════════════════════════════════════════ */
-
-  function _delay (ms) { return new Promise(r => setTimeout(r, ms)); }
 
   function _setText (id, text) {
     const el = document.getElementById(id);
@@ -741,63 +286,233 @@
       .replace(/"/g, '&quot;');
   }
 
+  function applyPlanTheme () {
+    const card = document.getElementById('co-summary-card');
+    if (card && ACTIVE_PLAN.color === 'cyan') card.classList.add('co-summary-card--cyan');
+  }
 
-  /* ══════════════════════════════════════════════════════════
-     INIT
-  ═════════════════════════════════════════════════════════ */
-
-  /**
-   * Handle the Stripe return URL.
-   * Called when the page loads with ?state=success&session_id=cs_… or ?state=cancelled.
-   * Returns true if a return state was detected (form should not be shown).
-   */
-  function handleStripeReturn () {
-    const state     = params.get('state');
-    const sessionId = params.get('session_id');
-
-    if (state === 'cancelled') {
-      showState('cancelled');
-      return true;
-    }
-
-    if (state === 'success' && sessionId) {
-      /* Show success skeleton immediately, then fetch the order */
-      showState('success');
-      _show('co-key-pending');
-
-      /* Derive plan from the URL if present (for display only — key data comes from backend) */
-      const urlPlan = params.get('plan');
-      if (urlPlan && PLANS[urlPlan]) {
-        _setText('success-plan', PLANS[urlPlan].name);
-        _setText('success-duration', PLANS[urlPlan].duration);
-      }
-
-      /* Fetch the real order data (with key) from the backend */
-      _fetchAndShowOrder(sessionId);
-      return true;
-    }
-
-    return false;
+  function wireRetryButtons () {
+    ['failed-retry-btn', 'cancelled-retry-btn'].forEach(id => {
+      document.getElementById(id)?.addEventListener('click', () => {
+        showState('idle');
+        hideAlert();
+      });
+    });
   }
 
 
-  (function init () {
-    /* If we're returning from Stripe, handle that first */
-    if (handleStripeReturn()) return;
+  /* ── PayPal JS SDK button rendering ─────────────────────────────────────
+     The PayPal SDK is loaded dynamically once the user fills the form
+     and clicks "Pay with PayPal".  This avoids loading it on page open
+     and also lets us pass form validation before the SDK initialises.
 
-    /* Normal checkout form flow */
-    renderSummary(ACTIVE_PLAN, null);
+     The Purchase button in the form is replaced by a "Pay with PayPal"
+     button that triggers form validation, then renders the PayPal button
+     inside #paypal-button-container.  The SDK button handles the rest.
+  ──────────────────────────────────────────────────────────────────────── */
+
+  let _paypalRendered = false;
+
+  function _loadPayPalSDK (clientId) {
+    return new Promise((resolve, reject) => {
+      if (window.paypal) { resolve(window.paypal); return; }
+      const s = document.createElement('script');
+      // currency=USD, intent=capture — no subscription support needed for sandbox test
+      s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=USD&intent=capture`;
+      s.onload  = () => resolve(window.paypal);
+      s.onerror = () => reject(new Error('PayPal SDK failed to load.'));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function _renderPayPalButton (email, discord) {
+    if (_paypalRendered) return;
+
+    const clientId = _getPayPalClientId();
+    if (!clientId) {
+      showAlert('error', 'Payment is not configured. Please contact support.');
+      return;
+    }
+
+    // Show the PayPal button container, hide the native submit button
+    _hide('co-submit-btn-wrap');
+    _show('paypal-button-container');
+
+    let paypalSdk;
+    try {
+      paypalSdk = await _loadPayPalSDK(clientId);
+    } catch (err) {
+      _show('co-submit-btn-wrap');
+      _hide('paypal-button-container');
+      showAlert('error', 'Could not load the PayPal payment interface. Please refresh and try again.');
+      return;
+    }
+
+    _paypalRendered = true;
+
+    paypalSdk.Buttons({
+      style: {
+        layout: 'vertical',
+        color:  'gold',
+        shape:  'rect',
+        label:  'pay',
+        height: 48,
+      },
+
+      /* Called by PayPal SDK to create the order on our server */
+      createOrder: async () => {
+        // Re-read form in case values changed while the SDK was loading
+        const vals = _formValues();
+        const errs = validateForm(vals.email, vals.discord, vals.terms);
+        if (Object.keys(errs).length) {
+          fieldState('fg-co-email',   'co-email-err',   errs.email   || '');
+          fieldState('fg-co-discord', 'co-discord-err', errs.discord || '');
+          fieldState('fg-co-terms',   'co-terms-err',   errs.terms   || '');
+          // Returning a rejected promise tells PayPal to stop and show an error
+          throw new Error('Please complete the form before paying.');
+        }
+
+        const res  = await fetch('/api/paypal/create-order', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ plan: ACTIVE_PLAN.id, email: vals.email, discord: vals.discord }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error(data.message || 'Could not create PayPal order.');
+        }
+        // Show loading state once we have an order ID and the customer is in PayPal
+        showState('loading');
+        return data.orderID;
+      },
+
+      /* Called by PayPal SDK after the customer approves the payment */
+      onApprove: async (data) => {
+        showState('loading');
+        hideAlert();
+
+        const vals = _formValues();
+
+        try {
+          const res = await fetch('/api/paypal/capture-order', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({
+              orderID: data.orderID,
+              plan:    ACTIVE_PLAN.id,
+              email:   vals.email,
+              discord: vals.discord,
+            }),
+          });
+          const result = await res.json().catch(() => ({}));
+
+          if (!res.ok || !result.ok) {
+            showState('failed');
+            _setText('failed-reason', result.message || 'Payment capture failed. Please contact support.');
+            return;
+          }
+
+          // ── Payment confirmed and license delivered ──────────────────────
+          const plan = PLANS[(result.plan || '').toLowerCase()] || ACTIVE_PLAN;
+
+          _setText('success-email',    result.email   || vals.email || '—');
+          _setText('success-plan',     plan.name      || result.plan || '—');
+          _setText('success-order-id', result.orderId || data.orderID || '—');
+          _setText('success-duration', plan.duration  || '—');
+          _setText('success-amount',   result.priceUsd != null
+            ? '$' + Number(result.priceUsd).toFixed(2) : '—');
+
+          showState('success');
+          _hide('co-key-pending');
+
+          if (result.key) {
+            _showDeliveredKey(result.key, result.tier, result.orderId, result.email, result.discord, result.priceUsd);
+          } else {
+            // Key not yet ready — show error + contact info
+            _setText('co-key-error-msg',
+              'Your payment was received but license delivery failed. ' +
+              'Contact support with Order ID: ' + (result.orderId || data.orderID));
+            _show('co-key-error');
+          }
+
+        } catch (err) {
+          showState('failed');
+          _setText('failed-reason',
+            'A network error occurred after payment. Your payment may have been processed — ' +
+            'please contact support with PayPal Order ID: ' + data.orderID);
+        }
+      },
+
+      /* Customer cancelled in the PayPal popup */
+      onCancel: () => {
+        showState('cancelled');
+      },
+
+      /* PayPal SDK-level error (not a payment failure) */
+      onError: (err) => {
+        console.error('[ghost/paypal-sdk] error:', err);
+        showState('failed');
+        _setText('failed-reason',
+          'A PayPal error occurred. No charge was made. Please try again or contact support.');
+      },
+
+    }).render('#paypal-button-container');
+  }
+
+
+  /* ── "Pay with PayPal" trigger button ───────────────────────────────────
+     The form's submit button now triggers validation only.  If validation
+     passes, the PayPal buttons are rendered into #paypal-button-container
+     and the form submit button is hidden.
+  ──────────────────────────────────────────────────────────────────────── */
+
+  function wireForm () {
+    const form = document.getElementById('checkout-form');
+    if (!form) return;
+
+    form.querySelector('#co-email')?.addEventListener('blur', function () {
+      const msg = !this.value.trim()
+        ? 'Email address is required.'
+        : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(this.value)
+          ? 'Please enter a valid email address.'
+          : '';
+      fieldState('fg-co-email', 'co-email-err', msg);
+    });
+
+    form.querySelector('#co-discord')?.addEventListener('blur', function () {
+      const msg = !this.value.trim() ? 'Discord username is required.' : '';
+      fieldState('fg-co-discord', 'co-discord-err', msg);
+    });
+
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      hideAlert();
+
+      const vals = _formValues();
+      const errors = validateForm(vals.email, vals.discord, vals.terms);
+      fieldState('fg-co-email',   'co-email-err',   errors.email   || '');
+      fieldState('fg-co-discord', 'co-discord-err', errors.discord || '');
+      fieldState('fg-co-terms',   'co-terms-err',   errors.terms   || '');
+
+      if (Object.keys(errors).length) return;
+
+      // Validation passed — render PayPal button
+      await _renderPayPalButton(vals.email, vals.discord);
+    });
+  }
+
+
+  /* ── Init ────────────────────────────────────────────────────────────── */
+
+  (function init () {
+    renderSummary(ACTIVE_PLAN);
     applyPlanTheme();
-    wireCouponButton();
     wireForm();
     wireRetryButtons();
 
-    /* Update button text to reflect plan */
     const btnText = document.getElementById('co-btn-text');
     if (btnText) {
-      btnText.textContent = ACTIVE_PLAN.price === 0
-        ? 'Claim Free Access'
-        : 'Complete Purchase — ' + ACTIVE_PLAN.formatted;
+      btnText.textContent = 'Pay with PayPal — ' + ACTIVE_PLAN.formatted;
     }
   })();
 

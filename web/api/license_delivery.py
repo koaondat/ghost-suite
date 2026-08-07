@@ -76,9 +76,10 @@ PLAN_PRICES: dict[str, dict[str, Any]] = {
 }
 
 # ── Valid payment token prefixes / literals ────────────────────────────────
-#   Tokens starting with "stripe:" come from the webhook (already verified).
+#   Tokens starting with "paypal:" come from captureOrder (amount/status verified).
 #   "FREE_TRIAL" is the literal used for the no-payment trial path.
-_ALLOWED_TOKEN_PREFIXES = ("stripe:",)
+#   "stripe:" is kept for backward-compatibility with any existing orders only.
+_ALLOWED_TOKEN_PREFIXES = ("paypal:", "stripe:")
 _ALLOWED_TOKEN_LITERALS = {"FREE_TRIAL"}
 
 # ── Thread lock ───────────────────────────────────────────────────────────────
@@ -217,6 +218,12 @@ def confirm_payment_and_deliver(
     tier, expires_days = PLAN_TIER_MAP[plan]
     resolved_price = price_usd if price_usd is not None else float(PLAN_PRICES[plan]["priceUsd"])
 
+    # ── Duplicate capture-ID check (PayPal) ──────────────────────────────────
+    # order_id for PayPal payments is the capture ID — globally unique per
+    # PayPal capture.  A second request with the same capture ID returns the
+    # existing key without running keygen again.
+    paypal_capture_id  = (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else None
+
     with _orders_lock:
         records = _load_orders()
 
@@ -236,6 +243,32 @@ def confirm_payment_and_deliver(
                 "created_at":     existing["created_at"],
                 "payment_status": existing["payment_status"],
             }
+
+        # ── Duplicate detection by PayPal capture ID ─────────────────────
+        # Also check every record's stored paypal_capture_id to guard
+        # against the same capture being submitted under a different order_id.
+        if paypal_capture_id:
+            dup = next(
+                (r for r in records if r.get("paypal_capture_id") == paypal_capture_id),
+                None,
+            )
+            if dup and dup.get("license_key"):
+                log.warning(
+                    "Duplicate PayPal capture ID %s — returning existing key for order %s",
+                    paypal_capture_id, dup["order_id"],
+                )
+                return {
+                    "ok":             True,
+                    "key":            dup["license_key"],
+                    "order_id":       dup["order_id"],
+                    "plan":           dup["plan"],
+                    "tier":           dup["tier"],
+                    "email":          dup["email"],
+                    "discord":        dup["discord"],
+                    "price_usd":      dup["price_usd"],
+                    "created_at":     dup["created_at"],
+                    "payment_status": dup["payment_status"],
+                }
 
         # ── Generate a real GHOST license key ─────────────────────────────
         try:
@@ -257,20 +290,21 @@ def confirm_payment_and_deliver(
 
         # ── Build full order record ───────────────────────────────────────
         order_record: dict = {
-            "order_id":          order_id,
-            "stripe_session_id": stripe_session_id or order_id,
-            "plan":              plan,
-            "plan_label":        PLAN_PRICES[plan]["label"],
-            "tier":              tier,
-            "email":             email,
-            "discord":           discord,
-            "price_usd":         resolved_price,
-            "created_at":        created_at,
-            "payment_status":    "verified",
-            "payment_verified":  True,
-            "license_key":       new_key,
-            "key_expires":       str(key_meta.get("expiry") or "never"),
-            "key_created":       str(key_meta.get("created")),
+            "order_id":           order_id,
+            "stripe_session_id":  stripe_session_id or order_id,
+            "paypal_capture_id":  paypal_capture_id or "",
+            "plan":               plan,
+            "plan_label":         PLAN_PRICES[plan]["label"],
+            "tier":               tier,
+            "email":              email,
+            "discord":            discord,
+            "price_usd":          resolved_price,
+            "created_at":         created_at,
+            "payment_status":     "verified",
+            "payment_verified":   True,
+            "license_key":        new_key,
+            "key_expires":        str(key_meta.get("expiry") or "never"),
+            "key_created":        str(key_meta.get("created")),
         }
 
         # ── Persist to orders.json ────────────────────────────────────────

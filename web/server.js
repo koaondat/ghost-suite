@@ -1,17 +1,15 @@
 /**
- * server.js — Ghost API Server
+ * server.js — Ghost Web Server
  * ============================
  * Express server that:
- *   • Serves the static web/ files
- *   • Provides the Stripe Checkout session API (api/checkout.js)
- *   • Handles the Stripe webhook (api/stripe_webhook.js) with raw-body
- *     middleware — MUST be mounted BEFORE express.json()
+ *   • Serves the static web/ files (injects PAYPAL_CLIENT_ID into checkout.html)
+ *   • Provides PayPal Checkout session API (api/paypal.js)
  *   • Proxies all /api/auth/*, /api/license/*, /api/purchases,
  *     /api/downloads/*, and /api/admin/* requests to the Ghost shared
  *     Python backend (api.py) running at GHOST_API_URL.
  *
  * Start:  node server.js
- * Deps:   npm install express stripe node-fetch dotenv
+ * Deps:   npm install express node-fetch dotenv
  *
  * Environment variables: see .env.example
  */
@@ -20,10 +18,10 @@
 
 require('dotenv').config();
 
-const express        = require('express');
-const path           = require('path');
-const checkout       = require('./api/checkout');
-const stripeWebhook  = require('./api/stripe_webhook');
+const express = require('express');
+const fs      = require('fs');
+const path    = require('path');
+const paypal  = require('./api/paypal');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -33,21 +31,35 @@ const PORT = process.env.PORT || 3000;
 // file so that sendFile / express.static work in both local dev and serverless.
 const WEB_ROOT = __dirname;
 
-// Base URL of the Ghost shared Python API (api.py)
-const GHOST_API_URL = (process.env.GHOST_API_URL || 'http://localhost:5056').replace(/\/$/, '');
+// Base URL of the Ghost shared Python API (api.py).
+// This MUST be set to the deployed API URL in production.
+// Falling back to localhost is only acceptable for local development.
+const GHOST_API_URL = (process.env.GHOST_API_URL || '').replace(/\/$/, '');
+
+if (!GHOST_API_URL) {
+  console.warn(
+    '[ghost/server] WARNING: GHOST_API_URL is not set. ' +
+    'Auth, license, and admin proxy routes will not work until this is configured. ' +
+    'Set it to the deployed URL of your Ghost Python backend (api.py).',
+  );
+}
 
 // ── Shared API proxy helper ──────────────────────────────────────────────────
 async function _proxyToApi (req, res, pathOverride) {
+  if (!GHOST_API_URL) {
+    return res.status(503).json({
+      ok:    false,
+      error: 'API service unavailable: GHOST_API_URL is not configured on this server.',
+    });
+  }
+
   const { default: fetch } = await import('node-fetch');
-  const targetPath  = pathOverride || req.url;
-  const targetUrl   = `${GHOST_API_URL}${targetPath}`;
+  const targetPath = pathOverride || req.url;
+  const targetUrl  = `${GHOST_API_URL}${targetPath}`;
 
   const headers = { ...req.headers };
-  // Prevent express from forwarding the host header to the Python server
   delete headers['host'];
 
-  // Body-bearing methods: always re-serialise as JSON and set the correct
-  // Content-Type so the Python Flask server can parse it with get_json().
   const BODY_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE'];
   const hasBody = BODY_METHODS.includes(req.method) && req.body !== undefined;
   if (hasBody) {
@@ -72,58 +84,94 @@ async function _proxyToApi (req, res, pathOverride) {
     return res.status(upstream.status).json(data);
   } catch (err) {
     console.error('[ghost/proxy] upstream error:', err.message);
-    return res.status(502).json({ ok: false, error: 'API service unavailable.' });
+    return res.status(502).json({
+      ok:    false,
+      error: 'API service unavailable. Please check your connection and try again.',
+    });
   }
 }
 
-// ── Stripe webhook MUST receive the raw body before any JSON parser ──────────
-app.post(
-  '/api/stripe/webhook',
-  express.raw({ type: 'application/json' }),
-  stripeWebhook.handler,
-);
-
-// ── JSON body parser for all other routes ────────────────────────────────────
+// ── JSON body parser ─────────────────────────────────────────────────────────
 app.use(express.json());
 
-// ── Checkout / order API routes (handled by Node) ────────────────────────────
-app.post('/api/checkout/create-session',   checkout.createSession);
-app.post('/api/checkout/validate-coupon',  checkout.validateCoupon);
-app.get( '/api/order/:sessionId',          checkout.getOrder);
+// ── PayPal Checkout API routes (handled by Node) ─────────────────────────────
+app.post('/api/paypal/create-order',  paypal.createOrder);
+app.post('/api/paypal/capture-order', paypal.captureOrder);
+
+// ── Order lookup (proxy to delivery backend) ─────────────────────────────────
+app.get('/api/order/:orderId', async (req, res) => {
+  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+  if (!DELIVERY_BACKEND_URL) {
+    return res.status(503).json({ ok: false, error: 'Order lookup unavailable: GHOST_DELIVERY_URL not configured.' });
+  }
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const upstream = await fetch(`${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(req.params.orderId)}`);
+    const data = await upstream.json().catch(() => ({}));
+    return res.status(upstream.status).json(data);
+  } catch (err) {
+    console.error('[ghost/server] getOrder proxy error:', err.message);
+    return res.status(502).json({ ok: false, error: 'Order lookup unavailable.' });
+  }
+});
+
+// ── Serve checkout.html with injected PayPal Client ID ───────────────────────
+// The placeholder __PAYPAL_CLIENT_ID__ in checkout.html is replaced at request
+// time so PAYPAL_CLIENT_ID comes from the server environment, never baked in.
+app.get('/checkout.html', (req, res) => {
+  const clientId   = process.env.PAYPAL_CLIENT_ID || '';
+  const htmlPath   = path.join(WEB_ROOT, 'checkout.html');
+  try {
+    const html = fs.readFileSync(htmlPath, 'utf8')
+      .replace('__PAYPAL_CLIENT_ID__', clientId);
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (err) {
+    console.error('[ghost/server] checkout.html read error:', err.message);
+    res.status(500).send('Internal server error');
+  }
+});
+
+// Also serve /checkout (no .html) with injection
+app.get('/checkout', (req, res) => {
+  const clientId   = process.env.PAYPAL_CLIENT_ID || '';
+  const htmlPath   = path.join(WEB_ROOT, 'checkout.html');
+  try {
+    const html = fs.readFileSync(htmlPath, 'utf8')
+      .replace('__PAYPAL_CLIENT_ID__', clientId);
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (err) {
+    console.error('[ghost/server] checkout.html read error:', err.message);
+    res.status(500).send('Internal server error');
+  }
+});
 
 // ── Ghost shared API proxy routes ────────────────────────────────────────────
 // Auth
-app.all('/api/auth/*',      (req, res) => _proxyToApi(req, res));
+app.all('/api/auth/*',     (req, res) => _proxyToApi(req, res));
 // Customer license / account
-app.all('/api/license/*',   (req, res) => _proxyToApi(req, res));
-app.all('/api/purchases',   (req, res) => _proxyToApi(req, res));
-app.all('/api/downloads*',  (req, res) => _proxyToApi(req, res));
+app.all('/api/license/*',  (req, res) => _proxyToApi(req, res));
+app.all('/api/purchases',  (req, res) => _proxyToApi(req, res));
+app.all('/api/downloads*', (req, res) => _proxyToApi(req, res));
 // Admin
-app.all('/api/admin/*',     (req, res) => _proxyToApi(req, res));
+app.all('/api/admin/*',    (req, res) => _proxyToApi(req, res));
 
 // ── Serve static frontend ────────────────────────────────────────────────────
-// __dirname is web/ — serve all assets (CSS, JS, images) from there.
-// The explicit GET / handler ensures bare-domain requests and Vercel's
-// root path always resolve to index.html instead of "Cannot GET /".
 app.get('/', (_req, res) =>
   res.sendFile(path.join(WEB_ROOT, 'index.html')),
 );
 
 // Clean-path aliases: /login, /register, /dashboard, /pricing, /checkout
-// Let users navigate to these without the .html extension.
 app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
   res.sendFile(path.join(WEB_ROOT, `${req.params.page}.html`), err => {
     if (err) res.status(404).sendFile(path.join(WEB_ROOT, 'index.html'));
   }),
 );
 
-// Serve everything else (CSS, JS, fonts, images) directly from web/.
-// setHeaders ensures correct MIME types are forwarded (critical for Vercel).
 app.use(express.static(WEB_ROOT, {
   index: 'index.html',
   setHeaders (res, filePath) {
-    if (filePath.endsWith('.css'))  res.set('Content-Type', 'text/css');
-    if (filePath.endsWith('.js'))   res.set('Content-Type', 'application/javascript');
+    if (filePath.endsWith('.css'))   res.set('Content-Type', 'text/css');
+    if (filePath.endsWith('.js'))    res.set('Content-Type', 'application/javascript');
     if (filePath.endsWith('.woff2')) res.set('Content-Type', 'font/woff2');
     if (filePath.endsWith('.woff'))  res.set('Content-Type', 'font/woff');
   },
@@ -138,12 +186,13 @@ app.get('/health', (_req, res) =>
 
 app.get('/status', (_req, res) =>
   res.json({
-    ok:           true,
-    service:      'ghost-web',
-    status:       'ready',
-    uptime_secs:  Math.floor((Date.now() - _START_TIME) / 1000),
-    ghost_api_url: GHOST_API_URL,
-    node_version: process.version,
+    ok:            true,
+    service:       'ghost-web',
+    status:        'ready',
+    uptime_secs:   Math.floor((Date.now() - _START_TIME) / 1000),
+    ghost_api_url: GHOST_API_URL || '(not configured)',
+    paypal_env:    process.env.PAYPAL_ENVIRONMENT || 'sandbox',
+    node_version:  process.version,
   }),
 );
 
@@ -157,15 +206,18 @@ app.use((err, _req, res, _next) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`[ghost/server] Listening on http://localhost:${PORT}`);
-  console.log(`[ghost/server] Stripe webhook endpoint: POST /api/stripe/webhook`);
-  console.log(`[ghost/server] Ghost shared API proxy: ${GHOST_API_URL}`);
-  if (!process.env.STRIPE_SECRET_KEY) {
-    console.warn('[ghost/server] WARNING: STRIPE_SECRET_KEY is not set — payment routes will fail');
+  console.log(`[ghost/server] PayPal environment: ${process.env.PAYPAL_ENVIRONMENT || 'sandbox'}`);
+  console.log(`[ghost/server] Ghost shared API proxy: ${GHOST_API_URL || '(GHOST_API_URL not set)'}`);
+  if (!process.env.PAYPAL_CLIENT_ID) {
+    console.warn('[ghost/server] WARNING: PAYPAL_CLIENT_ID is not set — payment routes will fail');
   }
-  if (!process.env.STRIPE_WEBHOOK_SECRET) {
-    console.warn('[ghost/server] WARNING: STRIPE_WEBHOOK_SECRET is not set — webhook verification will fail');
+  if (!process.env.PAYPAL_CLIENT_SECRET) {
+    console.warn('[ghost/server] WARNING: PAYPAL_CLIENT_SECRET is not set — payment routes will fail');
   }
   if (!process.env.GHOST_API_URL) {
-    console.warn('[ghost/server] WARNING: GHOST_API_URL not set — defaulting to http://localhost:5056');
+    console.warn('[ghost/server] WARNING: GHOST_API_URL not set — auth/license proxy will return 503');
+  }
+  if (!process.env.GHOST_DELIVERY_URL) {
+    console.warn('[ghost/server] WARNING: GHOST_DELIVERY_URL not set — license delivery will fail');
   }
 });

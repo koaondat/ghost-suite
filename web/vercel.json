@@ -12,7 +12,8 @@
           "dashboard.html",
           "pricing.html",
           "checkout.html",
-          "assets/**"
+          "assets/**",
+          "api/paypal.js"
         ]
       }
     }

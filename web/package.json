@@ -1,7 +1,7 @@
 {
   "name": "ghost-web",
   "version": "1.0.0",
-  "description": "Ghost checkout and license delivery web server",
+  "description": "Ghost checkout and license delivery web server (PayPal)",
   "main": "server.js",
   "scripts": {
     "start":        "node server.js",
@@ -12,8 +12,7 @@
   "dependencies": {
     "dotenv":     "^16.0.0",
     "express":    "^4.18.0",
-    "node-fetch": "^3.3.0",
-    "stripe":     "^14.0.0"
+    "node-fetch": "^3.3.0"
   },
   "engines": {
     "node": ">=18.0.0"
