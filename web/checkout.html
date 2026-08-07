@@ -204,13 +204,36 @@
             </div>
           </div>
 
-          <!-- Free-coupon redemption button (shown only when finalPrice=0) -->
-          <div id="co-free-coupon-wrap" style="display:none" hidden>
-            <button type="button" class="btn btn-primary co-submit-btn" id="co-free-coupon-btn" style="display:none;width:100%;margin-top:.75rem;">
+          <!-- ── STEP 2 (FREE): Free Checkout section (shown instead of Payment when total=$0.00) ── -->
+          <div id="co-free-checkout-section" hidden aria-live="polite">
+            <div class="co-section-heading" style="margin-top:1.5rem;">
+              <span class="co-step-badge">2</span>
+              <h2>Free Checkout</h2>
+            </div>
+            <div style="background:var(--surface,#f7f8fa);border:1px solid var(--border,#e5e7eb);border-radius:10px;padding:1.25rem 1.25rem 1rem;margin-bottom:1rem;">
+              <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.75rem;font-weight:600;color:var(--text,#1f2328);">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                Coupon Applied
+              </div>
+              <p style="font-size:.9375rem;color:var(--muted,#57606a);margin:0 0 .5rem;">
+                🎉 This order is completely free.<br>
+                Your coupon covers 100% of the purchase.
+              </p>
+              <p style="font-size:.9375rem;color:var(--muted,#57606a);margin:0;">
+                Click below to instantly receive your license.
+              </p>
+              <div style="margin-top:1rem;padding-top:.875rem;border-top:1px solid var(--border,#e5e7eb);">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="font-size:.875rem;color:var(--muted,#57606a);">Total Due Today</span>
+                  <span style="font-size:1.25rem;font-weight:700;color:var(--text,#1f2328);">$0.00</span>
+                </div>
+              </div>
+            </div>
+            <button type="button" class="btn btn-primary co-submit-btn" id="co-free-coupon-btn" style="width:100%;">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              Get Free License
+              Claim Free License
             </button>
-          </div>
+          </div><!-- /co-free-checkout-section -->
 
           <!-- ── STEP 2: Payment section (hidden until Step 1 valid) ── -->
           <div id="co-payment-section" hidden aria-live="polite">

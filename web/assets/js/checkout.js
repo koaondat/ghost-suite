@@ -424,6 +424,7 @@
       document.getElementById(id)?.addEventListener('click', () => {
         showState('idle');
         _hide('co-payment-section');
+        _hide('co-free-checkout-section');
         _paypalRendered = false;
         _paypalSdkPromise = null;
         hideAlert();
@@ -879,6 +880,14 @@
     // Snap the validated values so createOrder/capture always uses them
     _capturedVals = { email, discord };
 
+    // ── Free Redemption Mode: coupon covers 100% — skip PayPal entirely ─────
+    if (_appliedCoupon && _appliedCoupon.isFree) {
+      _hide('co-submit-btn-wrap');
+      _hide('co-payment-section');
+      _show('co-free-checkout-section');
+      return;
+    }
+
     // Reveal the payment section immediately so the user sees feedback
     _hide('co-submit-btn-wrap');
     _show('co-payment-section');
@@ -1006,13 +1015,10 @@
           if (removeBtn) removeBtn.style.display = '';
           if (msgEl) {
             msgEl.textContent = data.isFree
-              ? '🎉 100% off! This order is free — click the button below to get your key.'
+              ? '🎉 100% off! Fill in your details above and click "Continue to Payment" to claim your free license.'
               : `✓ ${data.label} applied — you save $${data.discount.toFixed(2)}`;
             msgEl.className = 'co-coupon-msg co-coupon-msg--success';
           }
-          // If free, show a special "Get Free License" button instead of PayPal
-          const freeBtn = document.getElementById('co-free-coupon-btn');
-          if (data.isFree && freeBtn) freeBtn.style.display = '';
         } else {
           _appliedCoupon = null;
           renderSummary(ACTIVE_PLAN);
@@ -1037,8 +1043,11 @@
         removeBtn.style.display = 'none';
         if (msgEl) { msgEl.textContent = ''; msgEl.className = 'co-coupon-msg'; }
         renderSummary(ACTIVE_PLAN);
-        const freeBtn = document.getElementById('co-free-coupon-btn');
-        if (freeBtn) freeBtn.style.display = 'none';
+        // If free section was revealed, hide it and restore the submit button
+        _hide('co-free-checkout-section');
+        if (document.getElementById('co-payment-section')?.hidden !== false) {
+          _show('co-submit-btn-wrap');
+        }
       });
     }
 
@@ -1053,8 +1062,9 @@
           showAlert('error', 'Please fill in your details and click "Continue to Payment" first.');
           return;
         }
-        freeBtn.disabled    = true;
-        freeBtn.textContent = 'Processing…';
+        freeBtn.disabled = true;
+        freeBtn.innerHTML =
+          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="co-spinner-icon" aria-hidden="true"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> Processing\u2026';
         showState('loading');
         try {
           const res  = await fetch('/api/coupons/redeem-free', {
@@ -1073,14 +1083,16 @@
           } else {
             showState('idle');
             showAlert('error', data.message || 'Free redemption failed. Please try again.');
-            freeBtn.disabled    = false;
-            freeBtn.textContent = 'Get Free License';
+            freeBtn.disabled = false;
+            freeBtn.innerHTML =
+              '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Claim Free License';
           }
         } catch (_) {
           showState('idle');
           showAlert('error', 'Network error. Please try again.');
-          freeBtn.disabled    = false;
-          freeBtn.textContent = 'Get Free License';
+          freeBtn.disabled = false;
+          freeBtn.innerHTML =
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Claim Free License';
         }
       });
     }
