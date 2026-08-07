@@ -45,27 +45,22 @@ const PORT = process.env.PORT || 3000;
 // NEVER store the plain-text password — only the digest.
 const ADMIN_PANEL_PASSWORD_HASH = (process.env.ADMIN_PANEL_PASSWORD_HASH || '').trim().toLowerCase();
 
-// Secret used to sign the stateless admin session cookie.
-// MUST be set as ADMIN_SESSION_SECRET in Vercel environment variables.
-// On Vercel, each function invocation may run on a different instance;
-// an in-memory or randomly-generated secret makes every session invalid
-// on the next request → the 401 session-expired loop.
-// A stable env-var secret survives across all instances and redeployments.
-const ADMIN_SESSION_SECRET = (process.env.ADMIN_SESSION_SECRET || '').trim();
-if (!ADMIN_SESSION_SECRET) {
-  console.error(
-    '[ghost/admin] CRITICAL: ADMIN_SESSION_SECRET is not set. ' +
-    'Admin sessions will be invalid on every request. ' +
-    'Set ADMIN_SESSION_SECRET in Vercel environment variables and redeploy.',
-  );
-}
-
 // Server-side admin API key for bot / CI integrations.
 // Accepted via: Authorization: Bearer <GHOST_ADMIN_API_KEY>
 // NEVER returned through any public endpoint, never logged.
 const GHOST_ADMIN_API_KEY = (process.env.GHOST_ADMIN_API_KEY || '').trim();
 
-const ADMIN_SESSION_TTL_SECS = 4 * 60 * 60; // 4 hours
+// NOTE: ADMIN_SESSION_SECRET is intentionally NOT captured into a module-level
+// constant.  On Vercel, each serverless cold-start is a fresh Node process; if
+// the env var is read once at module load time and the var is missing (or not
+// yet injected), EVERY subsequent verify call would use an empty string and
+// fail — producing the 401 / "session expired" loop ~3 seconds after login.
+// Reading process.env.ADMIN_SESSION_SECRET inside _issueAdminSession and
+// _verifyAdminSession on every call guarantees the correct value is used
+// regardless of which Vercel instance handles the request.
+//
+// ADMIN_SESSION_TTL_SECS: 12 hours (requirement)
+const ADMIN_SESSION_TTL_SECS = 12 * 60 * 60; // 12 hours
 // __Host- prefix enforces: Secure, Path=/, no Domain attribute.
 // This is the strongest cookie security available in modern browsers.
 const ADMIN_COOKIE_NAME = '__Host-ghost_admin_session';
@@ -76,24 +71,43 @@ const ADMIN_COOKIE_NAME = '__Host-ghost_admin_session';
 // No in-memory state, no database — the signature proves authenticity and the
 // expiry claim proves freshness. Any Vercel instance can verify any token as
 // long as ADMIN_SESSION_SECRET is the same env var value across all instances.
+//
+// CRITICAL: Both helpers read process.env.ADMIN_SESSION_SECRET on every call.
+// Do NOT hoist this into a module-level const — doing so would capture an empty
+// string on Vercel cold-starts where the env var arrives after module init, and
+// every subsequent verification would fail with a 401 loop.
 
 function _issueAdminSession () {
-  if (!ADMIN_SESSION_SECRET) return null;
+  // Read secret fresh on every call — Vercel-safe.
+  const secret = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  const secretLen = secret.length;
+  console.log('[ghost/admin] issue_session secret_present=%s secret_len=%d', secretLen > 0, secretLen);
+  if (!secret) {
+    console.error('[ghost/admin] CRITICAL: ADMIN_SESSION_SECRET is not set — cannot issue session. Set it in Vercel env vars and redeploy.');
+    return null;
+  }
+  const iat = Math.floor(Date.now() / 1000);
+  const exp = iat + ADMIN_SESSION_TTL_SECS;
   const payload = Buffer.from(JSON.stringify({
     sub: 'admin',
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + ADMIN_SESSION_TTL_SECS,
+    iat,
+    exp,
   })).toString('base64url');
   const sig = crypto
-    .createHmac('sha256', ADMIN_SESSION_SECRET)
+    .createHmac('sha256', secret)
     .update(payload)
     .digest('base64url');
+  console.log('[ghost/admin] session_issued iat=%d exp=%d exp_iso=%s', iat, exp, new Date(exp * 1000).toISOString());
   return `${payload}.${sig}`;
 }
 
 function _verifyAdminSession (token) {
-  if (!ADMIN_SESSION_SECRET) {
-    console.error('[ghost/admin] ADMIN_SESSION_SECRET not set — cannot verify session cookie');
+  // Read secret fresh on every call — Vercel-safe.
+  const secret = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  const secretLen = secret.length;
+  console.log('[ghost/admin] verify_session secret_present=%s secret_len=%d cookie_present=%s', secretLen > 0, secretLen, Boolean(token));
+  if (!secret) {
+    console.error('[ghost/admin] CRITICAL: ADMIN_SESSION_SECRET not set — cannot verify session cookie. Set it in Vercel env vars and redeploy.');
     return false;
   }
   if (!token || typeof token !== 'string') {
@@ -108,7 +122,7 @@ function _verifyAdminSession (token) {
   const payload = token.slice(0, dot);
   const sig     = token.slice(dot + 1);
   const expected = crypto
-    .createHmac('sha256', ADMIN_SESSION_SECRET)
+    .createHmac('sha256', secret)
     .update(payload)
     .digest('base64url');
   let sigOk = false;
@@ -124,11 +138,19 @@ function _verifyAdminSession (token) {
   try {
     const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
     const now    = Math.floor(Date.now() / 1000);
+    console.log('[ghost/admin] session_claims sub=%s iat=%d exp=%d iat_iso=%s exp_iso=%s now=%d',
+      claims.sub,
+      claims.iat || 0,
+      claims.exp || 0,
+      claims.iat ? new Date(claims.iat * 1000).toISOString() : 'none',
+      claims.exp ? new Date(claims.exp * 1000).toISOString() : 'none',
+      now,
+    );
     if (claims.exp && now > claims.exp) {
-      console.log('[ghost/admin] session_expired sub=%s exp=%d now=%d', claims.sub, claims.exp, now);
+      console.log('[ghost/admin] session_expired sub=%s exp=%d now=%d delta_secs=%d', claims.sub, claims.exp, now, now - claims.exp);
       return false;
     }
-    console.log('[ghost/admin] session_verified sub=%s', claims.sub);
+    console.log('[ghost/admin] session_verified sub=%s ttl_remaining_secs=%d', claims.sub, (claims.exp || 0) - now);
     return true;
   } catch (_) {
     console.log('[ghost/admin] signature_invalid reason=payload_parse_error');
@@ -372,13 +394,16 @@ app.post('/api/admin/panel/auth', (req, res) => {
 
   // __Host- cookie attributes: Secure (required), HttpOnly, SameSite=Lax,
   // Path=/ (required), no Domain attribute (required for __Host-).
+  // maxAge uses the same ADMIN_SESSION_TTL_SECS as the token exp claim so the
+  // browser and server expiry are always identical — no "cookie present but
+  // token expired" or "cookie gone but token still valid" mismatch.
   res.cookie(ADMIN_COOKIE_NAME, token, {
     httpOnly: true,
-    secure:   true,   // required for __Host- prefix
+    secure:   true,    // required for __Host- prefix
     sameSite: 'lax',
     path:     '/',
-    maxAge:   ADMIN_SESSION_TTL_SECS * 1000,
-    // No domain attribute — __Host- requires host-only binding
+    maxAge:   1000 * 60 * 60 * 12, // 12 hours in ms — matches ADMIN_SESSION_TTL_SECS
+    // No domain attribute — __Host- prefix requires host-only binding
   });
 
   console.log('[ghost/admin] login_accepted ip=%s cookie_issued=true ttl_secs=%d', req.ip, ADMIN_SESSION_TTL_SECS);
@@ -587,8 +612,13 @@ app.use((err, _req, res, _next) => {
 if (!ADMIN_PANEL_PASSWORD_HASH) {
   console.warn('[ghost/server] WARNING: ADMIN_PANEL_PASSWORD_HASH not set — /admin panel login will return 503');
 }
-if (!ADMIN_SESSION_SECRET) {
+// Check ADMIN_SESSION_SECRET at startup for early warning, but do NOT cache its
+// value — _issueAdminSession / _verifyAdminSession read it fresh on every call.
+const _startupSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
+if (!_startupSecret) {
   console.error('[ghost/server] CRITICAL: ADMIN_SESSION_SECRET not set — admin sessions will fail on EVERY request. Set this env var in Vercel and redeploy.');
+} else {
+  console.log('[ghost/server] ADMIN_SESSION_SECRET present length=%d', _startupSecret.length);
 }
 if (!GHOST_ADMIN_API_KEY) {
   console.warn('[ghost/server] WARNING: GHOST_ADMIN_API_KEY not set — Bearer API key auth will be unavailable');
