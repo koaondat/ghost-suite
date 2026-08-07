@@ -493,8 +493,17 @@ if _flask_available:
         GET /api/order/<order_id>
         -------------------------
         Used by the checkout success page and the customer dashboard to
-        surface order status and license key after a Stripe redirect.
-        Returns the stored order record minus internal flags.
+        surface order status and license key after payment.
+
+        Returns the stored order record plus a synthesised download_url
+        field so the frontend has a consistent field name regardless of
+        payment provider.  Internal flags (payment_verified) are stripped.
+
+        Safe response shape (all fields the success page requires):
+          ok, order_id, plan, plan_label, price_usd, currency,
+          created_at, payment_status, delivery_status,
+          license_key, license_status, download_url,
+          email, discord, tier, key_expires
         """
         record = get_order(order_id)
         if not record:
@@ -503,6 +512,20 @@ if _flask_available:
         safe = {k: v for k, v in record.items()
                 if k not in ("payment_verified",)}
         safe["ok"] = True
+
+        # Synthesise download_url so the frontend has a consistent field
+        # regardless of whether the order was originally created via PayPal
+        # or Stripe.  Only populated when delivery is confirmed complete.
+        if not safe.get("download_url") and safe.get("delivery_status") == "delivered":
+            safe["download_url"] = f"/api/order/{record.get('order_id', order_id)}/download"
+
+        log.info(
+            "GET /api/order/%s — payment_status=%s delivery_status=%s license_key=%s",
+            order_id,
+            safe.get("payment_status"),
+            safe.get("delivery_status"),
+            "[present]" if safe.get("license_key") else "[missing]",
+        )
         return jsonify(safe), 200
 
 

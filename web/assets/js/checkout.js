@@ -397,13 +397,18 @@
     if (card && ACTIVE_PLAN.color === 'cyan') card.classList.add('co-summary-card--cyan');
   }
 
-  /* ── _retryDelivery — polls GET /api/order/:id for an already-paid order
-     and transitions to success if the key is now available.
-     Never charges again — only checks the stored delivery state.
+  /* ── _retryDelivery — polls GET /api/order/:id for an already-paid order.
+     The GET response is the Python DB record (snake_case field names).
+     Required fields to show success:
+       payment_status === "verified"
+       order_id, plan, plan_label, price_usd, created_at, license_key, license_status
+     If any are missing the page stays in delivery_pending.
+     Never charges again — only reads the stored delivery state.
   ─────────────────────────────────────────────────────────────────────── */
   async function _retryDelivery (orderId) {
     if (!orderId) return;
     const btn = document.getElementById('pending-retry-delivery-btn');
+    const RETRY_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg> Retry license delivery';
     if (btn) { btn.disabled = true; btn.textContent = 'Checking\u2026'; }
 
     console.log('[ghost/checkout] retry delivery lookup orderId=%s', orderId);
@@ -412,59 +417,60 @@
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok || !data.ok) {
-        console.warn('[ghost/checkout] retry delivery: order not found orderId=%s', orderId);
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML =
-            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg> Retry license delivery';
-        }
+        console.warn('[ghost/checkout] retry delivery: order not found orderId=%s status=%s', orderId, res.status);
+        if (btn) { btn.disabled = false; btn.innerHTML = RETRY_SVG; }
         const noteEl = document.querySelector('#state-delivery_pending .co-pending-note span');
         if (noteEl) noteEl.textContent = 'Order not found yet. Wait a moment and try again, or contact Discord support with Order ID: ' + orderId;
         return;
       }
 
-      const status = (data.payment_status || '').toLowerCase();
-      if (status === 'verified' && data.license_key) {
-        console.log('[ghost/checkout] retry delivery: key now available, showing success');
+      // GET /api/order returns the Python DB record — fields are snake_case.
+      // Resolve display values first so the gate can check them.
+      const planDisplay = PLANS[(data.plan || '').toLowerCase()];
+      const planName    = data.plan_label || (planDisplay ? planDisplay.name : data.plan) || null;
+      const amountStr   = data.price_usd != null
+        ? (data.currency || 'USD') + ' ' + Number(data.price_usd).toFixed(2)
+        : null;
 
-        const planDisplay = PLANS[(data.plan || '').toLowerCase()];
-        const planName    = data.plan_label || (planDisplay ? planDisplay.name : data.plan) || '\u2014';
-        const amountStr   = data.price_usd != null
-          ? (data.currency || 'USD') + ' ' + Number(data.price_usd).toFixed(2)
-          : '\u2014';
+      // All required fields must be present to show the success state.
+      const fulfilmentComplete = (
+        data.payment_status === 'verified' &&
+        data.order_id &&
+        planName &&
+        amountStr &&
+        data.created_at &&
+        data.license_key &&
+        data.license_status
+      );
 
+      console.log('[ghost/checkout] retry delivery result orderId=%s payment_status=%s license_key=%s fulfilmentComplete=%s',
+        orderId, data.payment_status, data.license_key ? '[present]' : '[missing]', fulfilmentComplete);
+
+      if (fulfilmentComplete) {
         _setText('success-email',          data.email   || '\u2014');
         _setText('success-plan',           planName);
-        _setText('success-order-id',       data.order_id || orderId || '\u2014');
+        _setText('success-order-id',       data.order_id);
         _setText('success-amount',         amountStr);
         _setText('success-date',           _formatDate(data.created_at));
-        _setText('success-license-status', 'Active');
+        _setText('success-license-status', data.license_status.replace(/^\w/, c => c.toUpperCase()));
 
+        // Transition to success — hides delivery_pending automatically
         showState('success');
-        _hide('co-payment-section');
 
         _showDeliveredKey({
           licenseKey:   data.license_key,
-          orderId:      data.order_id || orderId,
+          orderId:      data.order_id,
           instructions: null,
         });
       } else {
-        // Still pending — restore the button
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML =
-            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg> Retry license delivery';
-        }
+        // Still pending — restore the button and update the note
+        if (btn) { btn.disabled = false; btn.innerHTML = RETRY_SVG; }
         const noteEl = document.querySelector('#state-delivery_pending .co-pending-note span');
         if (noteEl) noteEl.textContent = 'License is still being prepared. Please wait a moment and try again, or contact Discord support with Order ID: ' + orderId;
       }
     } catch (err) {
       console.error('[ghost/checkout] retry delivery error:', err.message);
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML =
-          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg> Retry license delivery';
-      }
+      if (btn) { btn.disabled = false; btn.innerHTML = RETRY_SVG; }
     }
   }
 
@@ -647,11 +653,11 @@
         isAbort ? 'timeout' : 'network-error', orderID);
       // The request timed out or dropped — we cannot confirm whether the payment
       // went through, so show delivery_pending so the user can retry without repaying.
-      _setText('pending-order-id', orderID);
+      const pendingOrderId = orderID;
+      _setText('pending-order-id', pendingOrderId);
       const retryBtn = document.getElementById('pending-retry-delivery-btn');
-      if (retryBtn) retryBtn.dataset.orderId = orderID;
+      if (retryBtn) retryBtn.dataset.orderId = pendingOrderId;
       showState('delivery_pending');
-      _hide('co-payment-section');
       return;
     } finally {
       clearTimeout(timer);
@@ -669,55 +675,72 @@
       return;
     }
 
-    console.log('[ghost/checkout] capture confirmed orderID=%s plan=%s amount=%s deliveryStatus=%s',
-      orderID, result.plan, result.amount, result.deliveryStatus);
+    console.log('[ghost/checkout] capture response orderID=%s paymentStatus=%s deliveryStatus=%s plan=%s amount=%s licenseKey=%s purchaseDate=%s licenseStatus=%s',
+      orderID, result.paymentStatus, result.deliveryStatus, result.plan,
+      result.amount, result.licenseKey ? '[present]' : '[missing]',
+      result.purchaseDate, result.licenseStatus);
 
     // ── Resolve display plan name ─────────────────────────────────────
     const planDisplay = PLANS[(result.plan || '').toLowerCase()];
-    const planName    = result.planLabel || (planDisplay ? planDisplay.name : result.plan) || '—';
+    const planName    = result.planLabel || (planDisplay ? planDisplay.name : result.plan) || null;
     const amountStr   = result.amount != null
       ? (result.currency || 'USD') + ' ' + Number(result.amount).toFixed(2)
-      : '—';
+      : null;
 
-    // ── delivery_pending: payment captured but key not yet generated ──
-    if (result.deliveryStatus === 'delivery_pending') {
-      console.warn('[ghost/checkout] delivery_pending for orderId=%s', result.orderId);
+    // ── delivery_pending: payment captured but fulfillment data incomplete ──
+    // Show delivery_pending whenever:
+    //   • deliveryStatus is explicitly 'delivery_pending', OR
+    //   • paymentStatus is not 'COMPLETED', OR
+    //   • any required fulfillment field is absent
+    const fulfilmentComplete = (
+      result.paymentStatus === 'COMPLETED' &&
+      result.orderId &&
+      planName &&
+      amountStr &&
+      result.purchaseDate &&
+      result.licenseKey &&
+      result.licenseStatus &&
+      result.downloadUrl
+    );
+
+    if (!fulfilmentComplete || result.deliveryStatus === 'delivery_pending') {
       const pendingOrderId = result.orderId || result.captureId || orderID;
+      console.warn('[ghost/checkout] fulfillment incomplete — delivery_pending orderId=%s paymentStatus=%s deliveryStatus=%s missingFields=%s',
+        pendingOrderId, result.paymentStatus, result.deliveryStatus,
+        [
+          result.paymentStatus !== 'COMPLETED' && 'paymentStatus',
+          !result.orderId         && 'orderId',
+          !planName               && 'plan/planLabel',
+          !amountStr              && 'amount',
+          !result.purchaseDate    && 'purchaseDate',
+          !result.licenseKey      && 'licenseKey',
+          !result.licenseStatus   && 'licenseStatus',
+          !result.downloadUrl     && 'downloadUrl',
+        ].filter(Boolean).join(',') || 'none');
       _setText('pending-order-id', pendingOrderId);
       const retryBtn = document.getElementById('pending-retry-delivery-btn');
       if (retryBtn) retryBtn.dataset.orderId = pendingOrderId;
       showState('delivery_pending');
-      _hide('co-payment-section');
       return;
     }
 
-    // ── Populate the order summary table then transition to success ───
+    // ── All required fields verified — populate success panel ────────
     _setText('success-email',          result.email   || vals.email || '—');
     _setText('success-plan',           planName);
-    _setText('success-order-id',       result.orderId || result.captureId || orderID || '—');
+    _setText('success-order-id',       result.orderId);
     _setText('success-amount',         amountStr);
     _setText('success-date',           _formatDate(result.purchaseDate));
-    _setText('success-license-status', (result.licenseStatus || 'active').replace(/^\w/, c => c.toUpperCase()));
+    _setText('success-license-status', result.licenseStatus.replace(/^\w/, c => c.toUpperCase()));
 
+    // Transition to success — this hides state-loading automatically
     showState('success');
-    _hide('co-payment-section');
 
-    if (result.licenseKey || result.key) {
-      console.log('[ghost/checkout] license key delivered orderID=%s', orderID);
-      _showDeliveredKey({
-        licenseKey:   result.licenseKey || result.key,
-        orderId:      result.orderId || result.captureId || orderID,
-        instructions: result.instructions,
-      });
-    } else {
-      // Fallback: success response but no key — treat as delivery_pending
-      console.warn('[ghost/checkout] success but no key in response orderID=%s — treating as delivery_pending', orderID);
-      const pendingOrderId = result.orderId || result.captureId || orderID;
-      _setText('pending-order-id', pendingOrderId);
-      const retryBtn = document.getElementById('pending-retry-delivery-btn');
-      if (retryBtn) retryBtn.dataset.orderId = pendingOrderId;
-      showState('delivery_pending');
-    }
+    console.log('[ghost/checkout] license key delivered orderID=%s', orderID);
+    _showDeliveredKey({
+      licenseKey:   result.licenseKey,
+      orderId:      result.orderId,
+      instructions: result.instructions,
+    });
   }
 
   /* ── Render the PayPal Buttons ─────────────────────────────────── */

@@ -441,12 +441,9 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     };
   }
 
-  console.log('[ghost/paypal] license delivered orderID=%s captureId=%s plan=%s',
-    orderID, captureId, planId);
-
   const purchaseDate = data.created_at || new Date().toISOString();
 
-  return {
+  const successResponse = {
     ok:             true,
     paymentStatus:  'COMPLETED',
     deliveryStatus: data.delivery_status || 'delivered',
@@ -459,10 +456,10 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     currency:       capturedCurrency,
     email:          resolvedEmail,
     discord:        resolvedDiscord,
-    licenseKey:     data.key,
-    licenseStatus:  data.key ? 'active' : 'pending',
+    licenseKey:     data.key || null,
+    licenseStatus:  data.key ? 'active' : null,
     purchaseDate,
-    downloadUrl:    `/api/order/${encodeURIComponent(captureId)}/download`,
+    downloadUrl:    data.key ? `/api/order/${encodeURIComponent(captureId)}/download` : null,
     tier:           data.tier,
     instructions: [
       'Download Ghost.',
@@ -472,6 +469,26 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
       'Click Activate.',
     ],
   };
+
+  // Log safe response shape (no license key value in log)
+  console.log(
+    '[ghost/paypal] capture success shape — orderId=%s paymentStatus=%s deliveryStatus=%s ' +
+    'plan=%s planLabel=%s amount=%s currency=%s purchaseDate=%s ' +
+    'licenseKey=%s licenseStatus=%s downloadUrl=%s',
+    successResponse.orderId,
+    successResponse.paymentStatus,
+    successResponse.deliveryStatus,
+    successResponse.plan,
+    successResponse.planLabel,
+    successResponse.amount,
+    successResponse.currency,
+    successResponse.purchaseDate,
+    successResponse.licenseKey ? '[present]' : '[missing]',
+    successResponse.licenseStatus,
+    successResponse.downloadUrl ? '[present]' : '[missing]',
+  );
+
+  return successResponse;
 }
 
 
