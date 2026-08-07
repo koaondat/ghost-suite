@@ -436,13 +436,32 @@ app.post('/api/admin/logout', (_req, res) => {
 // ── GET /api/admin/dashboard ──────────────────────────────────────────────────
 app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
   try {
-    const [orders, inventory, activity] = await Promise.all([
-      _redisGet('ghost:orders'),
+    const [ordersRemote, inventory, activity] = await Promise.all([
+      _fetchDeliveryOrders(),
       _redisGet('ghost:inventory'),
       _redisGet('ghost:activity'),
     ]);
 
-    const ordersArr    = Array.isArray(orders)    ? orders    : [];
+    // Orders come from the Python delivery backend; fall back to Redis index if unavailable
+    let ordersArr = [];
+    if (ordersRemote && ordersRemote.ok && Array.isArray(ordersRemote.orders)) {
+      ordersArr = ordersRemote.orders;
+    } else {
+      // Direct Redis fallback — read ghost:order:{id} keys via sorted-set index
+      try {
+        const redis = _redisConfigured() ? _getRedisClient() : null;
+        if (redis) {
+          const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+          if (Array.isArray(ids) && ids.length) {
+            const recs = await Promise.all(
+              ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+            );
+            ordersArr = recs.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+          }
+        }
+      } catch (_) {}
+    }
+
     const inventoryArr = Array.isArray(inventory) ? inventory : [];
     const activityArr  = Array.isArray(activity)  ? activity  : [];
 
@@ -450,12 +469,17 @@ app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
     const todayStr  = now.toISOString().slice(0, 10);
     const monthStr  = now.toISOString().slice(0, 7);
 
-    const completed = ordersArr.filter(o => o.payment_status === 'COMPLETED');
-    const revenueToday  = completed.filter(o => (o.purchase_date || '').startsWith(todayStr))
-      .reduce((s, o) => s + parseFloat(o.amount || 0), 0);
-    const revenueMonth  = completed.filter(o => (o.purchase_date || '').startsWith(monthStr))
-      .reduce((s, o) => s + parseFloat(o.amount || 0), 0);
-    const revenueTotal  = completed.reduce((s, o) => s + parseFloat(o.amount || 0), 0);
+    // Delivery backend uses payment_status='verified'; legacy PayPal uses 'COMPLETED'
+    const completed = ordersArr.filter(o =>
+      o.payment_status === 'COMPLETED' || o.payment_status === 'verified' || o.payment_verified === true
+    );
+    const _amount = o => parseFloat(o.price_usd || o.amount || 0);
+    const _date   = o => o.created_at || o.purchase_date || '';
+    const revenueToday  = completed.filter(o => _date(o).startsWith(todayStr))
+      .reduce((s, o) => s + _amount(o), 0);
+    const revenueMonth  = completed.filter(o => _date(o).startsWith(monthStr))
+      .reduce((s, o) => s + _amount(o), 0);
+    const revenueTotal  = completed.reduce((s, o) => s + _amount(o), 0);
 
     const activeKeys = inventoryArr.filter(k => k.status === 'activated').length;
     const availKeys  = inventoryArr.filter(k => k.status === 'available').length;
@@ -470,11 +494,11 @@ app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
       return d.toISOString().slice(0, 10);
     });
 
-    const dailyRevenue   = recent30.map(d => completed.filter(o => (o.purchase_date || '').startsWith(d)).reduce((s, o) => s + parseFloat(o.amount || 0), 0));
-    const dailyOrders    = recent30.map(d => ordersArr.filter(o => (o.purchase_date || '').startsWith(d)).length);
+    const dailyRevenue   = recent30.map(d => completed.filter(o => _date(o).startsWith(d)).reduce((s, o) => s + _amount(o), 0));
+    const dailyOrders    = recent30.map(d => ordersArr.filter(o => _date(o).startsWith(d)).length);
     const dailyCustomers = recent30.map(d => {
       const seen = new Set();
-      completed.filter(o => (o.purchase_date || '').startsWith(d)).forEach(o => { if (o.email) seen.add(o.email); });
+      completed.filter(o => _date(o).startsWith(d)).forEach(o => { if (o.email) seen.add(o.email); });
       return seen.size;
     });
 
@@ -489,10 +513,22 @@ app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
       available_keys: availKeys,
       sold_keys:      soldKeys,
       pending_orders: ordersArr.filter(o => o.delivery_status === 'delivery_pending').length,
-      failed_payments:ordersArr.filter(o => o.payment_status === 'FAILED').length,
+      failed_payments:ordersArr.filter(o => o.payment_status === 'payment_failed' || o.payment_status === 'FAILED').length,
       recent_orders:  completed.slice(-10).reverse(),
       recent_activity:activityArr.slice(-10).reverse(),
+      // Admin.js reads cards.X — wrap in cards object
+      cards: {
+        revenue_today:   revenueToday,
+        revenue_month:   revenueMonth,
+        revenue_total:   revenueTotal,
+        total_orders:    ordersArr.length,
+        active_licenses: activeKeys,
+        keys_remaining:  availKeys,
+        pending_orders:  ordersArr.filter(o => o.delivery_status === 'delivery_pending').length,
+        failed_payments: ordersArr.filter(o => o.payment_status === 'payment_failed' || o.payment_status === 'FAILED').length,
+      },
       graph: { dates: recent30, revenue: dailyRevenue, orders: dailyOrders, customers: dailyCustomers },
+      graphs: { labels: recent30, revenue: dailyRevenue, orders: dailyOrders, customers: dailyCustomers },
     });
   } catch (err) {
     console.error('[ghost/admin] dashboard error:', err.message);
@@ -985,38 +1021,133 @@ app.post('/api/admin/inventory/:key/extend', _requireAdminSession, async (req, r
   return res.json({ ok: true, entry: inventory[idx] });
 });
 
-// ── Orders endpoints ──────────────────────────────────────────────────────────
+// ── Orders endpoints — proxy to Python delivery backend ──────────────────────
+// The delivery backend is the authoritative store for all orders (ghost:order:{id}).
+// The Node server never writes order records — it only reads them via these proxies.
+
+async function _fetchDeliveryOrders () {
+  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+  if (!DELIVERY_BACKEND_URL) return null;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const res = await fetch(`${DELIVERY_BACKEND_URL}/api/admin/orders`, { method: 'GET' });
+    if (!res.ok) return null;
+    return await res.json().catch(() => null);
+  } catch (_) { return null; }
+}
+
 app.get('/api/admin/orders', _requireAdminSession, async (req, res) => {
-  const orders = await _redisGet('ghost:orders') || [];
-  return res.json({ ok: true, orders, total: orders.length });
+  const remote = await _fetchDeliveryOrders();
+  if (remote && remote.ok) {
+    return res.json({ ok: true, orders: remote.orders || [], total: (remote.orders || []).length });
+  }
+  // Fallback: read from Redis index built by delivery backend (ghost:orders:index + ghost:order:{id})
+  try {
+    const redis = _redisConfigured() ? _getRedisClient() : null;
+    if (!redis) return res.json({ ok: true, orders: [], total: 0 });
+    const ids = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+    if (!Array.isArray(ids) || !ids.length) return res.json({ ok: true, orders: [], total: 0 });
+    const records = await Promise.all(
+      ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+    );
+    const orders = records.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+    return res.json({ ok: true, orders, total: orders.length });
+  } catch (err) {
+    console.error('[ghost/admin] orders fallback error:', err.message);
+    return res.json({ ok: true, orders: [], total: 0 });
+  }
 });
 
 app.get('/api/admin/orders/:orderId', _requireAdminSession, async (req, res) => {
-  const orders = await _redisGet('ghost:orders') || [];
-  const order  = orders.find(o => o.order_id === req.params.orderId || o.paypal_order_id === req.params.orderId);
-  if (!order) return res.status(404).json({ ok: false, error: 'Order not found.' });
-  return res.json({ ok: true, order });
+  const orderId = req.params.orderId;
+  // Try delivery backend first
+  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+  if (DELIVERY_BACKEND_URL) {
+    try {
+      const { default: fetch } = await import('node-fetch');
+      const upstream = await fetch(`${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(orderId)}`);
+      if (upstream.ok) {
+        const data = await upstream.json().catch(() => null);
+        if (data && data.ok) return res.json({ ok: true, order: data });
+      }
+    } catch (_) {}
+  }
+  // Fallback: Redis direct
+  try {
+    const redis = _redisConfigured() ? _getRedisClient() : null;
+    if (!redis) return res.status(404).json({ ok: false, error: 'Order not found.' });
+    const raw = await _withTimeout(redis.get(`ghost:order:${orderId}`)).catch(() => null);
+    if (!raw) return res.status(404).json({ ok: false, error: 'Order not found.' });
+    const order = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return res.json({ ok: true, order });
+  } catch (_) {
+    return res.status(404).json({ ok: false, error: 'Order not found.' });
+  }
+});
+
+// ── Customer Licenses — sold keys from inventory ──────────────────────────────
+app.get('/api/admin/customer-licenses', _requireAdminSession, async (req, res) => {
+  const inventory = await _redisGet('ghost:inventory') || [];
+  const sold = inventory.filter(k => ['sold', 'activated'].includes(k.status));
+  return res.json({ ok: true, licenses: sold, total: sold.length });
 });
 
 // ── Customers endpoints ───────────────────────────────────────────────────────
 app.get('/api/admin/customers', _requireAdminSession, async (req, res) => {
-  const orders = await _redisGet('ghost:orders') || [];
-  const map    = {};
+  // Build customer list from inventory (sold keys) + orders from delivery backend
+  const [inventoryRaw, ordersResult] = await Promise.all([
+    _redisGet('ghost:inventory'),
+    _fetchDeliveryOrders(),
+  ]);
+  const inventory = Array.isArray(inventoryRaw) ? inventoryRaw : [];
+  const orders    = (ordersResult && ordersResult.ok && Array.isArray(ordersResult.orders))
+    ? ordersResult.orders : [];
+
+  const map = {};
+
+  // Seed from orders
   for (const o of orders) {
-    const email = o.email || '';
+    const email = (o.email || '').toLowerCase();
     if (!email) continue;
     if (!map[email]) {
-      map[email] = { email, discord: o.discord || '', orders: 0, total_spent: 0,
-        licenses: [], first_purchase: o.purchase_date, last_purchase: o.purchase_date };
+      map[email] = { email: o.email || email, discord: o.discord || '', orders: [],
+        total_spent: 0, active_licenses: 0,
+        first_purchase: o.created_at || o.purchase_date,
+        last_purchase:  o.created_at || o.purchase_date };
     }
     const c = map[email];
-    c.orders++;
-    c.total_spent += parseFloat(o.amount || 0);
-    if (o.license_key) c.licenses.push(o.license_key);
-    if (o.purchase_date && o.purchase_date < c.first_purchase) c.first_purchase = o.purchase_date;
-    if (o.purchase_date && o.purchase_date > c.last_purchase)  c.last_purchase  = o.purchase_date;
+    c.orders.push(o);
+    c.total_spent += parseFloat(o.price_usd || 0);
+    if (o.license_key && ['active','sold','activated'].includes(o.license_status || o.delivery_status))
+      c.active_licenses++;
+    const d = o.created_at || o.purchase_date || '';
+    if (d && (!c.first_purchase || d < c.first_purchase)) c.first_purchase = d;
+    if (d && d > c.last_purchase) c.last_purchase = d;
   }
-  const customers = Object.values(map);
+
+  // Enrich / merge from inventory sold keys
+  for (const k of inventory) {
+    if (!['sold', 'activated'].includes(k.status)) continue;
+    const email = (k.customer_email || k.customer || '').toLowerCase();
+    if (!email) continue;
+    if (!map[email]) {
+      map[email] = { email: k.customer_email || k.customer || email,
+        discord: k.assigned_user || '', orders: [],
+        total_spent: 0, active_licenses: 0,
+        first_purchase: k.purchase_date || k.created_date,
+        last_purchase:  k.purchase_date || k.created_date };
+    }
+    map[email].active_licenses = Math.max(
+      map[email].active_licenses,
+      inventory.filter(i => ['sold','activated'].includes(i.status) &&
+        (i.customer_email || i.customer || '').toLowerCase() === email).length
+    );
+  }
+
+  const customers = Object.values(map).map(c => ({
+    ...c,
+    total_orders: c.orders.length,
+  }));
   return res.json({ ok: true, customers, total: customers.length });
 });
 

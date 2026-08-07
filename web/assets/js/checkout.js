@@ -697,6 +697,7 @@
     //   • deliveryStatus is explicitly 'delivery_pending', OR
     //   • paymentStatus is not 'COMPLETED', OR
     //   • any required fulfillment field is absent
+    // NOTE: downloadUrl is NOT required — the download button fetches it lazily.
     const fulfilmentComplete = (
       result.paymentStatus === 'COMPLETED' &&
       result.orderId &&
@@ -704,8 +705,7 @@
       amountStr &&
       result.purchaseDate &&
       result.licenseKey &&
-      result.licenseStatus &&
-      result.downloadUrl
+      result.licenseStatus
     );
 
     if (!fulfilmentComplete || result.deliveryStatus === 'delivery_pending' || result.deliveryStatus === 'out_of_stock') {

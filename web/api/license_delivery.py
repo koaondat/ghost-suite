@@ -474,6 +474,7 @@ if _flask_available:
     @app.route("/api/order/<order_id>",        methods=["OPTIONS"])
     @app.route("/api/order/<order_id>/status", methods=["OPTIONS"])
     @app.route("/api/order/<order_id>/fulfill",methods=["OPTIONS"])
+    @app.route("/api/admin/orders",            methods=["OPTIONS"])
     def _preflight(order_id=""):
         r = Response()
         r.headers["Access-Control-Allow-Origin"]  = "*"
@@ -502,13 +503,20 @@ if _flask_available:
     # ── GET /api/order/<order_id> ─────────────────────────────────────────
     @app.route("/api/order/<order_id>", methods=["GET"])
     def route_get_order(order_id: str):
-        record = get_order(order_id)
+        # Support paypal-order:<paypalOrderId> lookup for idempotency check
+        if order_id.startswith("paypal-order:"):
+            paypal_oid = order_id[len("paypal-order:"):]
+            # Search all orders for one matching this PayPal order ID
+            all_orders = _load_orders()
+            record = next((r for r in all_orders if r.get("paypal_order_id") == paypal_oid), None)
+        else:
+            record = get_order(order_id)
         if not record:
             return jsonify({"ok": False, "error": "Order not found"}), 404
         safe = {k: v for k, v in record.items() if k != "payment_verified"}
         safe["ok"] = True
         if not safe.get("download_url") and safe.get("delivery_status") == "delivered":
-            safe["download_url"] = f"/api/order/{order_id}/download"
+            safe["download_url"] = f"/api/order/{record.get('order_id', order_id)}/download"
         return jsonify(safe), 200
 
 
@@ -623,6 +631,15 @@ if _flask_available:
         if not safe.get("download_url"):
             safe["download_url"] = f"/api/order/{order_id}/download"
         return jsonify(safe), 200
+
+
+    # ── GET /api/admin/orders ──────────────────────────────────────────────
+    @app.route("/api/admin/orders", methods=["GET"])
+    def route_admin_orders():
+        """Return all orders for the admin panel (Node.js server proxy)."""
+        orders = _load_orders()
+        safe = [{k: v for k, v in o.items() if k not in ("payment_verified",)} for o in orders]
+        return jsonify({"ok": True, "orders": safe, "total": len(safe)}), 200
 
 
     if __name__ == "__main__":

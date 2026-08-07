@@ -74,6 +74,10 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
             Orders
           </a></li>
+          <li><a href="#" class="admin-nav-link" data-tab="customer-licenses">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Customer Licenses
+          </a></li>
           <li><a href="#" class="admin-nav-link" data-tab="customers">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             Customers
@@ -243,14 +247,22 @@
           </div>
         </div>
 
+        <!-- Status filter tabs -->
+        <div class="admin-status-tabs" id="invStatusTabs">
+          <button class="admin-status-tab active" data-status="">Available</button>
+          <button class="admin-status-tab" data-status="sold">Sold</button>
+          <button class="admin-status-tab" data-status="activated">Activated</button>
+          <button class="admin-status-tab" data-status="revoked">Revoked</button>
+          <button class="admin-status-tab" data-status="expired">Expired</button>
+          <button class="admin-status-tab" data-status="__all__">All</button>
+        </div>
+
         <!-- Toolbar -->
-        <div class="admin-toolbar">
+        <div class="admin-toolbar" style="margin-top:8px">
           <div class="admin-toolbar-left">
             <input type="text" id="invSearch" class="admin-search" placeholder="Search keys, customers…" />
-            <select id="invFilterStatus" class="admin-select">
-              <option value="">All Status</option>
-              <option value="available">Available</option>
-              <option value="reserved">Reserved</option>
+            <select id="invFilterStatus" class="admin-select" style="display:none">
+              <option value="">Available</option>
               <option value="sold">Sold</option>
               <option value="activated">Activated</option>
               <option value="revoked">Revoked</option>
@@ -495,6 +507,63 @@
           <div class="admin-table-footer" id="genTableFooter"></div>
         </div>
 
+      </section>
+
+      <!-- ── TAB: Customer Licenses ──────────────────────────────────── -->
+      <section id="tab-customer-licenses" class="admin-tab" style="display:none">
+        <div class="admin-page-header">
+          <div>
+            <h1 class="admin-page-title">Customer Licenses</h1>
+            <p class="admin-page-sub">All sold license keys and their owners</p>
+          </div>
+          <button class="btn btn-ghost btn--sm" id="refreshCustomerLicenses">Refresh</button>
+        </div>
+
+        <div class="admin-toolbar">
+          <div class="admin-toolbar-left">
+            <input type="text" id="clSearch" class="admin-search" placeholder="Search key, email, order ID…" />
+            <select id="clFilterPlan" class="admin-select">
+              <option value="">All Plans</option>
+              <option value="pro">Pro</option>
+              <option value="lifetime">Lifetime</option>
+            </select>
+            <select id="clFilterStatus" class="admin-select">
+              <option value="">Sold &amp; Activated</option>
+              <option value="sold">Sold</option>
+              <option value="activated">Activated</option>
+              <option value="revoked">Revoked</option>
+            </select>
+            <button class="btn btn-ghost btn--sm" id="applyClFilter">Filter</button>
+          </div>
+          <div class="admin-toolbar-right">
+            <button class="btn btn-ghost btn--sm" id="exportClBtn">Export CSV</button>
+          </div>
+        </div>
+
+        <div class="admin-card" style="margin-top:16px">
+          <div class="admin-table-wrap">
+            <table class="admin-table" id="clTable">
+              <thead>
+                <tr>
+                  <th>License Key</th>
+                  <th>Plan</th>
+                  <th>Status</th>
+                  <th>Customer Email</th>
+                  <th>Discord</th>
+                  <th>Order ID</th>
+                  <th>Purchase Date</th>
+                  <th>HWID</th>
+                  <th>Expiration</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="clTbody">
+                <tr><td colspan="10" class="admin-table-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="admin-table-footer" id="clPagination"></div>
+        </div>
       </section>
 
       <!-- ── TAB: Orders ──────────────────────────────────────────────── -->

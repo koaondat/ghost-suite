@@ -845,3 +845,25 @@ input[type="date"].form-input { color-scheme: dark; }
   .admin-toolbar { flex-direction: column; align-items: flex-start; }
   .admin-toolbar-right { width: 100%; }
 }
+
+/* ── Inventory status tabs ─────────────────────────────────────────────── */
+.admin-status-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+}
+.admin-status-tab {
+  padding: 7px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  margin-bottom: -1px;
+}
+.admin-status-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.admin-status-tab:hover:not(.active) { color: var(--text); border-bottom-color: var(--border); }

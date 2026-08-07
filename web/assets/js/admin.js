@@ -202,14 +202,15 @@
     if (tab) tab.style.display = '';
     document.querySelectorAll(`.admin-nav-link[data-tab="${name}"]`)
       .forEach(a => a.classList.add('active'));
-    if (name === 'dashboard')  loadDashboard();
-    if (name === 'inventory')  loadInventory();
-    if (name === 'generate')   loadGenStats();
-    if (name === 'orders')     loadOrders();
-    if (name === 'customers')  loadCustomers();
-    if (name === 'downloads')  loadDownloads();
-    if (name === 'activity')   loadActivity();
-    if (name === 'settings')   loadSettings();
+    if (name === 'dashboard')          loadDashboard();
+    if (name === 'inventory')          loadInventory();
+    if (name === 'generate')           loadGenStats();
+    if (name === 'orders')             loadOrders();
+    if (name === 'customer-licenses')  loadCustomerLicenses();
+    if (name === 'customers')          loadCustomers();
+    if (name === 'downloads')          loadDownloads();
+    if (name === 'activity')           loadActivity();
+    if (name === 'settings')           loadSettings();
   };
 
   /* ── Dashboard ─────────────────────────────────────────────────────── */
@@ -355,13 +356,35 @@
     `).join('');
   }
 
+  /* ── Inventory status tab wiring ───────────────────────────────────── */
+  let _invStatusFilter = 'available';   // default: show only available keys
+
+  function wireInvStatusTabs () {
+    const tabs = document.querySelectorAll('.admin-status-tab');
+    tabs.forEach(btn => {
+      btn.addEventListener('click', function () {
+        tabs.forEach(t => t.classList.remove('active'));
+        this.classList.add('active');
+        _invStatusFilter = this.dataset.status || 'available';
+        loadInventory(currentInvFilter());
+      });
+    });
+  }
+
   /* ── Key Inventory ─────────────────────────────────────────────────── */
   async function loadInventory (filter = {}) {
     const tb = $('inventoryTbody');
     tb.innerHTML = '<tr><td colspan="11" class="admin-table-empty skeleton-row">Loading…</td></tr>';
     try {
       const params = new URLSearchParams();
-      if (filter.status) params.set('status', filter.status);
+      // Active tab sets the status. '__all__' = no filter. '' or 'available' = status=available.
+      const statusToLoad = (filter.status !== undefined) ? filter.status : _invStatusFilter;
+      if (statusToLoad && statusToLoad !== '__all__') {
+        params.set('status', statusToLoad);
+      } else if (!statusToLoad) {
+        params.set('status', 'available');
+      }
+      // __all__ → no status param (server returns everything)
       if (filter.plan)   params.set('plan',   filter.plan);
       if (filter.search) params.set('search', filter.search);
       const { ok, data } = await apiFetch(`/api/admin/inventory?${params}`);
@@ -448,7 +471,8 @@
 
   function currentInvFilter () {
     return {
-      status: $('invFilterStatus')?.value || '',
+      // Status comes from the active tab, not the hidden select
+      status: _invStatusFilter,
       plan:   $('invFilterPlan')?.value   || '',
       search: $('invSearch')?.value       || '',
     };
@@ -623,11 +647,13 @@
 
         if (importedCount > 0) {
           toast(`✓ Imported ${importedCount} key(s) successfully.`, 'success');
-          // Clear filters so the newly-imported 'available' keys are always visible
-          const statusEl = $('invFilterStatus');
+          // Reset to "Available" tab so newly-imported keys are visible
+          _invStatusFilter = 'available';
+          document.querySelectorAll('.admin-status-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.status === '' || t.dataset.status === 'available');
+          });
           const planEl   = $('invFilterPlan');
           const searchEl = $('invSearch');
-          if (statusEl) statusEl.value = '';
           if (planEl)   planEl.value   = '';
           if (searchEl) searchEl.value = '';
           // Always re-fetch from the server — never rely on stale cached data
@@ -802,6 +828,96 @@
       toast('Network error during reissue.', 'error');
     }
   };
+
+  /* ── Customer Licenses ──────────────────────────────────────────────── */
+  let _allCustomerLicenses = [];
+  let _clPage = 1;
+
+  async function loadCustomerLicenses () {
+    const tb = $('clTbody');
+    if (!tb) return;
+    tb.innerHTML = '<tr><td colspan="10" class="admin-table-empty">Loading…</td></tr>';
+    try {
+      const { ok, data } = await apiFetch('/api/admin/customer-licenses');
+      if (!ok) throw new Error(data.error || 'Failed to load customer licenses');
+      _allCustomerLicenses = Array.isArray(data.licenses) ? data.licenses : [];
+      applyClFilter();
+    } catch (err) {
+      tb.innerHTML = `<tr><td colspan="10" class="admin-table-empty" style="color:#f87171">${esc(err.message)}</td></tr>`;
+    }
+  }
+
+  function applyClFilter () {
+    const search   = ($('clSearch')?.value    || '').toLowerCase();
+    const plan     = $('clFilterPlan')?.value  || '';
+    const statusF  = $('clFilterStatus')?.value || '';
+    let licenses   = _allCustomerLicenses;
+    if (search) {
+      licenses = licenses.filter(k =>
+        (k.key             || '').toLowerCase().includes(search) ||
+        (k.customer_email  || '').toLowerCase().includes(search) ||
+        (k.customer        || '').toLowerCase().includes(search) ||
+        (k.order_id        || '').toLowerCase().includes(search) ||
+        (k.assigned_user   || '').toLowerCase().includes(search)
+      );
+    }
+    if (plan)    licenses = licenses.filter(k => (k.plan || '') === plan);
+    if (statusF) licenses = licenses.filter(k => (k.status || '') === statusF);
+    renderCustomerLicenses(licenses, 1);
+  }
+
+  function renderCustomerLicenses (licenses, page) {
+    _clPage = page;
+    const tb        = $('clTbody');
+    const safeLic   = Array.isArray(licenses) ? licenses : [];
+    const start     = (page - 1) * PAGE_SIZE;
+    const slice     = safeLic.slice(start, start + PAGE_SIZE);
+    if (!slice.length) {
+      tb.innerHTML = '<tr><td colspan="10" class="admin-table-empty">No sold licenses found.</td></tr>';
+      $('clPagination').innerHTML = '';
+      return;
+    }
+    tb.innerHTML = slice.map(k => `
+      <tr>
+        <td><span class="key-mono copy-cell" onclick="copyText('${esc(k.key)}')" title="Click to copy">${esc(k.key)}</span></td>
+        <td>${planBadge(k.plan)}</td>
+        <td>${statusBadge(k.status)}</td>
+        <td class="cell-truncate">${esc(k.customer_email || k.customer || '—')}</td>
+        <td class="cell-truncate">${esc(k.assigned_user || '—')}</td>
+        <td><span class="key-mono key-mono--sm copy-cell" onclick="copyText('${esc(k.order_id || '')}')">${esc((k.order_id || '').slice(0, 16))}${k.order_id && k.order_id.length > 16 ? '…' : ''}</span></td>
+        <td>${fmtDateShort(k.purchase_date)}</td>
+        <td class="cell-mono-sm">${k.hwid ? `<span title="${esc(k.hwid)}">${esc(k.hwid.slice(0, 12))}…</span>` : '<span style="color:var(--muted)">—</span>'}</td>
+        <td>${k.expiration ? fmtDateShort(k.expiration) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="actions-cell">
+          <button class="btn-icon" onclick="copyText('${esc(k.key)}')" title="Copy Key">Copy</button>
+          ${k.order_id ? `<button class="btn-icon" onclick="openOrderDetail('${esc(k.order_id)}')">View Order</button>` : ''}
+          <button class="btn-icon" onclick="resetHwidForKey('${esc(k.key)}')">Reset HWID</button>
+          ${k.status !== 'revoked' ? `<button class="btn-icon btn-icon--danger" onclick="revokeKey('${esc(k.key)}')">Revoke</button>` : ''}
+        </td>
+      </tr>
+    `).join('');
+    renderPagination('clPagination', safeLic.length, page, p => renderCustomerLicenses(safeLic, p));
+  }
+
+  window.resetHwidForKey = function (key) {
+    confirmAction('Reset HWID', `Clear HWID for key ${key}?`, async () => {
+      const { ok, data } = await apiFetch(`/api/admin/inventory/${encodeURIComponent(key)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ hwid: '' }),
+      });
+      if (ok) { toast('HWID cleared.', 'success'); loadCustomerLicenses(); }
+      else toast(data.error || 'Reset failed.', 'error');
+    });
+  };
+
+  function exportClCSV () {
+    if (!_allCustomerLicenses.length) { toast('No licenses to export.', 'warning'); return; }
+    const cols = ['key','plan','status','customer_email','assigned_user','order_id','purchase_date','hwid','expiration'];
+    const rows = [cols.join(',')].concat(_allCustomerLicenses.map(k =>
+      cols.map(c => `"${(k[c] || '').toString().replace(/"/g, '""')}"`).join(',')
+    ));
+    dlCSV('ghost_customer_licenses.csv', rows.join('\n'));
+  }
 
   /* ── Key actions (global) ──────────────────────────────────────────── */
   window.revokeKey = function (key) {
@@ -1619,6 +1735,7 @@
     });
 
     wireGenerate();
+    wireInvStatusTabs();
 
     // Dashboard
     $('refreshDashboard').addEventListener('click', loadDashboard);
@@ -1670,6 +1787,14 @@
     // Extend key modal
     $('confirmExtendKey').addEventListener('click', confirmExtend);
     $('extendKeyModal').addEventListener('click', e => { if (e.target === $('extendKeyModal')) hide('extendKeyModal'); });
+
+    // Customer Licenses
+    $('refreshCustomerLicenses')?.addEventListener('click', loadCustomerLicenses);
+    $('applyClFilter')?.addEventListener('click', applyClFilter);
+    $('clSearch')?.addEventListener('keydown', e => { if (e.key === 'Enter') applyClFilter(); });
+    $('clFilterPlan')?.addEventListener('change', applyClFilter);
+    $('clFilterStatus')?.addEventListener('change', applyClFilter);
+    $('exportClBtn')?.addEventListener('click', exportClCSV);
 
     // Orders
     $('refreshOrders').addEventListener('click', loadOrders);

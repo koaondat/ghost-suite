@@ -266,6 +266,48 @@ async function captureOrder (req, res) {
     return res.status(400).json({ ok: false, message: 'Invalid plan.', stage: 'validate' });
   }
 
+  // ── Idempotency: if this PayPal orderID was already captured and delivered,
+  //    return the existing record immediately without re-capturing. ─────────
+  try {
+    const existingRes = await _deliveryFetch(
+      `/api/order/paypal-order:${encodeURIComponent(orderID)}`, {}, 8_000
+    );
+    if (existingRes.ok) {
+      const existing = await existingRes.json().catch(() => null);
+      if (existing && existing.ok && existing.license_key && existing.delivery_status === 'delivered') {
+        console.log('[ghost/paypal] captureOrder idempotent — already fulfilled paypalOrderId=%s orderId=%s',
+          orderID, existing.order_id);
+        return res.json({
+          ok:             true,
+          paymentStatus:  'COMPLETED',
+          deliveryStatus: 'delivered',
+          orderId:        existing.order_id,
+          paypalOrderId:  orderID,
+          plan:           existing.plan || planId,
+          planLabel:      existing.plan_label || plan.label,
+          amount:         String(existing.price_usd || plan.priceUsd),
+          currency:       existing.currency || 'USD',
+          email:          existing.email || email,
+          discord:        existing.discord || discord,
+          licenseKey:     existing.license_key,
+          licenseStatus:  existing.license_status || 'active',
+          purchaseDate:   existing.created_at || new Date().toISOString(),
+          downloadUrl:    `/api/order/${encodeURIComponent(existing.order_id)}/download`,
+          tier:           existing.tier || plan.tier,
+          instructions: [
+            'Download Ghost.',
+            'Extract the ZIP if required.',
+            'Launch Ghost.',
+            'Log in or paste your license key.',
+            'Click Activate.',
+          ],
+        });
+      }
+    }
+  } catch (_) {
+    // Idempotency check failed — proceed with normal capture
+  }
+
   // ── Prevent concurrent double-capture for the same PayPal order ID ────────
   if (_captureInFlight.has(orderID)) {
     console.log('[ghost/paypal] capture already in-flight for orderID=%s — waiting', orderID);
