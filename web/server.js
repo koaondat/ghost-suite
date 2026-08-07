@@ -151,22 +151,31 @@ app.get('/api/config/audit', (req, res) => {
 app.post('/api/paypal/create-order',  paypal.createOrder);
 app.post('/api/paypal/capture-order', paypal.captureOrder);
 
-// ── Order lookup (proxy to delivery backend) ─────────────────────────────────
-app.get('/api/order/:orderId', async (req, res) => {
+// ── Order lookup + download (proxy to delivery backend) ──────────────────────
+async function _proxyToDelivery (req, res, deliveryPath) {
   const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
   if (!DELIVERY_BACKEND_URL) {
-    return res.status(503).json({ ok: false, error: 'Order lookup unavailable: GHOST_DELIVERY_URL not configured.' });
+    return res.status(503).json({ ok: false, error: 'Order service unavailable: GHOST_DELIVERY_URL not configured.' });
   }
   try {
     const { default: fetch } = await import('node-fetch');
-    const upstream = await fetch(`${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(req.params.orderId)}`);
+    const upstream = await fetch(`${DELIVERY_BACKEND_URL}${deliveryPath}`);
     const data = await upstream.json().catch(() => ({}));
     return res.status(upstream.status).json(data);
   } catch (err) {
-    console.error('[ghost/server] getOrder proxy error:', err.message);
-    return res.status(502).json({ ok: false, error: 'Order lookup unavailable.' });
+    console.error('[ghost/server] delivery proxy error path=%s: %s', deliveryPath, err.message);
+    return res.status(502).json({ ok: false, error: 'Service unavailable.' });
   }
-});
+}
+
+app.get('/api/order/:orderId', (req, res) =>
+  _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}`),
+);
+
+// Protected download — verifies payment on the delivery backend before returning a signed ref
+app.get('/api/order/:orderId/download', (req, res) =>
+  _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}/download`),
+);
 
 // ── Serve checkout.html ───────────────────────────────────────────────────────
 // The PayPal client ID is no longer injected here; the frontend fetches it

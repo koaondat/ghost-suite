@@ -5,9 +5,10 @@
  *
  * Routes
  * ------
- *   POST /api/paypal/create-order   Create a PayPal order (server-controlled price)
- *   POST /api/paypal/capture-order  Capture an approved PayPal order + deliver license
- *   GET  /api/order/:orderId        Proxy to license_delivery backend (reused by server.js)
+ *   POST /api/paypal/create-order      Create a PayPal order (server-controlled price)
+ *   POST /api/paypal/capture-order     Capture an approved PayPal order + deliver license
+ *   GET  /api/order/:orderId           Proxy to license_delivery backend (reused by server.js)
+ *   GET  /api/order/:orderId/download  Protected download — requires verified paid order
  *
  * Required env vars (never hardcode these):
  *   PAYPAL_CLIENT_ID      — from developer.paypal.com
@@ -298,15 +299,32 @@ async function captureOrder (req, res) {
     console.log('[ghost/paypal] license delivered orderID=%s captureId=%s plan=%s',
       orderID, captureId, planId);
 
+    const purchaseDate = data.created_at || new Date().toISOString();
+
     return res.json({
-      ok:       true,
-      key:      data.key,
-      tier:     data.tier,
-      orderId:  captureId,
-      plan:     planId,
-      priceUsd: parseFloat(capturedAmount),
-      email:    resolvedEmail,
-      discord:  resolvedDiscord,
+      ok:             true,
+      paymentStatus:  'COMPLETED',
+      deliveryStatus: data.delivery_status || 'delivered',
+      orderId:        captureId,
+      paypalOrderId:  orderID,
+      plan:           planId,
+      planLabel:      plan.label,
+      amount:         capturedAmount,
+      currency:       capturedCurrency,
+      email:          resolvedEmail,
+      discord:        resolvedDiscord,
+      licenseKey:     data.key,
+      licenseStatus:  data.key ? 'active' : 'pending',
+      purchaseDate:   purchaseDate,
+      downloadUrl:    `/api/order/${encodeURIComponent(captureId)}/download`,
+      tier:           data.tier,
+      instructions: [
+        'Download the application using the Download App button below.',
+        'Extract the ZIP archive if required.',
+        'Launch the installer or application.',
+        'Sign in or enter the provided license key when prompted.',
+        'Contact Discord support if activation fails.',
+      ],
     });
 
   } catch (err) {

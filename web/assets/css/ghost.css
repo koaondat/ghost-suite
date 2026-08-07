@@ -3051,6 +3051,50 @@ section { padding: 100px 0; }
 }
 .co-key-error svg { flex-shrink: 0; margin-top: 2px; }
 
+/* Setup guide (Getting started section on success panel) */
+.co-setup-guide {
+  margin-top: 28px;
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+.co-setup-guide-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 12px;
+}
+.co-setup-guide-title svg { flex-shrink: 0; color: var(--muted); }
+.co-setup-steps {
+  margin: 0;
+  padding-left: 1.4rem;
+  list-style: decimal;
+}
+.co-setup-steps li {
+  font-size: 0.875rem;
+  color: var(--muted);
+  line-height: 1.6;
+  padding: 2px 0;
+}
+
+/* License key sharing warning */
+.co-key-warning {
+  margin-top: 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  color: #fbbf24;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.co-key-warning svg { flex-shrink: 0; margin-top: 2px; }
+
 
 /* ============================================================
    HOMEPAGE REDESIGN — hero mockup, product preview, feature

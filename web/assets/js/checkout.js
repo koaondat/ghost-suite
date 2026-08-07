@@ -240,20 +240,90 @@
 
   /* ── License key display ────────────────────────────────────── */
 
-  function _showDeliveredKey (key, tier, orderId, email, discord, priceUsd) {
+  /* ── _formatDate — format ISO timestamp for display ──────────────── */
+  function _formatDate (iso) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit',
+      });
+    } catch (_) {
+      return iso;
+    }
+  }
+
+  /* ── _showDeliveredKey — populate and show the full success panel ─── */
+  function _showDeliveredKey (result) {
+    const {
+      licenseKey, licenseStatus, orderId, paypalOrderId, plan, planLabel,
+      amount, currency, email, purchaseDate, downloadUrl, instructions, tier,
+    } = result;
+
+    // License key code box
     _show('co-key-delivery');
-    _setText('success-license-key', key);
+    _setText('success-license-key', licenseKey || '—');
 
     const inlineCopyBtn = document.getElementById('success-copy-btn');
-    if (inlineCopyBtn) inlineCopyBtn.onclick = () => _copyKey(key, [inlineCopyBtn]);
+    if (inlineCopyBtn && licenseKey) {
+      inlineCopyBtn.onclick = () => _copyKey(licenseKey, [inlineCopyBtn]);
+    }
 
+    // "Copy License Key" action button
     const copyBtn = document.getElementById('success-copy-key-btn');
-    const dashBtn = document.getElementById('success-dashboard-btn');
-    const dlBtn   = document.getElementById('success-download-btn');
+    if (copyBtn && licenseKey) {
+      copyBtn.hidden = false;
+      copyBtn.onclick = () => _copyKey(licenseKey, [copyBtn, inlineCopyBtn].filter(Boolean));
+    }
 
-    if (copyBtn) { copyBtn.hidden = false; copyBtn.onclick = () => _copyKey(key, [copyBtn]); }
+    // "View Dashboard" button
+    const dashBtn = document.getElementById('success-dashboard-btn');
     if (dashBtn) dashBtn.hidden = false;
-    if (dlBtn)   dlBtn.hidden   = false;
+
+    // "Download App" button — calls the protected download endpoint
+    const dlBtn = document.getElementById('success-download-btn');
+    if (dlBtn && orderId) {
+      dlBtn.hidden = false;
+      dlBtn.onclick = async function () {
+        dlBtn.disabled = true;
+        dlBtn.textContent = 'Preparing download…';
+        try {
+          const r    = await fetch(`/api/order/${encodeURIComponent(orderId)}/download`);
+          const data = await r.json().catch(() => ({}));
+          if (r.ok && data.ok && data.downloadPath) {
+            // Trigger browser download using the server-validated path
+            const a = document.createElement('a');
+            a.href     = data.downloadPath;
+            a.download = '';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          } else {
+            alert(data.error || 'Download is not available yet. Please contact support.');
+          }
+        } catch (err) {
+          alert('Could not start the download. Please try again or contact support.');
+        } finally {
+          dlBtn.disabled    = false;
+          dlBtn.innerHTML   = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download App';
+        }
+      };
+    }
+
+    // Setup guide from server-supplied instructions
+    if (Array.isArray(instructions) && instructions.length) {
+      const guideEl = document.getElementById('co-setup-guide');
+      const stepsEl = document.getElementById('co-setup-steps');
+      if (stepsEl) {
+        stepsEl.innerHTML = instructions
+          .map(step => `<li>${_escHtml(step)}</li>`)
+          .join('');
+      }
+      if (guideEl) guideEl.hidden = false;
+    }
+
+    // License key sharing warning
+    if (licenseKey) _show('co-key-warning');
   }
 
   function _copyKey (text, btns) {
@@ -453,24 +523,53 @@
     }
 
     console.log('[ghost/checkout] capture confirmed orderID=%s plan=%s amount=%s',
-      orderID, result.plan, result.priceUsd);
+      orderID, result.plan, result.amount);
 
-    // ── Populate success state ────────────────────────────────────────
-    const plan = PLANS[(result.plan || '').toLowerCase()] || ACTIVE_PLAN;
+    // ── Resolve display plan name ─────────────────────────────────────
+    const planDisplay = PLANS[(result.plan || '').toLowerCase()];
+    const planName    = result.planLabel || (planDisplay ? planDisplay.name : result.plan) || '—';
+    const amountStr   = result.amount != null
+      ? (result.currency || 'USD') + ' ' + Number(result.amount).toFixed(2)
+      : '—';
 
-    _setText('success-email',    result.email   || vals.email || '—');
-    _setText('success-plan',     plan.name      || result.plan || '—');
-    _setText('success-order-id', result.orderId || orderID || '—');
-    _setText('success-duration', plan.duration  || '—');
-    _setText('success-amount',   result.priceUsd != null
-      ? '$' + Number(result.priceUsd).toFixed(2) : '—');
+    // ── Populate the order summary table ─────────────────────────────
+    _setText('success-email',          result.email   || vals.email || '—');
+    _setText('success-email-meta',     result.email   || vals.email || '—');
+    _setText('success-plan',           planName);
+    _setText('success-order-id',       result.orderId || result.paypalOrderId || orderID || '—');
+    _setText('success-amount',         amountStr);
+    _setText('success-date',           _formatDate(result.purchaseDate));
+    _setText('success-license-status', result.licenseStatus ? result.licenseStatus.charAt(0).toUpperCase() + result.licenseStatus.slice(1) : '—');
 
     showState('success');
+    _hide('co-payment-section');   // hide checkout form + payment fields
     _hide('co-key-pending');
 
-    if (result.key) {
+    if (result.licenseKey || result.key) {
       console.log('[ghost/checkout] license key delivered orderID=%s', orderID);
-      _showDeliveredKey(result.key, result.tier, result.orderId, result.email, result.discord, result.priceUsd);
+      _showDeliveredKey({
+        licenseKey:    result.licenseKey || result.key,
+        licenseStatus: result.licenseStatus,
+        orderId:       result.orderId,
+        paypalOrderId: result.paypalOrderId || orderID,
+        plan:          result.plan,
+        planLabel:     planName,
+        amount:        result.amount,
+        currency:      result.currency,
+        email:         result.email || vals.email,
+        purchaseDate:  result.purchaseDate,
+        downloadUrl:   result.downloadUrl,
+        instructions:  result.instructions,
+        tier:          result.tier,
+      });
+    } else if (result.deliveryStatus === 'delivery_pending') {
+      // Payment succeeded but key not yet generated — show retry guidance
+      console.warn('[ghost/checkout] delivery_pending for orderID=%s', orderID);
+      _setText('co-key-error-msg',
+        'Your payment was received but license generation is pending. ' +
+        'Your Order ID is ' + (result.orderId || orderID) + '. ' +
+        'Contact support and we will deliver your key without charging you again.');
+      _show('co-key-error');
     } else {
       console.error('[ghost/checkout] capture succeeded but no key returned orderID=%s', orderID);
       _setText('co-key-error-msg',

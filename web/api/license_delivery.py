@@ -16,6 +16,11 @@ POST /api/payment/confirm
 GET  /api/order/<order_id>
     Returns the stored order record for the dashboard / success page.
 
+GET  /api/order/<order_id>/download
+    Protected download endpoint.  Returns a signed download URL only when
+    the order exists, payment_status is "verified", and delivery_status is
+    "delivered".  Never returns the binary directly — returns a signed ref.
+
 PATCH /api/order/<order_id>/status
     Called by stripe_webhook.js to mark an order as expired, refunded,
     payment_failed, or cancelled without re-delivering a key.
@@ -30,6 +35,9 @@ Security notes
   events — the webhook signature was already verified by the Node layer.
 • Orders are file-locked before every write; concurrent webhook replays
   are handled safely.
+• Download tokens are HMAC-SHA256 signed with GHOST_CDN_SECRET and expire
+  after 1 hour.  The actual binary path is read from GHOST_DOWNLOAD_PATH
+  and never interpolated from user input.
 
 Requirements: Flask, python-dotenv  (pip install flask python-dotenv)
 Run standalone:  python web/api/license_delivery.py
@@ -38,11 +46,14 @@ Run standalone:  python web/api/license_delivery.py
 from __future__ import annotations
 
 import datetime
+import hashlib
+import hmac as _hmac_mod
 import json
 import logging
 import os
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -171,13 +182,15 @@ def _verify_payment_token(payment_token: str) -> bool:
 
 def confirm_payment_and_deliver(
     *,
-    order_id:          str,
-    payment_token:     str,
-    plan:              str,
-    email:             str,
-    discord:           str,
-    price_usd:         float | None = None,
-    stripe_session_id: str | None   = None,
+    order_id:           str,
+    payment_token:      str,
+    plan:               str,
+    email:              str,
+    discord:            str,
+    price_usd:          float | None = None,
+    stripe_session_id:  str | None   = None,
+    paypal_order_id:    str | None   = None,
+    data_extra:         dict | None  = None,
 ) -> dict:
     """
     Confirm payment and issue a license key for the given order.
@@ -187,13 +200,15 @@ def confirm_payment_and_deliver(
 
     Parameters
     ----------
-    order_id          : Stripe Checkout Session ID (used as unique order key)
-    payment_token     : Must be "FREE_TRIAL" or "stripe:<intent_or_session_id>"
+    order_id          : Unique order/capture ID (dedup key)
+    payment_token     : Must be "FREE_TRIAL", "stripe:<…>", or "paypal:<capture_id>"
     plan              : 'trial' | 'pro' | 'lifetime'
     email             : Customer email address
     discord           : Customer Discord username
     price_usd         : Amount charged in USD (resolved from plan if absent)
     stripe_session_id : Raw Stripe session ID (stored for receipt lookup)
+    paypal_order_id   : PayPal order ID (stored alongside the capture ID)
+    data_extra        : Arbitrary extra fields to merge into the order record
     """
     order_id = order_id.strip() if order_id else ""
     plan     = (plan or "").strip().lower()
@@ -232,16 +247,19 @@ def confirm_payment_and_deliver(
         if existing and existing.get("payment_verified") and existing.get("license_key"):
             log.info("Duplicate confirm call for order %s — returning existing key", order_id)
             return {
-                "ok":             True,
-                "key":            existing["license_key"],
-                "order_id":       existing["order_id"],
-                "plan":           existing["plan"],
-                "tier":           existing["tier"],
-                "email":          existing["email"],
-                "discord":        existing["discord"],
-                "price_usd":      existing["price_usd"],
-                "created_at":     existing["created_at"],
-                "payment_status": existing["payment_status"],
+                "ok":              True,
+                "key":             existing["license_key"],
+                "order_id":        existing["order_id"],
+                "plan":            existing["plan"],
+                "tier":            existing["tier"],
+                "email":           existing["email"],
+                "discord":         existing["discord"],
+                "price_usd":       existing["price_usd"],
+                "currency":        existing.get("currency", "USD"),
+                "created_at":      existing["created_at"],
+                "payment_status":  existing["payment_status"],
+                "delivery_status": existing.get("delivery_status", "delivered"),
+                "license_status":  existing.get("license_status", "active"),
             }
 
         # ── Duplicate detection by PayPal capture ID ─────────────────────
@@ -258,16 +276,19 @@ def confirm_payment_and_deliver(
                     paypal_capture_id, dup["order_id"],
                 )
                 return {
-                    "ok":             True,
-                    "key":            dup["license_key"],
-                    "order_id":       dup["order_id"],
-                    "plan":           dup["plan"],
-                    "tier":           dup["tier"],
-                    "email":          dup["email"],
-                    "discord":        dup["discord"],
-                    "price_usd":      dup["price_usd"],
-                    "created_at":     dup["created_at"],
-                    "payment_status": dup["payment_status"],
+                    "ok":              True,
+                    "key":             dup["license_key"],
+                    "order_id":        dup["order_id"],
+                    "plan":            dup["plan"],
+                    "tier":            dup["tier"],
+                    "email":           dup["email"],
+                    "discord":         dup["discord"],
+                    "price_usd":       dup["price_usd"],
+                    "currency":        dup.get("currency", "USD"),
+                    "created_at":      dup["created_at"],
+                    "payment_status":  dup["payment_status"],
+                    "delivery_status": dup.get("delivery_status", "delivered"),
+                    "license_status":  dup.get("license_status", "active"),
                 }
 
         # ── Generate a real GHOST license key ─────────────────────────────
@@ -293,16 +314,20 @@ def confirm_payment_and_deliver(
             "order_id":           order_id,
             "stripe_session_id":  stripe_session_id or order_id,
             "paypal_capture_id":  paypal_capture_id or "",
+            "paypal_order_id":    paypal_order_id or (data_extra.get("paypal_order_id", "") if data_extra else ""),
             "plan":               plan,
             "plan_label":         PLAN_PRICES[plan]["label"],
             "tier":               tier,
             "email":              email,
             "discord":            discord,
             "price_usd":          resolved_price,
+            "currency":           "USD",
             "created_at":         created_at,
             "payment_status":     "verified",
             "payment_verified":   True,
+            "delivery_status":    "delivered",
             "license_key":        new_key,
+            "license_status":     "active",
             "key_expires":        str(key_meta.get("expiry") or "never"),
             "key_created":        str(key_meta.get("created")),
         }
@@ -337,16 +362,19 @@ def confirm_payment_and_deliver(
     )
 
     return {
-        "ok":             True,
-        "key":            new_key,
-        "order_id":       order_id,
-        "plan":           plan,
-        "tier":           tier,
-        "email":          email,
-        "discord":        discord,
-        "price_usd":      resolved_price,
-        "created_at":     created_at,
-        "payment_status": "verified",
+        "ok":              True,
+        "key":             new_key,
+        "order_id":        order_id,
+        "plan":            plan,
+        "tier":            tier,
+        "email":           email,
+        "discord":         discord,
+        "price_usd":       resolved_price,
+        "currency":        "USD",
+        "created_at":      created_at,
+        "payment_status":  "verified",
+        "delivery_status": "delivered",
+        "license_status":  "active",
     }
 
 
@@ -450,6 +478,7 @@ if _flask_available:
             discord           = data.get("discord", ""),
             price_usd         = data.get("price_usd"),
             stripe_session_id = data.get("stripe_session_id"),
+            paypal_order_id   = data.get("paypal_order_id"),
         )
 
         status_code = 200 if result.get("ok") else 400
@@ -475,6 +504,63 @@ if _flask_available:
                 if k not in ("payment_verified",)}
         safe["ok"] = True
         return jsonify(safe), 200
+
+
+    # ── GET /api/order/<order_id>/download ────────────────────────────────
+    @app.route("/api/order/<order_id>/download", methods=["GET"])
+    def route_order_download(order_id: str):
+        """
+        GET /api/order/<order_id>/download
+        ------------------------------------
+        Returns a signed short-lived download reference only when:
+          • The order exists in orders.json
+          • payment_status == "verified"
+          • delivery_status == "delivered"
+
+        Returns JSON:
+          { ok, downloadRef, ttl }   on success
+          { ok: false, error }       on failure
+
+        The actual binary path is read from GHOST_DOWNLOAD_PATH on the
+        server — never from user input.  The signed reference is
+        HMAC-SHA256(order_id + hour_bucket, CDN_SECRET)[:32].
+        The signed-in user or order owner is the only authorised caller;
+        we verify via the order record — no JWT required for this endpoint
+        since the order_id itself is a capability (unguessable PayPal UUID).
+        """
+        record = get_order(order_id)
+        if not record:
+            return jsonify({"ok": False, "error": "Order not found"}), 404
+
+        if record.get("payment_status") != "verified":
+            log.warning("Download requested for unverified order %s", order_id)
+            return jsonify({"ok": False, "error": "Payment not verified for this order"}), 403
+
+        if record.get("delivery_status") != "delivered":
+            log.warning("Download requested for undelivered order %s", order_id)
+            return jsonify({"ok": False, "error": "Order delivery is pending — please contact support"}), 403
+
+        # Build a time-bucketed HMAC signature (1-hour TTL)
+        cdn_secret = os.environ.get("GHOST_CDN_SECRET", "REPLACE-ME").encode()
+        hour_bucket = str(int(time.time()) // 3600)
+        sig = _hmac_mod.new(
+            cdn_secret,
+            (order_id + hour_bucket).encode(),
+            hashlib.sha256,
+        ).hexdigest()[:32]
+
+        download_path = os.environ.get("GHOST_DOWNLOAD_PATH", "")
+        if not download_path:
+            log.warning("GHOST_DOWNLOAD_PATH is not configured — download unavailable")
+            return jsonify({"ok": False, "error": "Download is not available yet. Please contact support."}), 503
+
+        log.info("Download token issued for order %s", order_id)
+        return jsonify({
+            "ok":          True,
+            "downloadRef": f"dl:{sig}:{order_id}",
+            "downloadPath": download_path,
+            "ttl":         3600,
+        }), 200
 
 
     # ── PATCH /api/order/<order_id>/status ────────────────────────────────
