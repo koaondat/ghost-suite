@@ -235,26 +235,24 @@
     return errors;
   }
 
-  /* ── License key formatter ────────────────────────────────
-     Auto-inserts dashes and uppercases as the user types.
+  /* ── License key normaliser ───────────────────────────────
+     Trims whitespace and uppercases only.  Never alters the
+     key value, inserts a prefix, or truncates the input.
   ─────────────────────────────────────────────────────────── */
   function wireLicenseKeyFormatter (inputId) {
     const input = document.getElementById(inputId);
     if (!input) return;
     input.addEventListener('input', () => {
-      const raw    = input.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-      const prefix = raw.startsWith('GHOST') ? '' : '';
-      // segments: prefix(5) + 4 × 5-char blocks
-      const parts  = [];
-      // consume first 5 as prefix word
-      const base = raw.startsWith('GHOST') ? raw : 'GHOST' + raw;
-      for (let i = 0; i < base.length && parts.length < 5; i += 5) {
-        parts.push(base.slice(i, i + 5));
-      }
       const cursor = input.selectionStart;
-      input.value  = parts.join('-').slice(0, 29);
-      // best-effort cursor restore
+      // Only uppercase — do NOT strip dashes or prepend anything
+      input.value = input.value.toUpperCase();
       try { input.setSelectionRange(cursor, cursor); } catch (_) { /* ignore */ }
+    });
+    // On paste: trim surrounding whitespace and uppercase
+    input.addEventListener('paste', (e) => {
+      e.preventDefault();
+      const pasted = (e.clipboardData || window.clipboardData).getData('text');
+      input.value  = pasted.trim().toUpperCase();
     });
   }
 
