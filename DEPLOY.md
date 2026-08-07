@@ -268,6 +268,26 @@ and replace every placeholder. **Never commit `.env` to version control.**
 | `BASE_URL` | web | Public URL of the web server (used in Stripe redirects) |
 | `PORT` | web | Node.js listen port (default `3000`) |
 | `LOG_LEVEL` | all | Log verbosity: `DEBUG`, `INFO`, `WARNING` (default `INFO`) |
+| `PAYPAL_CLIENT_ID` | web | PayPal app client ID (safe in frontend) |
+| `PAYPAL_CLIENT_SECRET` | web | PayPal app client secret — **server-side only, never expose** |
+| `PAYPAL_ENVIRONMENT` | web | `sandbox` or `live` |
+| `PAYPAL_WEBHOOK_ID` | web | Webhook ID from PayPal dashboard (for signature verification) |
+| `GHOST_DELIVERY_URL` | web | URL of the Python `license_delivery.py` server |
+| `RESEND_API_KEY` | web | Resend API key for purchase receipt emails |
+| `RECEIPT_FROM_EMAIL` | web | From address e.g. `Ghost <receipts@yourdomain.com>` |
+| `SUPPORT_EMAIL` | web | Support email shown in receipts and error messages |
+
+### PayPal Webhook URL
+
+Register the following URL as a PayPal webhook in **developer.paypal.com → My Apps & Credentials → your app → Webhooks → Add Webhook**:
+
+```
+https://yourdomain.com/api/paypal/webhook
+```
+
+Subscribe to the event type: **`PAYMENT.CAPTURE.COMPLETED`**
+
+After saving, copy the **Webhook ID** and set `PAYPAL_WEBHOOK_ID` in your environment.
 
 Generate secrets:
 

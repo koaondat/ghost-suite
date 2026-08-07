@@ -385,6 +385,90 @@
     if (card && ACTIVE_PLAN.color === 'cyan') card.classList.add('co-summary-card--cyan');
   }
 
+  /* ── Retry Status — retrieves existing order without re-charging ── */
+  function _showRetryStatus (lookupId) {
+    if (!lookupId) return;
+    const btn = document.getElementById('failed-retry-status-btn');
+    if (!btn) return;
+    btn.hidden = false;
+    btn.dataset.orderId = lookupId;
+  }
+
+  async function _retryStatus (orderId) {
+    if (!orderId) return;
+    const btn = document.getElementById('failed-retry-status-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking\u2026'; }
+
+    console.log('[ghost/checkout] retry status lookup orderId=%s', orderId);
+    try {
+      const res  = await fetch('/api/order/' + encodeURIComponent(orderId));
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data.ok) {
+        console.warn('[ghost/checkout] retry status: order not found orderId=%s', orderId);
+        if (btn) { btn.disabled = false; btn.textContent = 'Retry Status'; }
+        _setText('failed-reason',
+          'Order not found yet. Wait 60 seconds and try again, or contact support with Order ID: ' + orderId);
+        return;
+      }
+
+      const status = data.payment_status || '';
+      if (status === 'verified' && data.license_key) {
+        console.log('[ghost/checkout] retry status: order verified, showing success');
+
+        const planDisplay = PLANS[(data.plan || '').toLowerCase()];
+        const planName    = data.plan_label || (planDisplay ? planDisplay.name : data.plan) || '\u2014';
+        const amountStr   = data.price_usd != null
+          ? (data.currency || 'USD') + ' ' + Number(data.price_usd).toFixed(2)
+          : '\u2014';
+
+        _setText('success-email',          data.email   || '\u2014');
+        _setText('success-email-meta',     data.email   || '\u2014');
+        _setText('success-plan',           planName);
+        _setText('success-order-id',       data.order_id || orderId || '\u2014');
+        _setText('success-amount',         amountStr);
+        _setText('success-date',           _formatDate(data.created_at));
+        _setText('success-license-status', 'Active');
+
+        showState('success');
+        _hide('co-payment-section');
+        _hide('co-key-pending');
+
+        _showDeliveredKey({
+          licenseKey:    data.license_key,
+          licenseStatus: data.license_status,
+          orderId:       data.order_id || orderId,
+          paypalOrderId: data.paypal_order_id || '',
+          plan:          data.plan,
+          planLabel:     planName,
+          amount:        data.price_usd,
+          currency:      data.currency || 'USD',
+          email:         data.email,
+          purchaseDate:  data.created_at,
+          downloadUrl:   '/api/order/' + encodeURIComponent(data.order_id || orderId) + '/download',
+          instructions: [
+            'Download the application using the Download App button below.',
+            'Extract the ZIP archive if required.',
+            'Launch the installer or application.',
+            'Enter the license key when prompted.',
+            'Contact Discord support if activation fails.',
+          ],
+          tier: data.tier,
+        });
+      } else {
+        if (btn) { btn.disabled = false; btn.textContent = 'Retry Status'; }
+        _setText('failed-reason',
+          'Payment status: ' + (status || 'unknown') + '. ' +
+          (status === 'verified'
+            ? 'Payment verified but key not yet generated — contact support with Order ID: ' + orderId
+            : 'Payment not yet verified. Wait and try again, or contact support with Order ID: ' + orderId));
+      }
+    } catch (err) {
+      console.error('[ghost/checkout] retry status error:', err.message);
+      if (btn) { btn.disabled = false; btn.textContent = 'Retry Status'; }
+    }
+  }
+
   function wireRetryButtons () {
     ['failed-retry-btn', 'cancelled-retry-btn'].forEach(id => {
       document.getElementById(id)?.addEventListener('click', () => {
@@ -397,6 +481,11 @@
         const form = document.getElementById('checkout-form');
         if (form) form.reset();
       });
+    });
+
+    // Retry Status — retrieves existing order without re-charging
+    document.getElementById('failed-retry-status-btn')?.addEventListener('click', function () {
+      _retryStatus(this.dataset.orderId || '');
     });
   }
 
@@ -472,16 +561,33 @@
     const vals = _capturedVals;
     console.log('[ghost/checkout] creating PayPal order plan=%s', ACTIVE_PLAN.id);
 
-    const res  = await fetch('/api/paypal/create-order', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ plan: ACTIVE_PLAN.id, email: vals.email, discord: vals.discord }),
-    });
-    const data = await res.json().catch(() => ({}));
+    // 18-second client-side timeout (backend has 15s)
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 18_000);
+
+    let res, data;
+    try {
+      res  = await fetch('/api/paypal/create-order', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ plan: ACTIVE_PLAN.id, email: vals.email, discord: vals.discord }),
+        signal:  controller.signal,
+      });
+      data = await res.json().catch(() => ({}));
+    } catch (err) {
+      clearTimeout(timer);
+      const isAbort = err.name === 'AbortError';
+      console.error('[ghost/checkout] create-order %s', isAbort ? 'timeout' : 'network-error');
+      throw new Error(isAbort
+        ? 'PayPal did not respond in time. Please try again.'
+        : 'Network error connecting to payment service. Please try again.');
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!res.ok || !data.ok) {
       const msg = data.message || 'Could not create PayPal order. Please try again.';
-      console.error('[ghost/checkout] create-order failed:', msg);
+      console.error('[ghost/checkout] create-order failed stage=%s: %s', data.stage || '', msg);
       throw new Error(msg);
     }
 
@@ -497,28 +603,67 @@
        4. Calls license_delivery
      No success state is shown until the backend confirms COMPLETED.
   ─────────────────────────────────────────────────────────────── */
+  /* ── Loading steps helper ───────────────────────────────────────── */
+  function _advanceStep (n) {
+    for (let i = 1; i <= 3; i++) {
+      const el = document.getElementById('lstep-' + i);
+      if (!el) continue;
+      el.classList.remove('active', 'done');
+      if (i < n)        el.classList.add('done');
+      else if (i === n) el.classList.add('active');
+    }
+  }
+
   async function _capturePayPalOrder (orderID) {
     const vals = _capturedVals;
     console.log('[ghost/checkout] capturing order orderID=%s', orderID);
+    _advanceStep(1);
     showState('loading');
 
-    const res = await fetch('/api/paypal/capture-order', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        orderID,
-        plan:    ACTIVE_PLAN.id,
-        email:   vals.email,
-        discord: vals.discord,
-      }),
-    });
-    const result = await res.json().catch(() => ({}));
+    // 35-second client-side timeout (backend itself has 30s)
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 35_000);
+
+    let res, result;
+    try {
+      _advanceStep(2);
+      res = await fetch('/api/paypal/capture-order', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          orderID,
+          plan:    ACTIVE_PLAN.id,
+          email:   vals.email,
+          discord: vals.discord,
+        }),
+        signal: controller.signal,
+      });
+      _advanceStep(3);
+      result = await res.json().catch(() => ({}));
+    } catch (err) {
+      clearTimeout(timer);
+      const isAbort = err.name === 'AbortError';
+      console.error('[ghost/checkout] capture fetch %s orderID=%s',
+        isAbort ? 'timeout' : 'network-error', orderID);
+      showState('failed');
+      _setText('failed-reason',
+        isAbort
+          ? 'The request timed out. Your card may have been charged — use Retry Status below or contact support with Order ID: ' + orderID
+          : 'A network error occurred. Your payment may have been processed — use Retry Status below or contact support with Order ID: ' + orderID);
+      _showRetryStatus(orderID);
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!res.ok || !result.ok) {
-      const msg = result.message || 'Payment capture failed. Please contact support.';
-      console.error('[ghost/checkout] capture-order failed orderID=%s: %s', orderID, msg);
+      const msg   = result.message || 'Payment capture failed. Please contact support.';
+      const stage = result.stage   || '';
+      console.error('[ghost/checkout] capture-order failed orderID=%s stage=%s: %s',
+        orderID, stage, msg);
       showState('failed');
-      _setText('failed-reason', msg);
+      _setText('failed-reason', msg + (result.captureId ? ' (Capture ID: ' + result.captureId + ')' : ''));
+      _showRetryStatus(result.captureId || result.orderId || orderID);
       return;
     }
 

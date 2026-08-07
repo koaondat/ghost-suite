@@ -13,7 +13,9 @@
           "pricing.html",
           "checkout.html",
           "assets/**",
-          "api/paypal.js"
+          "api/paypal.js",
+          "api/checkout.js",
+          "api/stripe_webhook.js"
         ]
       }
     }

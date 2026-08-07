@@ -436,6 +436,7 @@ if _flask_available:
     @app.route("/api/payment/confirm",              methods=["OPTIONS"])
     @app.route("/api/order/<order_id>",             methods=["OPTIONS"])
     @app.route("/api/order/<order_id>/status",      methods=["OPTIONS"])
+    @app.route("/api/order/<order_id>/receipt",     methods=["OPTIONS"])
     def _preflight(order_id=""):
         r = Response()
         r.headers["Access-Control-Allow-Origin"]  = "*"
@@ -561,6 +562,49 @@ if _flask_available:
             "downloadPath": download_path,
             "ttl":         3600,
         }), 200
+
+
+    # ── PATCH /api/order/<order_id>/receipt ───────────────────────────────
+    @app.route("/api/order/<order_id>/receipt", methods=["PATCH", "OPTIONS"])
+    def route_update_receipt_status(order_id: str):
+        """
+        PATCH /api/order/<order_id>/receipt
+        ------------------------------------
+        Called by paypal.js after attempting to send the Resend receipt email.
+        Updates receipt_sent, receipt_message_id, receipt_status on the order record.
+        Never fails the whole order — always returns 200.
+
+        Body (JSON):
+          receipt_sent        bool
+          receipt_message_id  string | null
+          receipt_status      'sent' | 'receipt_pending'
+        """
+        if request.method == "OPTIONS":
+            return _preflight()
+
+        data = request.get_json(silent=True) or {}
+        receipt_sent       = bool(data.get("receipt_sent", False))
+        receipt_message_id = data.get("receipt_message_id") or None
+        receipt_status     = data.get("receipt_status", "receipt_pending")
+
+        with _orders_lock:
+            records = _load_orders()
+            record  = _find_order(order_id, records)
+            if not record:
+                # Non-fatal — just acknowledge; order may have been cleaned up
+                log.warning("receipt update: order %s not found — acknowledged", order_id)
+                return jsonify({"ok": True, "order_id": order_id, "note": "not_found"}), 200
+            record["receipt_sent"]       = receipt_sent
+            record["receipt_message_id"] = receipt_message_id
+            record["receipt_status"]     = receipt_status
+            try:
+                _save_orders(records)
+                log.info("Receipt status updated order=%s sent=%s msgId=%s",
+                    order_id, receipt_sent, receipt_message_id or "(none)")
+            except Exception as exc:
+                log.error("Failed to save receipt status for order %s: %s", order_id, exc)
+                # Non-fatal — return 200 anyway
+        return jsonify({"ok": True, "order_id": order_id, "receipt_status": receipt_status}), 200
 
 
     # ── PATCH /api/order/<order_id>/status ────────────────────────────────

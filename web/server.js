@@ -90,7 +90,23 @@ async function _proxyToApi (req, res, pathOverride) {
   }
 }
 
-// ── JSON body parser ─────────────────────────────────────────────────────────
+// ── Body parsers ─────────────────────────────────────────────────────────────
+// Capture raw body for PayPal webhook signature verification before JSON parse.
+app.use((req, _res, next) => {
+  if (req.path === '/api/paypal/webhook') {
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      req.rawBody = raw;
+      try { req.body = JSON.parse(raw); } catch (_) { req.body = {}; }
+      next();
+    });
+  } else {
+    next();
+  }
+});
+
 app.use(express.json());
 
 // ── PayPal configuration endpoint (safe — never returns the secret) ──────────
@@ -126,9 +142,13 @@ app.get('/api/config/audit', (req, res) => {
     'PAYPAL_CLIENT_ID',
     'PAYPAL_CLIENT_SECRET',
     'PAYPAL_ENVIRONMENT',
+    'PAYPAL_WEBHOOK_ID',
     'GHOST_API_URL',
     'GHOST_DELIVERY_URL',
     'BASE_URL',
+    'RESEND_API_KEY',
+    'RECEIPT_FROM_EMAIL',
+    'SUPPORT_EMAIL',
   ];
 
   const report = {};
@@ -150,6 +170,7 @@ app.get('/api/config/audit', (req, res) => {
 // ── PayPal Checkout API routes (handled by Node) ─────────────────────────────
 app.post('/api/paypal/create-order',  paypal.createOrder);
 app.post('/api/paypal/capture-order', paypal.captureOrder);
+app.post('/api/paypal/webhook',       paypal.handleWebhook);
 
 // ── Order lookup + download (proxy to delivery backend) ──────────────────────
 async function _proxyToDelivery (req, res, deliveryPath) {
@@ -159,7 +180,13 @@ async function _proxyToDelivery (req, res, deliveryPath) {
   }
   try {
     const { default: fetch } = await import('node-fetch');
-    const upstream = await fetch(`${DELIVERY_BACKEND_URL}${deliveryPath}`);
+    const BODY_METHODS = ['POST', 'PATCH', 'PUT'];
+    const hasBody = BODY_METHODS.includes(req.method) && req.body !== undefined;
+    const upstream = await fetch(`${DELIVERY_BACKEND_URL}${deliveryPath}`, {
+      method:  req.method || 'GET',
+      headers: hasBody ? { 'Content-Type': 'application/json' } : {},
+      body:    hasBody ? JSON.stringify(req.body) : undefined,
+    });
     const data = await upstream.json().catch(() => ({}));
     return res.status(upstream.status).json(data);
   } catch (err) {
@@ -168,6 +195,7 @@ async function _proxyToDelivery (req, res, deliveryPath) {
   }
 }
 
+// GET /api/order/:orderId — looks up by captureId (which is the delivery order_id for PayPal)
 app.get('/api/order/:orderId', (req, res) =>
   _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}`),
 );
@@ -175,6 +203,11 @@ app.get('/api/order/:orderId', (req, res) =>
 // Protected download — verifies payment on the delivery backend before returning a signed ref
 app.get('/api/order/:orderId/download', (req, res) =>
   _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}/download`),
+);
+
+// PATCH /api/order/:orderId/receipt — receipt status update from paypal.js (internal)
+app.patch('/api/order/:orderId/receipt', (req, res) =>
+  _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}/receipt`),
 );
 
 // ── Serve checkout.html ───────────────────────────────────────────────────────
