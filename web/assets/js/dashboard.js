@@ -1293,26 +1293,35 @@
     _el('db-content')     ?.removeAttribute('hidden');
   }
 
-  /* ── Boot sequence ───────────────────────────────────────── */
-  async function init () {
-    // Auth guard — redirect to login if not authenticated
+  /* ── Boot sequence ───────────────────────────────────────────────────────── */
+  /* ── setup()    : runs once on DOMContentLoaded — wires all static UI       */
+  /* ── loadData() : fetches account data and renders — safe to retry          */
+  function setup () {
     if (!_isAuthenticated()) {
       window.location.href = 'login.html';
       return;
     }
 
-    // Wire up static UI (doesn't need account data)
     initSidebar();
     initNav();
     initLogout();
     initDownloadBtns();
 
-    // Retry button on error state
-    _el('db-retry-btn')?.addEventListener('click', () => {
-      init();
-    });
+    // Retry button: replace its node to guarantee no stacked listeners,
+    // then attach a single click handler that calls loadData().
+    const retryBtn = _el('db-retry-btn');
+    if (retryBtn) {
+      const fresh = retryBtn.cloneNode(true);
+      retryBtn.parentNode.replaceChild(fresh, retryBtn);
+      fresh.addEventListener('click', loadData);
+    }
 
-    // Show loading spinner
+    loadData();
+  }
+
+  /* ── Data-only boot — safe to call again on retry ───────────────────────── */
+  async function loadData () {
+    // Show loading spinner, hide error and content
     showLoading();
 
     try {
@@ -1347,8 +1356,9 @@
       try { initResetModal(account.license.key); }
         catch (err) { console.error("initResetModal failed:", err); console.error(err.stack); console.error("license.key:", account.license?.key); throw err; }
 
-      // Reveal content
+      // Reveal content — stop here; never fall through to showError()
       showContent();
+      return;
 
     } catch (err) {
       if (err.message === 'auth') {
@@ -1364,9 +1374,9 @@
 
   // Kick off on DOM ready
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', setup);
   } else {
-    init();
+    setup();
   }
 
 })();
