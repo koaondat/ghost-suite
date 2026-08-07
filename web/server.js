@@ -19,7 +19,6 @@
 require('dotenv').config();
 
 const express = require('express');
-const fs      = require('fs');
 const path    = require('path');
 const paypal  = require('./api/paypal');
 
@@ -94,6 +93,60 @@ async function _proxyToApi (req, res, pathOverride) {
 // ── JSON body parser ─────────────────────────────────────────────────────────
 app.use(express.json());
 
+// ── PayPal configuration endpoint (safe — never returns the secret) ──────────
+// Returns only the public client ID and environment so the frontend can load the
+// PayPal JS SDK without baking PAYPAL_CLIENT_ID into the static JS file.
+app.get('/api/paypal/config', (req, res) => {
+  const clientId = process.env.PAYPAL_CLIENT_ID || '';
+  const env      = (process.env.PAYPAL_ENVIRONMENT || 'sandbox').toLowerCase();
+
+  if (!clientId) {
+    console.error('[ghost/paypal-config] PAYPAL_CLIENT_ID is not set — payment will be unavailable');
+    return res.status(503).json({
+      configured: false,
+      clientId:   null,
+      environment: env,
+      error: 'Payment is not configured on this server. Please contact support.',
+    });
+  }
+
+  console.log('[ghost/paypal-config] config served env=%s', env);
+  return res.json({
+    configured:  true,
+    clientId,
+    environment: env,
+  });
+});
+
+// ── Runtime variable audit (presence only — never returns secret values) ──────
+// Returns a report of which required env vars are present so operators can
+// verify configuration without exposing secrets.
+app.get('/api/config/audit', (req, res) => {
+  const vars = [
+    'PAYPAL_CLIENT_ID',
+    'PAYPAL_CLIENT_SECRET',
+    'PAYPAL_ENVIRONMENT',
+    'GHOST_API_URL',
+    'GHOST_DELIVERY_URL',
+    'BASE_URL',
+  ];
+
+  const report = {};
+  let allPresent = true;
+
+  for (const name of vars) {
+    const present = Boolean(process.env[name]);
+    report[name] = { present };
+    if (!present) {
+      allPresent = false;
+      console.warn('[ghost/config-audit] MISSING env var: %s', name);
+    }
+  }
+
+  console.log('[ghost/config-audit] audit complete allPresent=%s', allPresent);
+  return res.json({ ok: true, allPresent, vars: report });
+});
+
 // ── PayPal Checkout API routes (handled by Node) ─────────────────────────────
 app.post('/api/paypal/create-order',  paypal.createOrder);
 app.post('/api/paypal/capture-order', paypal.captureOrder);
@@ -115,34 +168,22 @@ app.get('/api/order/:orderId', async (req, res) => {
   }
 });
 
-// ── Serve checkout.html with injected PayPal Client ID ───────────────────────
-// The placeholder __PAYPAL_CLIENT_ID__ in checkout.html is replaced at request
-// time so PAYPAL_CLIENT_ID comes from the server environment, never baked in.
-app.get('/checkout.html', (req, res) => {
-  const clientId   = process.env.PAYPAL_CLIENT_ID || '';
-  const htmlPath   = path.join(WEB_ROOT, 'checkout.html');
-  try {
-    const html = fs.readFileSync(htmlPath, 'utf8')
-      .replace('__PAYPAL_CLIENT_ID__', clientId);
-    res.set('Content-Type', 'text/html').send(html);
-  } catch (err) {
-    console.error('[ghost/server] checkout.html read error:', err.message);
-    res.status(500).send('Internal server error');
-  }
+// ── Serve checkout.html ───────────────────────────────────────────────────────
+// The PayPal client ID is no longer injected here; the frontend fetches it
+// dynamically via GET /api/paypal/config so checkout.html can be served as a
+// plain static file.  The route is still explicit so it is served before the
+// wildcard static middleware.
+app.get('/checkout.html', (_req, res) => {
+  res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {
+    if (err) { console.error('[ghost/server] checkout.html send error:', err.message); res.status(500).send('Internal server error'); }
+  });
 });
 
-// Also serve /checkout (no .html) with injection
-app.get('/checkout', (req, res) => {
-  const clientId   = process.env.PAYPAL_CLIENT_ID || '';
-  const htmlPath   = path.join(WEB_ROOT, 'checkout.html');
-  try {
-    const html = fs.readFileSync(htmlPath, 'utf8')
-      .replace('__PAYPAL_CLIENT_ID__', clientId);
-    res.set('Content-Type', 'text/html').send(html);
-  } catch (err) {
-    console.error('[ghost/server] checkout.html read error:', err.message);
-    res.status(500).send('Internal server error');
-  }
+// Also serve /checkout (no .html extension)
+app.get('/checkout', (_req, res) => {
+  res.sendFile(path.join(WEB_ROOT, 'checkout.html'), err => {
+    if (err) { console.error('[ghost/server] checkout.html send error:', err.message); res.status(500).send('Internal server error'); }
+  });
 });
 
 // ── Ghost shared API proxy routes ────────────────────────────────────────────

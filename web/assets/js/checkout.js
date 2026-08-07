@@ -1,43 +1,48 @@
 /* ============================================================
    checkout.js — Ghost checkout page controller (PayPal)
    ============================================================
-   Architecture
-   ------------
-   PayPal orders are created by the Node.js backend
-   (api/paypal.js → POST /api/paypal/create-order).  The
-   frontend renders the official PayPal JS SDK button.
-
    Flow
    ----
-   1. User fills in email + discord, agrees to terms.
-   2. On "Purchase" click, client-validates the form.
-   3. PayPal SDK calls our createOrder callback →
-      POST /api/paypal/create-order (plan + email + discord).
-      Backend returns { orderID }.
-   4. Customer logs into PayPal and approves.
-   5. PayPal SDK calls our onApprove callback →
-      POST /api/paypal/capture-order (orderID + plan + email + discord).
-      Backend captures, verifies amount/currency/status, then calls
-      license_delivery to generate and return the key.
-   6. Success state shown with the delivered key.
+   Step 1  — Customer fills email + Discord, agrees to terms.
+             "Continue to Payment" validates the form.
+             If valid, reveals the Step 2 payment section.
 
-   If PayPal is cancelled:  onCancel → cancelled state.
-   If PayPal errors:        onError  → failed state.
+   Step 2  — GET /api/paypal/config returns { configured, clientId, environment }.
+             If not configured, a clear error is shown and the payment section
+             is disabled.
+             The PayPal JS SDK is loaded with:
+               components=buttons,card-fields
+               currency=USD
+               intent=capture
+             The official PayPal Buttons are always rendered.
+             cardFields.isEligible() is checked:
+               • true  → CardFields fields (name, number, expiry, CVV) are
+                         rendered and the card form is shown.
+               • false → #co-card-ineligible notice is shown; PayPal button
+                         remains the only payment path.
 
-   Security notes
-   --------------
+   Payment — createOrder calls POST /api/paypal/create-order (backend creates
+             the PayPal order and returns { orderID }).
+             onApprove / card form submit calls
+             POST /api/paypal/capture-order (backend captures, verifies amount +
+             currency + status, then calls license_delivery).
+             Success is only shown when capture status is COMPLETED and the
+             backend returns { ok: true, key }.
+
+   Security
+   --------
    • No payment card data is ever handled here.
    • No license keys are generated here.
-   • Prices, plan amounts, and capture verification all happen server-side.
-   • PAYPAL_CLIENT_ID is the only PayPal value that appears in frontend
-     code; PAYPAL_CLIENT_SECRET never leaves the server.
+   • Prices, plan verification, and capture all happen server-side.
+   • PAYPAL_CLIENT_SECRET never reaches the browser.
+   • PAYPAL_CLIENT_ID comes from /api/paypal/config, not from static HTML.
    ============================================================ */
 
 (function () {
   'use strict';
 
   /* ── Plan catalogue ─────────────────────────────────────────
-     Used only for display (labels, features, price strings).
+     Used ONLY for display (labels, features, price strings).
      The backend is the authoritative source for all billing.
   ─────────────────────────────────────────────────────────── */
   const PLANS = {
@@ -86,19 +91,9 @@
   const planKey     = (params.get('plan') || 'pro').toLowerCase();
   const ACTIVE_PLAN = PLANS[planKey] || PLANS.pro;
 
-  /* ── PayPal Client ID (injected by server or set at build time) ─────────
-     The meta tag approach lets the Node server inject the sandbox/live
-     client ID without baking it into the static JS file.
-     The <meta name="paypal-client-id"> tag is added in checkout.html.
-  ──────────────────────────────────────────────────────────────────────── */
-  function _getPayPalClientId () {
-    const meta = document.querySelector('meta[name="paypal-client-id"]');
-    return meta ? meta.content : '';
-  }
-
-  /* ── State machine ──────────────────────────────────────────────────────
+  /* ── State machine ──────────────────────────────────────────
      All state panel IDs.  Only one is visible at a time.
-  ──────────────────────────────────────────────────────────────────────── */
+  ──────────────────────────────────────────────────────────── */
   const STATES = ['idle', 'loading', 'success', 'cancelled', 'failed'];
 
   function showState (name) {
@@ -109,7 +104,7 @@
   }
 
 
-  /* ── Order summary renderer ─────────────────────────────────────────── */
+  /* ── Order summary renderer ─────────────────────────────────── */
 
   function renderSummary (plan) {
     const iconEl    = document.getElementById('co-summary-icon');
@@ -143,15 +138,17 @@
     const totalEl     = document.getElementById('co-price-total');
     const discountRow = document.getElementById('co-discount-row');
     const durationEl  = document.getElementById('co-license-duration-text');
+    const cardPrice   = document.getElementById('co-card-price');
 
     if (subtotalEl) subtotalEl.textContent = plan.symbol + plan.price.toFixed(2);
     if (totalEl)    totalEl.textContent    = plan.symbol + plan.price.toFixed(2);
     if (discountRow) discountRow.hidden    = true;
     if (durationEl)  durationEl.textContent = 'License duration: ' + plan.duration;
+    if (cardPrice)   cardPrice.textContent  = plan.price.toFixed(2);
   }
 
 
-  /* ── Field helpers ──────────────────────────────────────────────────── */
+  /* ── Field helpers ──────────────────────────────────────────── */
 
   function fieldState (groupId, errorId, message) {
     const group = document.getElementById(groupId);
@@ -182,13 +179,32 @@
     el.hidden = false;
   }
 
+  function showCardAlert (type, message) {
+    const el = document.getElementById('co-card-alert');
+    if (!el) return;
+    const icons = {
+      error:   '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+      success: '<polyline points="20 6 9 17 4 12"/>',
+      info:    '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+    };
+    el.querySelector('.alert-icon').innerHTML = icons[type] || icons.info;
+    el.querySelector('.alert-msg').textContent = message;
+    el.className = 'auth-alert auth-alert--' + type;
+    el.hidden = false;
+  }
+
+  function hideCardAlert () {
+    const el = document.getElementById('co-card-alert');
+    if (el) el.hidden = true;
+  }
+
   function hideAlert () {
     const el = document.getElementById('co-alert');
     if (el) el.hidden = true;
   }
 
 
-  /* ── Form validation ────────────────────────────────────────────────── */
+  /* ── Form validation ────────────────────────────────────────── */
 
   function validateForm (email, discord, terms) {
     const errors = {};
@@ -209,7 +225,7 @@
   }
 
 
-  /* ── Read current form values ───────────────────────────────────────── */
+  /* ── Read current form values ───────────────────────────────── */
 
   function _formValues () {
     const form = document.getElementById('checkout-form');
@@ -222,7 +238,7 @@
   }
 
 
-  /* ── License key display ────────────────────────────────────────────── */
+  /* ── License key display ────────────────────────────────────── */
 
   function _showDeliveredKey (key, tier, orderId, email, discord, priceUsd) {
     _show('co-key-delivery');
@@ -261,7 +277,7 @@
   }
 
 
-  /* ── Utility ────────────────────────────────────────────────────────── */
+  /* ── Utility ────────────────────────────────────────────────── */
 
   function _show (id) {
     const el = document.getElementById(id);
@@ -286,6 +302,14 @@
       .replace(/"/g, '&quot;');
   }
 
+  function _setSubmitBusy (id, busy) {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = busy;
+    if (busy) btn.classList.add('is-loading');
+    else      btn.classList.remove('is-loading');
+  }
+
   function applyPlanTheme () {
     const card = document.getElementById('co-summary-card');
     if (card && ACTIVE_PLAN.color === 'cyan') card.classList.add('co-summary-card--cyan');
@@ -295,61 +319,169 @@
     ['failed-retry-btn', 'cancelled-retry-btn'].forEach(id => {
       document.getElementById(id)?.addEventListener('click', () => {
         showState('idle');
+        _hide('co-payment-section');
+        _paypalRendered = false;
+        _paypalSdkPromise = null;
         hideAlert();
+        _show('co-submit-btn-wrap');
+        const form = document.getElementById('checkout-form');
+        if (form) form.reset();
       });
     });
   }
 
 
-  /* ── PayPal JS SDK button rendering ─────────────────────────────────────
-     The PayPal SDK is loaded dynamically once the user fills the form
-     and clicks "Pay with PayPal".  This avoids loading it on page open
-     and also lets us pass form validation before the SDK initialises.
+  /* ═══════════════════════════════════════════════════════════════
+     STEP 2 — PayPal integration
+     All PayPal logic lives in the functions below.  It is only
+     executed after Step 1 validation passes.
+  ═══════════════════════════════════════════════════════════════ */
 
-     The Purchase button in the form is replaced by a "Pay with PayPal"
-     button that triggers form validation, then renders the PayPal button
-     inside #paypal-button-container.  The SDK button handles the rest.
-  ──────────────────────────────────────────────────────────────────────── */
+  let _paypalRendered   = false;
+  let _paypalSdkPromise = null;   // cache to avoid double-loading
+  let _capturedVals     = {};     // email/discord snapped at validation time
 
-  let _paypalRendered = false;
-
-  function _loadPayPalSDK (clientId) {
-    return new Promise((resolve, reject) => {
-      if (window.paypal) { resolve(window.paypal); return; }
-      const s = document.createElement('script');
-      // currency=USD, intent=capture — no subscription support needed for sandbox test
-      s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=USD&intent=capture`;
-      s.onload  = () => resolve(window.paypal);
-      s.onerror = () => reject(new Error('PayPal SDK failed to load.'));
-      document.head.appendChild(s);
-    });
+  /* ── Fetch PayPal configuration from the backend ────────────────
+     Uses GET /api/paypal/config which returns:
+       { configured: bool, clientId: string|null, environment: string }
+     The client secret is NEVER returned by this endpoint.
+  ─────────────────────────────────────────────────────────────── */
+  async function _fetchPayPalConfig () {
+    const res  = await fetch('/api/paypal/config');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.configured) {
+      console.error('[ghost/checkout] /api/paypal/config returned not-configured:', data.error || res.status);
+      return null;
+    }
+    console.log('[ghost/checkout] PayPal config loaded env=%s', data.environment);
+    return data;
   }
 
-  async function _renderPayPalButton (email, discord) {
-    if (_paypalRendered) return;
+  /* ── Load the PayPal JS SDK ─────────────────────────────────────
+     Uses components=buttons,card-fields so both payment paths are
+     available in a single SDK request.
+  ─────────────────────────────────────────────────────────────── */
+  function _loadPayPalSDK (clientId) {
+    if (_paypalSdkPromise) return _paypalSdkPromise;
 
-    const clientId = _getPayPalClientId();
-    if (!clientId) {
-      showAlert('error', 'Payment is not configured. Please contact support.');
+    _paypalSdkPromise = new Promise((resolve, reject) => {
+      if (window.paypal) {
+        console.log('[ghost/checkout] PayPal SDK already present');
+        resolve(window.paypal);
+        return;
+      }
+
+      const s   = document.createElement('script');
+      const url = new URL('https://www.paypal.com/sdk/js');
+      url.searchParams.set('client-id',  clientId);
+      url.searchParams.set('currency',   'USD');
+      url.searchParams.set('intent',     'capture');
+      url.searchParams.set('components', 'buttons,card-fields');
+
+      s.src = url.toString();
+      s.onload  = () => {
+        console.log('[ghost/checkout] PayPal SDK loaded successfully');
+        resolve(window.paypal);
+      };
+      s.onerror = () => {
+        console.error('[ghost/checkout] PayPal SDK failed to load — check network or CSP');
+        _paypalSdkPromise = null;   // allow retry
+        reject(new Error('PayPal SDK failed to load.'));
+      };
+      document.head.appendChild(s);
+    });
+
+    return _paypalSdkPromise;
+  }
+
+  /* ── createOrder — shared by both Buttons and CardFields ────────
+     Calls our backend so prices and plan verification happen
+     entirely server-side.
+  ─────────────────────────────────────────────────────────────── */
+  async function _createPayPalOrder () {
+    const vals = _capturedVals;
+    console.log('[ghost/checkout] creating PayPal order plan=%s', ACTIVE_PLAN.id);
+
+    const res  = await fetch('/api/paypal/create-order', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ plan: ACTIVE_PLAN.id, email: vals.email, discord: vals.discord }),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || !data.ok) {
+      const msg = data.message || 'Could not create PayPal order. Please try again.';
+      console.error('[ghost/checkout] create-order failed:', msg);
+      throw new Error(msg);
+    }
+
+    console.log('[ghost/checkout] order created orderID=%s', data.orderID);
+    return data.orderID;
+  }
+
+  /* ── capturePayPalOrder — shared by both Buttons and CardFields ──
+     Calls our backend which:
+       1. Calls PayPal capture API
+       2. Verifies status === COMPLETED
+       3. Verifies amount + currency
+       4. Calls license_delivery
+     No success state is shown until the backend confirms COMPLETED.
+  ─────────────────────────────────────────────────────────────── */
+  async function _capturePayPalOrder (orderID) {
+    const vals = _capturedVals;
+    console.log('[ghost/checkout] capturing order orderID=%s', orderID);
+    showState('loading');
+
+    const res = await fetch('/api/paypal/capture-order', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        orderID,
+        plan:    ACTIVE_PLAN.id,
+        email:   vals.email,
+        discord: vals.discord,
+      }),
+    });
+    const result = await res.json().catch(() => ({}));
+
+    if (!res.ok || !result.ok) {
+      const msg = result.message || 'Payment capture failed. Please contact support.';
+      console.error('[ghost/checkout] capture-order failed orderID=%s: %s', orderID, msg);
+      showState('failed');
+      _setText('failed-reason', msg);
       return;
     }
 
-    // Show the PayPal button container, hide the native submit button
-    _hide('co-submit-btn-wrap');
-    _show('paypal-button-container');
+    console.log('[ghost/checkout] capture confirmed orderID=%s plan=%s amount=%s',
+      orderID, result.plan, result.priceUsd);
 
-    let paypalSdk;
-    try {
-      paypalSdk = await _loadPayPalSDK(clientId);
-    } catch (err) {
-      _show('co-submit-btn-wrap');
-      _hide('paypal-button-container');
-      showAlert('error', 'Could not load the PayPal payment interface. Please refresh and try again.');
-      return;
+    // ── Populate success state ────────────────────────────────────────
+    const plan = PLANS[(result.plan || '').toLowerCase()] || ACTIVE_PLAN;
+
+    _setText('success-email',    result.email   || vals.email || '—');
+    _setText('success-plan',     plan.name      || result.plan || '—');
+    _setText('success-order-id', result.orderId || orderID || '—');
+    _setText('success-duration', plan.duration  || '—');
+    _setText('success-amount',   result.priceUsd != null
+      ? '$' + Number(result.priceUsd).toFixed(2) : '—');
+
+    showState('success');
+    _hide('co-key-pending');
+
+    if (result.key) {
+      console.log('[ghost/checkout] license key delivered orderID=%s', orderID);
+      _showDeliveredKey(result.key, result.tier, result.orderId, result.email, result.discord, result.priceUsd);
+    } else {
+      console.error('[ghost/checkout] capture succeeded but no key returned orderID=%s', orderID);
+      _setText('co-key-error-msg',
+        'Your payment was received but license delivery failed. ' +
+        'Contact support with Order ID: ' + (result.orderId || orderID));
+      _show('co-key-error');
     }
+  }
 
-    _paypalRendered = true;
-
+  /* ── Render the PayPal Buttons ─────────────────────────────────── */
+  function _renderPayPalButtons (paypalSdk) {
     paypalSdk.Buttons({
       style: {
         layout: 'vertical',
@@ -359,83 +491,22 @@
         height: 48,
       },
 
-      /* Called by PayPal SDK to create the order on our server */
+      /* Called by PayPal SDK when the popup opens — we create the order here */
       createOrder: async () => {
-        // Re-read form in case values changed while the SDK was loading
-        const vals = _formValues();
-        const errs = validateForm(vals.email, vals.discord, vals.terms);
-        if (Object.keys(errs).length) {
-          fieldState('fg-co-email',   'co-email-err',   errs.email   || '');
-          fieldState('fg-co-discord', 'co-discord-err', errs.discord || '');
-          fieldState('fg-co-terms',   'co-terms-err',   errs.terms   || '');
-          // Returning a rejected promise tells PayPal to stop and show an error
-          throw new Error('Please complete the form before paying.');
+        try {
+          return await _createPayPalOrder();
+        } catch (err) {
+          showAlert('error', err.message);
+          throw err;   // propagates to PayPal SDK to abort the flow
         }
-
-        const res  = await fetch('/api/paypal/create-order', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ plan: ACTIVE_PLAN.id, email: vals.email, discord: vals.discord }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          throw new Error(data.message || 'Could not create PayPal order.');
-        }
-        // Show loading state once we have an order ID and the customer is in PayPal
-        showState('loading');
-        return data.orderID;
       },
 
-      /* Called by PayPal SDK after the customer approves the payment */
+      /* Called by PayPal SDK after the customer approves */
       onApprove: async (data) => {
-        showState('loading');
-        hideAlert();
-
-        const vals = _formValues();
-
         try {
-          const res = await fetch('/api/paypal/capture-order', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({
-              orderID: data.orderID,
-              plan:    ACTIVE_PLAN.id,
-              email:   vals.email,
-              discord: vals.discord,
-            }),
-          });
-          const result = await res.json().catch(() => ({}));
-
-          if (!res.ok || !result.ok) {
-            showState('failed');
-            _setText('failed-reason', result.message || 'Payment capture failed. Please contact support.');
-            return;
-          }
-
-          // ── Payment confirmed and license delivered ──────────────────────
-          const plan = PLANS[(result.plan || '').toLowerCase()] || ACTIVE_PLAN;
-
-          _setText('success-email',    result.email   || vals.email || '—');
-          _setText('success-plan',     plan.name      || result.plan || '—');
-          _setText('success-order-id', result.orderId || data.orderID || '—');
-          _setText('success-duration', plan.duration  || '—');
-          _setText('success-amount',   result.priceUsd != null
-            ? '$' + Number(result.priceUsd).toFixed(2) : '—');
-
-          showState('success');
-          _hide('co-key-pending');
-
-          if (result.key) {
-            _showDeliveredKey(result.key, result.tier, result.orderId, result.email, result.discord, result.priceUsd);
-          } else {
-            // Key not yet ready — show error + contact info
-            _setText('co-key-error-msg',
-              'Your payment was received but license delivery failed. ' +
-              'Contact support with Order ID: ' + (result.orderId || data.orderID));
-            _show('co-key-error');
-          }
-
+          await _capturePayPalOrder(data.orderID);
         } catch (err) {
+          console.error('[ghost/checkout] onApprove capture exception:', err.message);
           showState('failed');
           _setText('failed-reason',
             'A network error occurred after payment. Your payment may have been processed — ' +
@@ -443,28 +514,160 @@
         }
       },
 
-      /* Customer cancelled in the PayPal popup */
+      /* Customer closed the PayPal popup without paying */
       onCancel: () => {
+        console.log('[ghost/checkout] PayPal flow cancelled by user');
         showState('cancelled');
       },
 
-      /* PayPal SDK-level error (not a payment failure) */
+      /* SDK-level error (not a payment failure) */
       onError: (err) => {
-        console.error('[ghost/paypal-sdk] error:', err);
+        console.error('[ghost/checkout] PayPal SDK error:', err);
         showState('failed');
         _setText('failed-reason',
           'A PayPal error occurred. No charge was made. Please try again or contact support.');
       },
 
-    }).render('#paypal-button-container');
+    }).render('#paypal-button-container')
+      .then(() => console.log('[ghost/checkout] PayPal Buttons rendered'))
+      .catch(err => console.error('[ghost/checkout] Buttons.render failed:', err));
+  }
+
+  /* ── Render PayPal CardFields ──────────────────────────────────── */
+  function _renderCardFields (paypalSdk) {
+    const cf = paypalSdk.CardFields({
+      /* createOrder is shared — same backend endpoint */
+      createOrder: async () => {
+        try {
+          return await _createPayPalOrder();
+        } catch (err) {
+          showCardAlert('error', err.message);
+          throw err;
+        }
+      },
+
+      onApprove: async (data) => {
+        try {
+          await _capturePayPalOrder(data.orderID);
+        } catch (err) {
+          console.error('[ghost/checkout] CardFields onApprove exception:', err.message);
+          showState('failed');
+          _setText('failed-reason',
+            'A network error occurred after card payment. Your payment may have been processed — ' +
+            'please contact support with Order ID: ' + (data.orderID || '—'));
+        }
+      },
+
+      onError: (err) => {
+        console.error('[ghost/checkout] CardFields SDK error:', err);
+        showCardAlert('error', 'A payment error occurred. Please try again or use the PayPal button above.');
+        _setSubmitBusy('co-card-submit-btn', false);
+      },
+    });
+
+    console.log('[ghost/checkout] CardFields isEligible=%s', cf.isEligible());
+
+    if (!cf.isEligible()) {
+      // CardFields not supported in this context — show info notice
+      console.log('[ghost/checkout] CardFields not eligible — showing fallback notice');
+      _show('co-card-ineligible');
+      return;
+    }
+
+    // Render each field into its container div
+    cf.NameField().render('#card-name-field')
+      .catch(err => console.error('[ghost/checkout] CardFields NameField render error:', err));
+    cf.NumberField().render('#card-number-field')
+      .catch(err => console.error('[ghost/checkout] CardFields NumberField render error:', err));
+    cf.ExpiryField().render('#card-expiry-field')
+      .catch(err => console.error('[ghost/checkout] CardFields ExpiryField render error:', err));
+    cf.CVVField().render('#card-cvv-field')
+      .catch(err => console.error('[ghost/checkout] CardFields CVVField render error:', err));
+
+    // Show the card form and divider
+    _show('co-card-divider');
+    _show('co-card-form');
+
+    // Wire the card submit button
+    const cardForm = document.getElementById('co-card-form');
+    if (cardForm) {
+      cardForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        hideCardAlert();
+        _setSubmitBusy('co-card-submit-btn', true);
+
+        try {
+          await cf.submit();
+          // onApprove above handles the rest
+        } catch (err) {
+          console.error('[ghost/checkout] CardFields submit error:', err);
+          const msg = (err && err.message) ? err.message : 'Card payment failed. Please check your details and try again.';
+          showCardAlert('error', msg);
+          _setSubmitBusy('co-card-submit-btn', false);
+        }
+      });
+    }
+  }
+
+  /* ── Reveal Step 2 and initialise PayPal ─────────────────────────
+     Called once, after Step 1 validation passes.
+  ─────────────────────────────────────────────────────────────── */
+  async function _revealPaymentSection (email, discord) {
+    if (_paypalRendered) return;
+
+    // Snap the validated values so createOrder/capture always uses them
+    _capturedVals = { email, discord };
+
+    // Reveal the payment section immediately so the user sees feedback
+    _hide('co-submit-btn-wrap');
+    _show('co-payment-section');
+    _show('co-sdk-loading');
+
+    // ── Fetch PayPal configuration from the backend ───────────────────
+    let config;
+    try {
+      config = await _fetchPayPalConfig();
+    } catch (err) {
+      console.error('[ghost/checkout] Failed to fetch /api/paypal/config:', err.message);
+      config = null;
+    }
+
+    _hide('co-sdk-loading');
+
+    if (!config) {
+      // Show the pre-built unconfigured banner and disable the payment section
+      _show('co-payment-unconfigured');
+      _hide('co-payment-section');
+      _show('co-submit-btn-wrap');
+      return;
+    }
+
+    // ── Load the SDK ──────────────────────────────────────────────────
+    let paypalSdk;
+    try {
+      paypalSdk = await _loadPayPalSDK(config.clientId);
+    } catch (err) {
+      console.error('[ghost/checkout] SDK load failed:', err.message);
+      showAlert('error', 'Could not load the PayPal payment interface. Please refresh and try again.');
+      _hide('co-payment-section');
+      _show('co-submit-btn-wrap');
+      return;
+    }
+
+    _paypalRendered = true;
+
+    // ── Render official PayPal Buttons ────────────────────────────────
+    _renderPayPalButtons(paypalSdk);
+
+    // ── Render CardFields (if eligible) ──────────────────────────────
+    _renderCardFields(paypalSdk);
   }
 
 
-  /* ── "Pay with PayPal" trigger button ───────────────────────────────────
-     The form's submit button now triggers validation only.  If validation
-     passes, the PayPal buttons are rendered into #paypal-button-container
-     and the form submit button is hidden.
-  ──────────────────────────────────────────────────────────────────────── */
+  /* ── "Continue to Payment" button — Step 1 form ─────────────────
+     Submitting the form validates Step 1.  If valid, Step 2 is
+     revealed and PayPal is initialised.
+  ─────────────────────────────────────────────────────────────── */
 
   function wireForm () {
     const form = document.getElementById('checkout-form');
@@ -488,7 +691,7 @@
       e.preventDefault();
       hideAlert();
 
-      const vals = _formValues();
+      const vals   = _formValues();
       const errors = validateForm(vals.email, vals.discord, vals.terms);
       fieldState('fg-co-email',   'co-email-err',   errors.email   || '');
       fieldState('fg-co-discord', 'co-discord-err', errors.discord || '');
@@ -496,13 +699,13 @@
 
       if (Object.keys(errors).length) return;
 
-      // Validation passed — render PayPal button
-      await _renderPayPalButton(vals.email, vals.discord);
+      // Validation passed — reveal Step 2 and initialise PayPal
+      await _revealPaymentSection(vals.email, vals.discord);
     });
   }
 
 
-  /* ── Init ────────────────────────────────────────────────────────────── */
+  /* ── Init ─────────────────────────────────────────────────────── */
 
   (function init () {
     renderSummary(ACTIVE_PLAN);
@@ -512,7 +715,7 @@
 
     const btnText = document.getElementById('co-btn-text');
     if (btnText) {
-      btnText.textContent = 'Pay with PayPal — ' + ACTIVE_PLAN.formatted;
+      btnText.textContent = 'Continue to Payment — ' + ACTIVE_PLAN.formatted;
     }
   })();
 

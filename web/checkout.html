@@ -5,13 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Checkout — Ghost</title>
   <meta name="description" content="Complete your Ghost purchase securely. Pro or Lifetime — pay once, own it." />
-  <!--
-    PayPal Client ID is injected here by server.js at request time.
-    Set PAYPAL_CLIENT_ID in your Vercel environment variables.
-    NEVER put PAYPAL_CLIENT_SECRET here — server-side only.
-  -->
-  <meta name="paypal-client-id" content="__PAYPAL_CLIENT_ID__" />
-
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
@@ -98,6 +91,11 @@
             <span class="co-step-badge">1</span>
             <h2>Your details</h2>
           </div>
+          <!-- Payment not configured banner (shown when /api/paypal/config returns configured:false) -->
+          <div class="auth-alert auth-alert--error" id="co-payment-unconfigured" hidden role="alert">
+            <svg class="alert-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span class="alert-msg">Payment is not configured. Please contact support.</span>
+          </div>
 
           <!-- Global alert (error / info) -->
           <div class="auth-alert" id="co-alert" hidden role="alert" aria-live="polite">
@@ -169,26 +167,95 @@
               <p class="form-error" id="co-terms-err" role="alert"></p>
             </div>
 
-            <!-- Purchase button (triggers form validation then shows PayPal buttons) -->
+            <!-- Proceed to payment button (validates details → reveals Step 2) -->
             <div id="co-submit-btn-wrap">
               <button
                 type="submit"
                 class="btn btn-primary co-submit-btn"
                 id="co-submit-btn"
               >
-                <span class="btn-text" id="co-btn-text">Pay with PayPal</span>
+                <span class="btn-text" id="co-btn-text">Continue to Payment</span>
               </button>
             </div>
 
-            <!-- PayPal JS SDK buttons are rendered here after form validation passes -->
-            <div id="paypal-button-container" hidden style="margin-top:1rem;min-height:50px;"></div>
-
           </form><!-- /checkout-form -->
+
+          <!-- ── STEP 2: Payment section (hidden until Step 1 valid) ── -->
+          <div id="co-payment-section" hidden aria-live="polite">
+
+            <div class="co-section-heading" style="margin-top:1.5rem;">
+              <span class="co-step-badge">2</span>
+              <h2>Payment</h2>
+            </div>
+
+            <!-- SDK loading indicator -->
+            <div id="co-sdk-loading" style="display:flex;align-items:center;gap:.5rem;color:var(--muted,#57606a);font-size:.875rem;padding:.5rem 0;" hidden>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="co-spinner-icon" aria-hidden="true"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              Loading payment interface…
+            </div>
+
+            <!-- Official PayPal button (always shown when SDK loads) -->
+            <div id="paypal-button-container" style="margin-bottom:1rem;min-height:50px;"></div>
+
+            <!-- CardFields divider (shown only when CardFields is eligible) -->
+            <div id="co-card-divider" hidden style="display:flex;align-items:center;gap:.75rem;margin:.75rem 0;color:var(--muted,#57606a);font-size:.8125rem;">
+              <hr style="flex:1;border:none;border-top:1px solid var(--border,#e5e7eb);" />
+              <span>or pay with card</span>
+              <hr style="flex:1;border:none;border-top:1px solid var(--border,#e5e7eb);" />
+            </div>
+
+            <!-- CardFields form (shown only when cardFields.isEligible() is true) -->
+            <form id="co-card-form" hidden novalidate>
+
+              <!-- Cardholder name -->
+              <div class="form-group" style="margin-bottom:.875rem;">
+                <label class="form-label" for="card-name-field">Cardholder name</label>
+                <div id="card-name-field" class="paypal-card-field form-input" style="height:42px;padding:0;border-radius:6px;overflow:hidden;"></div>
+              </div>
+
+              <!-- Card number -->
+              <div class="form-group" style="margin-bottom:.875rem;">
+                <label class="form-label" for="card-number-field">Card number</label>
+                <div id="card-number-field" class="paypal-card-field form-input" style="height:42px;padding:0;border-radius:6px;overflow:hidden;"></div>
+              </div>
+
+              <!-- Expiry + CVV row -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.875rem;">
+                <div class="form-group">
+                  <label class="form-label" for="card-expiry-field">Expiry date</label>
+                  <div id="card-expiry-field" class="paypal-card-field form-input" style="height:42px;padding:0;border-radius:6px;overflow:hidden;"></div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="card-cvv-field">CVV</label>
+                  <div id="card-cvv-field" class="paypal-card-field form-input" style="height:42px;padding:0;border-radius:6px;overflow:hidden;"></div>
+                </div>
+              </div>
+
+              <!-- Card-level alert -->
+              <div class="auth-alert" id="co-card-alert" hidden role="alert">
+                <svg class="alert-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"></svg>
+                <span class="alert-msg"></span>
+              </div>
+
+              <button type="submit" class="btn btn-primary co-submit-btn" id="co-card-submit-btn" style="width:100%;margin-top:.5rem;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+                Pay $<span id="co-card-price">—</span> with Card
+              </button>
+
+            </form><!-- /co-card-form -->
+
+            <!-- CardFields not eligible notice -->
+            <div id="co-card-ineligible" hidden style="background:var(--surface,#f7f8fa);border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:.875rem 1rem;font-size:.875rem;color:var(--muted,#57606a);margin-top:.5rem;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="vertical-align:middle;margin-right:.35rem;" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12.01" y2="8"/><line x1="12" y1="12" x2="12" y2="16"/></svg>
+              Direct card entry is not available in this context. Please use the PayPal button above to complete your purchase.
+            </div>
+
+          </div><!-- /co-payment-section -->
 
           <!-- Secure notice -->
           <div class="co-secure-notice">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            Secured with 256-bit TLS encryption. Payment processed by Stripe.
+            Secured with 256-bit TLS encryption. Payment processed by PayPal.
             We never store your card details.
           </div>
         </div><!-- /co-form-col -->
