@@ -74,32 +74,7 @@
           <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
         </div>
         <h1 class="os-title">✓ Payment Successful</h1>
-        <p class="os-subtitle">Your Ghost license is ready.</p>
-      </div>
-
-      <!-- ── License card ───────────────────────────────────────── -->
-      <div class="os-license-card" id="os-license-card">
-        <div class="os-license-label">Your License Key</div>
-        <div class="os-license-key-wrap">
-          <code class="os-license-key" id="os-license-key" aria-label="License key">—</code>
-          <button class="os-copy-btn" id="os-copy-btn" type="button" aria-label="Copy license key">Copy License</button>
-        </div>
-        <p class="os-copy-confirm" id="os-copy-confirm" hidden aria-live="polite">✔ Copied to clipboard!</p>
-        <p style="font-size:0.8rem;color:var(--muted);margin-top:4px;">
-          ⚠ Save this key — it is tied to your account and will not be shown again on a different device.
-        </p>
-      </div>
-
-      <!-- ── Download + Copy actions ────────────────────────────── -->
-      <div class="os-actions">
-        <button class="btn btn-secondary" id="os-copy-btn-2" type="button">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          Copy License
-        </button>
-        <button class="btn btn-primary" id="os-download-btn" type="button">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Download GhostConfig.exe
-        </button>
+        <p class="os-subtitle">Thanks for your purchase.</p>
       </div>
 
       <!-- ── Order Summary ─────────────────────────────────────── -->
@@ -141,6 +116,60 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ── Your License ──────────────────────────────────────── -->
+      <div class="os-card">
+        <div class="os-card-header"><span class="os-card-title">Your License</span></div>
+        <div class="os-card-body">
+
+          <!-- License pending state (shown while delivery is in progress) -->
+          <div id="os-license-pending" aria-live="polite">
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="co-spinner-icon" aria-hidden="true" style="flex-shrink:0;opacity:0.6;"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              <strong style="font-size:0.9375rem;">Preparing your license…</strong>
+            </div>
+            <p id="os-license-pending-note" style="font-size:0.875rem;color:var(--muted);margin:0;">
+              Your payment is complete. This normally takes a few seconds.
+            </p>
+            <p id="os-license-pending-timeout" hidden style="font-size:0.875rem;color:var(--muted);margin:0;">
+              This is taking longer than expected. Your payment was received — contact
+              <a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Discord support</a>
+              with your Order ID if your key doesn't arrive soon.
+            </p>
+          </div>
+
+          <!-- License error state -->
+          <div id="os-license-error" hidden aria-live="assertive" style="font-size:0.875rem;color:var(--muted);">
+            <p id="os-license-error-msg">Could not verify your license. Please contact support.</p>
+          </div>
+
+          <!-- License delivered state (hidden until key arrives) -->
+          <div id="os-license-delivered" hidden>
+            <div class="os-license-label" style="margin-bottom:0.5rem;">Your License Key</div>
+            <div class="os-license-key-wrap">
+              <code class="os-license-key" id="os-license-key" aria-label="License key">—</code>
+              <button class="os-copy-btn" id="os-copy-btn" type="button" aria-label="Copy license key">Copy Key</button>
+            </div>
+            <p class="os-copy-confirm" id="os-copy-confirm" hidden aria-live="polite">✔ Copied to clipboard!</p>
+            <p style="font-size:0.8rem;color:var(--muted);margin-top:6px;">
+              ⚠ Save this key — it is tied to your account and will not be shown again on a different device.
+            </p>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ── Download + Copy actions (shown only after key is delivered) ── -->
+      <div class="os-actions" id="os-actions" hidden>
+        <button class="btn btn-secondary" id="os-copy-btn-2" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copy License
+        </button>
+        <button class="btn btn-primary" id="os-download-btn" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download GhostConfig.exe
+        </button>
       </div>
 
       <!-- ── Setup Instructions ────────────────────────────────── -->

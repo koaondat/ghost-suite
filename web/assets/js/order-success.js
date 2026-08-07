@@ -9,9 +9,11 @@
    ----
    1. Read ?order=<orderId>&token=<token> from the URL.
    2. Fetch GET /api/order/:orderId?token=<token>
-   3. If delivery_status !== 'delivered', poll every 1.5 s until it is.
-   4. Render all fields from the fetched order record.
-   5. Wire Copy License, Download GhostConfig.exe, invoice buttons.
+   3. Render order details immediately (payment + order info).
+   4. If delivery_status !== 'delivered', show license-pending spinner.
+   5. Poll every 2 s until delivery_status === 'delivered' + licenseKey.
+   6. On delivery: replace spinner with key + copy/download buttons.
+   7. Stop polling after successful delivery.
    ============================================================ */
 
 (function () {
@@ -21,6 +23,11 @@
   const _params  = new URLSearchParams(window.location.search);
   const _orderId = (_params.get('order') || '').trim();
   const _token   = (_params.get('token') || '').trim();
+
+  /* ── Polling state ────────────────────────────────────────────────────────── */
+  let _pollTimer   = null;
+  let _pollCount   = 0;
+  const MAX_POLL   = 150;  // ~5 min at 2 s intervals
 
   /* ── Helpers ─────────────────────────────────────────────────────────────── */
   function _show (id) {
@@ -68,19 +75,24 @@
     return _PLAN_LABELS[(planId || '').toLowerCase()] || planId || '—';
   }
 
-  /* ── Render the full order page ──────────────────────────────────────────── */
-  function _render (order) {
-    const licenseKey = order.license_key || order.key || null;
-    const orderId    = order.order_id   || _orderId;
-    const captureId  = order.paypal_capture_id || order.captureId || orderId;
-    const invoiceId  = order.invoice_id || _deriveInvoiceId(captureId);
-    const planLabel  = _planLabel(order.plan, order.plan_label);
-    const amountRaw  = order.price_usd != null ? Number(order.price_usd) : null;
-    const amountStr  = amountRaw != null ? `USD ${amountRaw.toFixed(2)}` : '—';
-    const dateStr    = _formatDate(order.created_at);
-    const payStatus  = (order.payment_status || 'completed').replace(/^\w/, c => c.toUpperCase());
+  function _deriveInvoiceId (captureId) {
+    if (!captureId) return '—';
+    const raw  = captureId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    const sufx = raw.slice(-8).padStart(8, '0');
+    return `GHOST-INV-${sufx}`;
+  }
 
-    // ── Main fields ──
+  /* ── Render order details (always called immediately) ────────────────────── */
+  function _renderOrderDetails (order) {
+    const orderId   = order.order_id   || _orderId;
+    const captureId = order.paypal_capture_id || order.captureId || orderId;
+    const invoiceId = order.invoice_id || _deriveInvoiceId(captureId);
+    const planLabel = _planLabel(order.plan, order.plan_label);
+    const amountRaw = order.price_usd != null ? Number(order.price_usd) : null;
+    const amountStr = amountRaw != null ? `USD ${amountRaw.toFixed(2)}` : '—';
+    const dateStr   = _formatDate(order.created_at);
+    const payStatus = (order.payment_status || 'completed').replace(/^\w/, c => c.toUpperCase());
+
     _setText('os-order-id',   orderId);
     _setText('os-invoice-id', invoiceId);
     _setText('os-capture-id', captureId);
@@ -88,37 +100,59 @@
     _setText('os-amount',     amountStr);
     _setText('os-date',       dateStr);
     _setText('os-pay-status', payStatus);
-
-    // ── License key ──
-    if (licenseKey) {
-      _setText('os-license-key', licenseKey);
-      _wireCopyButtons(licenseKey);
-    } else {
-      _setText('os-license-key', 'Key pending — refresh this page in a moment.');
-    }
-
-    // ── Invoice badge ──
     _setText('os-inv-id-badge', invoiceId);
 
-    // ── Populate invoice body ──
-    _renderInvoice(order, { orderId, invoiceId, captureId, planLabel, amountStr, dateStr, payStatus, licenseKey });
-
-    // ── Download button ──
     _wireDownloadButton();
-
-    // ── Invoice action buttons ──
-    _wireInvoiceButtons(order, { orderId, invoiceId, captureId, planLabel, amountStr, dateStr, payStatus, licenseKey });
-
-    // ── Show the content ──
-    _hide('os-loading');
-    _show('os-content');
+    _wireInvoiceButtons(order, { orderId, invoiceId, captureId, planLabel, amountStr, dateStr, payStatus });
   }
 
-  function _deriveInvoiceId (captureId) {
-    if (!captureId) return '—';
-    const raw  = captureId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
-    const sufx = raw.slice(-8).padStart(8, '0');
-    return `GHOST-INV-${sufx}`;
+  /* ── Show license key (called once delivery_status = delivered) ──────────── */
+  function _renderLicenseDelivered (licenseKey) {
+    // Hide pending spinner, show key section
+    _hide('os-license-pending');
+    _show('os-license-delivered');
+
+    _setText('os-license-key', licenseKey);
+    _wireCopyButtons(licenseKey);
+
+    // Enable the inline copy+download action row
+    _show('os-actions');
+  }
+
+  /* ── Show license pending spinner ───────────────────────────────────────── */
+  function _renderLicensePending () {
+    _hide('os-license-delivered');
+    _show('os-license-pending');
+    _hide('os-actions');
+  }
+
+  /* ── Full render on first load ───────────────────────────────────────────── */
+  function _render (order) {
+    _renderOrderDetails(order);
+
+    const licenseKey = order.license_key || order.key || null;
+
+    if (licenseKey && order.delivery_status === 'delivered') {
+      _renderLicenseDelivered(licenseKey);
+    } else {
+      _renderLicensePending();
+      // Start polling for the key
+      _schedulePoll();
+    }
+
+    // Populate invoice body now that we have the data
+    const orderId   = order.order_id   || _orderId;
+    const captureId = order.paypal_capture_id || order.captureId || orderId;
+    const invoiceId = order.invoice_id || _deriveInvoiceId(captureId);
+    const planLabel = _planLabel(order.plan, order.plan_label);
+    const amountRaw = order.price_usd != null ? Number(order.price_usd) : null;
+    const amountStr = amountRaw != null ? `USD ${amountRaw.toFixed(2)}` : '—';
+    const dateStr   = _formatDate(order.created_at);
+    const payStatus = (order.payment_status || 'completed').replace(/^\w/, c => c.toUpperCase());
+    _renderInvoice(order, { orderId, invoiceId, captureId, planLabel, amountStr, dateStr, payStatus, licenseKey });
+
+    _hide('os-loading');
+    _show('os-content');
   }
 
   /* ── Render invoice table ────────────────────────────────────────────────── */
@@ -160,12 +194,14 @@
     ['os-copy-btn', 'os-copy-btn-2'].forEach(id => {
       const btn = document.getElementById(id);
       if (!btn) return;
-      btn.addEventListener('click', async () => {
+      // Remove any old listeners by cloning
+      const fresh = btn.cloneNode(true);
+      btn.parentNode.replaceChild(fresh, btn);
+      fresh.addEventListener('click', async () => {
         try {
           await navigator.clipboard.writeText(licenseKey);
           _showCopied();
         } catch (_) {
-          // Fallback for older browsers
           const ta = document.createElement('textarea');
           ta.value = licenseKey;
           ta.style.position = 'fixed';
@@ -192,7 +228,6 @@
     const btn = document.getElementById('os-download-btn');
     if (!btn) return;
 
-    // Fetch current download URL from the backend (respects admin-configured URL)
     let downloadUrl = '/dl/GhostConfig.exe';
     try {
       const r = await fetch('/api/download/current');
@@ -200,33 +235,32 @@
       if (d.ok && d.url) downloadUrl = d.url;
     } catch (_) { /* use fallback */ }
 
-    btn.addEventListener('click', () => {
+    const fresh = btn.cloneNode(true);
+    btn.parentNode.replaceChild(fresh, btn);
+    fresh.addEventListener('click', () => {
       const a = document.createElement('a');
       a.href     = downloadUrl;
       a.download = 'GhostConfig.exe';
       a.click();
     });
-
-    btn.disabled = false;
+    fresh.disabled = false;
   }
 
   /* ── Invoice action buttons ─────────────────────────────────────────────── */
   function _wireInvoiceButtons (order, invoiceData) {
-    // View Receipt — scroll to invoice section and highlight it
     document.getElementById('os-view-receipt-btn')?.addEventListener('click', () => {
       const el = document.getElementById('os-invoice');
       if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
     });
-
-    // Download Invoice — generate a plain-text invoice and trigger download
     document.getElementById('os-download-invoice-btn')?.addEventListener('click', () => {
       _downloadInvoiceText(order, invoiceData);
     });
   }
 
-  function _downloadInvoiceText (order, { orderId, invoiceId, captureId, planLabel, amountStr, dateStr, payStatus, licenseKey }) {
-    const email   = order.email   || '—';
-    const discord = order.discord || '—';
+  function _downloadInvoiceText (order, { orderId, invoiceId, captureId, planLabel, amountStr, dateStr, payStatus }) {
+    const email      = order.email   || '—';
+    const discord    = order.discord || '—';
+    const licenseKey = order.license_key || order.key || '—';
 
     const lines = [
       '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
@@ -246,7 +280,7 @@
       `Payment Status   : ${payStatus}`,
       '',
       '── License ──────────────────────────────────────',
-      `License Key      : ${licenseKey || '—'}`,
+      `License Key      : ${licenseKey}`,
       '',
       '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       'Ghost — Windows QA Environment Configuration Utility',
@@ -254,19 +288,23 @@
       '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     ];
 
+    const captureId2 = invoiceData.captureId;
+    const invoiceId2 = invoiceData.invoiceId;
     const text = lines.join('\n');
     const blob = new Blob([text], { type: 'text/plain' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href     = url;
-    a.download = `ghost-invoice-${invoiceId}.txt`;
+    a.download = `ghost-invoice-${invoiceId2 || invoiceId}.txt`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
-  /* ── Polling loop ────────────────────────────────────────────────────────── */
-  let _pollCount = 0;
-  const MAX_POLL  = 40;  // ~60 s
+  /* ── Polling loop — only for license key, not for page display ───────────── */
+  function _schedulePoll () {
+    if (_pollTimer) clearTimeout(_pollTimer);
+    _pollTimer = setTimeout(_poll, 2000);
+  }
 
   async function _poll () {
     _pollCount++;
@@ -274,8 +312,65 @@
       const r    = await fetch(_buildApiUrl(_orderId));
       const data = await r.json().catch(() => ({}));
 
-      if (!r.ok || !data.ok) {
-        // Still 403 (no token / expired) — show partial info
+      if (r.ok && data.ok) {
+        const licenseKey  = data.license_key || data.key || null;
+        const isDelivered = data.delivery_status === 'delivered';
+
+        if (isDelivered && licenseKey) {
+          // Update invoice body with the key now that it's available
+          const orderId   = data.order_id   || _orderId;
+          const captureId = data.paypal_capture_id || data.captureId || orderId;
+          const invoiceId = data.invoice_id || _deriveInvoiceId(captureId);
+          const planLabel = _planLabel(data.plan, data.plan_label);
+          const amountRaw = data.price_usd != null ? Number(data.price_usd) : null;
+          const amountStr = amountRaw != null ? `USD ${amountRaw.toFixed(2)}` : '—';
+          const dateStr   = _formatDate(data.created_at);
+          const payStatus = (data.payment_status || 'completed').replace(/^\w/, c => c.toUpperCase());
+          _renderInvoice(data, { orderId, invoiceId, captureId, planLabel, amountStr, dateStr, payStatus, licenseKey });
+
+          _renderLicenseDelivered(licenseKey);
+          return; // Stop polling
+        }
+      }
+
+      // Expired token — stop polling, show error
+      if (r.status === 403) {
+        _hide('os-license-pending');
+        _show('os-license-error');
+        _setText('os-license-error-msg', 'Your access link has expired. Please contact support with your Order ID.');
+        return;
+      }
+    } catch (_) {
+      // Network error — keep trying
+    }
+
+    if (_pollCount < MAX_POLL) {
+      _schedulePoll();
+    } else {
+      // Timed out — update pending note
+      const el = document.getElementById('os-license-pending-timeout');
+      if (el) el.hidden = false;
+      const note = document.getElementById('os-license-pending-note');
+      if (note) note.hidden = true;
+    }
+  }
+
+  /* ── Initial fetch ───────────────────────────────────────────────────────── */
+  async function _initialFetch () {
+    let attempts = 0;
+    const MAX_INIT = 5;
+
+    const tryFetch = async () => {
+      attempts++;
+      try {
+        const r    = await fetch(_buildApiUrl(_orderId));
+        const data = await r.json().catch(() => ({}));
+
+        if (r.ok && data.ok) {
+          _render(data);
+          return;
+        }
+
         if (r.status === 403) {
           _showError(
             'Access link expired',
@@ -284,38 +379,28 @@
           );
           return;
         }
-        if (r.status === 404) {
-          if (_pollCount < 5) {
-            // Order may not be saved yet — keep polling briefly
-            setTimeout(_poll, 1500);
+
+        if (r.status === 404 || !data.ok) {
+          if (attempts < MAX_INIT) {
+            // Order may not be written yet — retry briefly
+            setTimeout(tryFetch, 1500);
             return;
           }
           _showError('Order not found', 'We could not find your order. Please contact support.', _orderId);
           return;
         }
-        if (_pollCount < MAX_POLL) { setTimeout(_poll, 1500); return; }
+
         _showError('Load failed', 'Could not load your order. Please refresh the page.', _orderId);
-        return;
+      } catch (_) {
+        if (attempts < MAX_INIT) {
+          setTimeout(tryFetch, 1500);
+          return;
+        }
+        _showError('Network error', 'Could not reach the server. Please refresh the page.', _orderId);
       }
+    };
 
-      // If delivered, render it
-      if (data.delivery_status === 'delivered') {
-        _render(data);
-        return;
-      }
-
-      // Keep polling if still pending
-      if (_pollCount < MAX_POLL) {
-        setTimeout(_poll, 1500);
-        return;
-      }
-
-      // Timed out — render what we have (may have no license key yet)
-      _render(data);
-    } catch (err) {
-      if (_pollCount < MAX_POLL) { setTimeout(_poll, 1500); return; }
-      _showError('Network error', 'Could not reach the server. Please refresh the page.', _orderId);
-    }
+    tryFetch();
   }
 
   /* ── Init ────────────────────────────────────────────────────────────────── */
@@ -328,7 +413,7 @@
       );
       return;
     }
-    _poll();
+    _initialFetch();
   })();
 
 })();

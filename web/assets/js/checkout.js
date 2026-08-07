@@ -614,24 +614,24 @@
 
     const orderId = result.orderId || result.captureId || orderID;
 
-    console.log('[ghost/checkout] capture response orderID=%s orderId=%s paymentStatus=%s deliveryStatus=%s licenseKey=%s',
-      orderID, orderId, result.paymentStatus, result.deliveryStatus,
-      result.licenseKey ? '[present]' : '[missing]');
+    console.log('[ghost/checkout] capture response orderID=%s orderId=%s paymentStatus=%s deliveryStatus=%s',
+      orderID, orderId, result.paymentStatus, result.deliveryStatus);
 
-    // ── If delivery already succeeded, redirect immediately ──────────
-    if (result.deliveryStatus === 'delivered') {
+    // ── Payment captured and order exists — redirect immediately.
+    //    The success page handles license polling; checkout is done here.
+    if (result.paymentStatus === 'COMPLETED' && orderId) {
       await _redirectToSuccess(orderId);
       return;
     }
 
-    // ── Out of stock: show the specific OOS message, still redirect to
-    //    processing screen so the user gets a clean UI ──────────────
+    // ── Out of stock: redirect to success page — it will show the OOS state ──
     if (result.deliveryStatus === 'out_of_stock') {
-      _showProcessingScreen(orderId, true, result.amount, 'out_of_stock');
+      await _redirectToSuccess(orderId);
       return;
     }
 
-    // ── Delivery pending (normal case): show processing screen + poll ──
+    // ── Fallback: payment confirmed but orderId somehow missing — should not
+    //    happen, but show a brief processing screen rather than a blank page.
     _showProcessingScreen(orderId, result.paymentStatus === 'COMPLETED', result.amount);
   }
 
