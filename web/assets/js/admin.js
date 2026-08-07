@@ -205,6 +205,7 @@
       .forEach(a => a.classList.add('active'));
     if (name === 'dashboard')  loadDashboard();
     if (name === 'inventory')  loadInventory();
+    if (name === 'generate')   loadGenStats();
     if (name === 'orders')     loadOrders();
     if (name === 'customers')  loadCustomers();
     if (name === 'downloads')  loadDownloads();
@@ -1306,6 +1307,304 @@
   }
 
   /* ── Wire events ─────────────────────────────────────────────────────── */
+  /* ── Generate Keys ──────────────────────────────────────────────────── */
+
+  // State for the current generation session
+  let _genLastKeys   = [];  // all generated keys from last successful run
+  let _genFilteredKeys = [];
+  let _genPage       = 1;
+
+  // Plan label lookup
+  const _GEN_PLAN_LABELS = {
+    ghost_trial:        'Ghost Trial',
+    ghost_pro_monthly:  'Ghost Pro (Monthly)',
+    ghost_pro_lifetime: 'Ghost Pro (Lifetime)',
+    ghost_beta:         'Ghost Beta',
+    custom:             'Custom',
+  };
+
+  function _genInputs () {
+    return {
+      plan:       $('genPlan').value,
+      quantity:   Math.max(1, Math.min(10000, parseInt($('genQty').value, 10) || 100)),
+      prefix:     $('genPrefix').value.trim().toUpperCase() || 'GHOST',
+      format:     $('genFormat').value,
+      charTypes:  {
+        upper:   $('genCharUpper').checked,
+        numbers: $('genCharNum').checked,
+        symbols: $('genCharSym').checked,
+      },
+      expiration: $('genExpiry').value,
+      notes:      $('genNotes').value.trim(),
+    };
+  }
+
+  function _genFormatLabel (fmt, prefix) {
+    const p = prefix || 'GHOST';
+    const map = {
+      seg4x4:  `${p}-XXXX-XXXX-XXXX-XXXX`,
+      seg3x5:  `${p}-XXXXX-XXXXX-XXXXX`,
+      seg1x12: `${p}-XXXXXXXXXXXX`,
+      custom:  `${p}-XXXX-XXXX-XXXX-XXXX`,
+    };
+    return map[fmt] || map['seg4x4'];
+  }
+
+  function _genUpdatePreview () {
+    const { format, prefix } = _genInputs();
+    const el = $('genPreviewKey');
+    if (el) el.textContent = _genFormatLabel(format, prefix);
+  }
+
+  function _genExpiryLabel (val) {
+    const map = { never: 'Never', '1': '1 Day', '7': '7 Days', '30': '30 Days', '90': '90 Days', '365': '365 Days', custom: 'Custom' };
+    return map[val] || val;
+  }
+
+  function _genSetFormDisabled (disabled) {
+    ['genPlan','genQty','genPrefix','genFormat','genExpiry','genNotes'].forEach(id => {
+      const el = $(id);
+      if (el) el.disabled = disabled;
+    });
+    ['genCharUpper','genCharNum','genCharSym'].forEach(id => {
+      const el = $(id);
+      if (el) el.disabled = disabled;
+    });
+  }
+
+  async function loadGenStats () {
+    try {
+      const { ok, data } = await apiFetch('/api/admin/inventory/stats');
+      if (!ok) return;
+      setText('genStatAvailable', (data.available  ?? 0).toLocaleString());
+      setText('genStatSold',      ((data.sold ?? 0) + (data.activated ?? 0)).toLocaleString());
+      setText('genStatTotal',     (data.total ?? 0).toLocaleString());
+    } catch (_) { /* silent */ }
+    // Today / Month counters: count from _genLastKeys dates
+    _updateGenDateStats();
+  }
+
+  function _updateGenDateStats () {
+    if (!_genLastKeys.length) {
+      // Try existing inventory table data for today/month
+      const now = new Date();
+      const todayStr  = now.toISOString().slice(0, 10);
+      const monthStr  = now.toISOString().slice(0, 7);
+      let today = 0, month = 0;
+      _allInventory.forEach(k => {
+        const d = (k.created || '').slice(0, 10);
+        if (d === todayStr) today++;
+        if (d.slice(0, 7) === monthStr) month++;
+      });
+      setText('genStatToday', today.toLocaleString());
+      setText('genStatMonth', month.toLocaleString());
+      return;
+    }
+    // Count from last generation batch
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const monthStr = now.toISOString().slice(0, 7);
+    let today = 0, month = 0;
+    _genLastKeys.forEach(k => {
+      // generated keys all have today's date
+      today++;
+      month++;
+    });
+    setText('genStatToday', today.toLocaleString());
+    setText('genStatMonth', month.toLocaleString());
+  }
+
+  async function doGenerate () {
+    const inputs = _genInputs();
+
+    // Validate char type selection
+    if (!inputs.charTypes.upper && !inputs.charTypes.numbers && !inputs.charTypes.symbols) {
+      toast('Select at least one character type.', 'error');
+      return;
+    }
+    if (inputs.quantity < 1 || inputs.quantity > 10000) {
+      toast('Quantity must be between 1 and 10,000.', 'error');
+      return;
+    }
+
+    setBusy('genBtn', true);
+    _genSetFormDisabled(true);
+
+    try {
+      const { ok, data } = await apiFetch('/api/admin/inventory/generate', {
+        method: 'POST',
+        body: JSON.stringify(inputs),
+      }, 1);
+
+      if (!ok) {
+        const err = data?.error || 'Generation failed. Check server logs.';
+        toast(err, 'error');
+        return;
+      }
+
+      // Store for download/display
+      _genLastKeys = data.keys || [];
+
+      // Re-render the table with the new keys
+      _genFilteredKeys = _genLastKeys.map(k => ({
+        key:        k,
+        plan:       inputs.plan,
+        status:     'available',
+        created:    new Date().toISOString(),
+        expiration: data.expiration || null,
+        notes:      inputs.notes || '',
+      }));
+      _genPage = 1;
+      _renderGenTable(_genFilteredKeys, 1);
+
+      // Also refresh global inventory so "Go To Inventory" shows fresh data
+      loadInventory();
+
+      // Update stats
+      await loadGenStats();
+
+      // Show success modal
+      _showGenSuccessModal(data, inputs);
+
+      toast(`${data.generated.toLocaleString()} keys generated and saved.`, 'success');
+
+    } catch (err) {
+      toast('Network error during generation. Please try again.', 'error');
+    } finally {
+      setBusy('genBtn', false);
+      _genSetFormDisabled(false);
+    }
+  }
+
+  function _showGenSuccessModal (data, inputs) {
+    setText('genResGenerated',  (data.generated  ?? 0).toLocaleString());
+    setText('genResDuplicates', (data.duplicates  ?? 0).toLocaleString());
+    setText('genResInventory',  (data.availableInventory ?? '—').toLocaleString());
+    setText('genResPlan',       _GEN_PLAN_LABELS[inputs.plan] || inputs.plan);
+    setText('genResExpiry',     _genExpiryLabel(inputs.expiration));
+    setText('genResPrefix',     data.prefix || inputs.prefix);
+
+    // Key preview list (first 20)
+    const list = $('genResKeyPreview');
+    if (list) {
+      list.innerHTML = '';
+      const sample = _genLastKeys.slice(0, 20);
+      sample.forEach(k => {
+        const code = document.createElement('code');
+        code.textContent = k;
+        list.appendChild(code);
+      });
+      if (_genLastKeys.length > 20) {
+        const more = document.createElement('p');
+        more.className = 'gen-key-preview-more';
+        more.textContent = `… and ${(_genLastKeys.length - 20).toLocaleString()} more`;
+        list.appendChild(more);
+      }
+    }
+
+    show('genSuccessModal');
+  }
+
+  function _genDownloadTXT () {
+    if (!_genLastKeys.length) { toast('No keys to download.', 'warning'); return; }
+    dlCSV('ghost-keys.txt', _genLastKeys.join('\n'));
+  }
+
+  function _genDownloadCSV () {
+    if (!_genLastKeys.length) { toast('No keys to download.', 'warning'); return; }
+    const rows = ['License Key,Plan,Status,Created'];
+    const plan = $('genPlan')?.value || 'ghost_pro_monthly';
+    const now  = new Date().toISOString();
+    _genLastKeys.forEach(k => {
+      rows.push(`${k},${plan},available,${now}`);
+    });
+    dlCSV('ghost-keys.csv', rows.join('\n'));
+  }
+
+  function _genCopyAll () {
+    if (!_genLastKeys.length) { toast('No keys to copy.', 'warning'); return; }
+    copyText(_genLastKeys.join('\n'));
+    toast(`${_genLastKeys.length.toLocaleString()} keys copied to clipboard.`, 'success');
+  }
+
+  function _renderGenTable (keys, page) {
+    const tbody = $('genTableTbody');
+    const footer = $('genTableFooter');
+    if (!tbody) return;
+
+    if (!keys.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="admin-table-empty">No matching keys found.</td></tr>';
+      if (footer) footer.innerHTML = '';
+      return;
+    }
+
+    const start = (page - 1) * PAGE_SIZE;
+    const slice = keys.slice(start, start + PAGE_SIZE);
+
+    tbody.innerHTML = slice.map(k => `
+      <tr>
+        <td><span class="key-mono key-mono--sm">${esc(k.key || '')}</span></td>
+        <td>${esc(_GEN_PLAN_LABELS[k.plan] || k.plan || '—')}</td>
+        <td>${statusBadge(k.status || 'available')}</td>
+        <td class="cell-mono-sm">${fmtDateShort(k.created)}</td>
+        <td class="cell-mono-sm">${k.expiration ? fmtDateShort(k.expiration) : 'Never'}</td>
+        <td class="cell-truncate">${esc(k.notes || '—')}</td>
+      </tr>
+    `).join('');
+
+    renderPagination('genTableFooter', keys.length, page, p => {
+      _genPage = p;
+      _renderGenTable(_genFilteredKeys, p);
+    });
+  }
+
+  function _applyGenSearch () {
+    const q = ($('genSearch')?.value || '').trim().toLowerCase();
+    if (!q) {
+      _genFilteredKeys = _genLastKeys.map(k => ({
+        key: k, plan: $('genPlan')?.value || '', status: 'available',
+        created: new Date().toISOString(), expiration: null, notes: $('genNotes')?.value || '',
+      }));
+    } else {
+      _genFilteredKeys = _genFilteredKeys.filter(k =>
+        (k.key     || '').toLowerCase().includes(q) ||
+        (k.plan    || '').toLowerCase().includes(q) ||
+        (k.status  || '').toLowerCase().includes(q) ||
+        (k.notes   || '').toLowerCase().includes(q) ||
+        (k.created || '').toLowerCase().includes(q)
+      );
+    }
+    _genPage = 1;
+    _renderGenTable(_genFilteredKeys, 1);
+  }
+
+  function wireGenerate () {
+    $('genBtn').addEventListener('click', doGenerate);
+
+    // Live preview on any form change
+    ['genPlan','genQty','genPrefix','genFormat','genExpiry'].forEach(id => {
+      const el = $(id);
+      if (el) el.addEventListener('change', _genUpdatePreview);
+    });
+    $('genPrefix')?.addEventListener('input', _genUpdatePreview);
+
+    // Search
+    $('genSearchBtn')?.addEventListener('click', _applyGenSearch);
+    $('genSearch')?.addEventListener('keydown', e => { if (e.key === 'Enter') _applyGenSearch(); });
+
+    // Success modal buttons
+    $('closeGenSuccessModal')?.addEventListener('click', () => hide('genSuccessModal'));
+    $('closeGenSuccessBtn')?.addEventListener('click',   () => hide('genSuccessModal'));
+    $('genSuccessModal')?.addEventListener('click', e => { if (e.target === $('genSuccessModal')) hide('genSuccessModal'); });
+    $('genCopyAllBtn')?.addEventListener('click',   _genCopyAll);
+    $('genDlTxtBtn')?.addEventListener('click',     _genDownloadTXT);
+    $('genDlCsvBtn')?.addEventListener('click',     _genDownloadCSV);
+    $('genGoInventoryBtn')?.addEventListener('click', () => {
+      hide('genSuccessModal');
+      switchTab('inventory');
+    });
+  }
+
   function wireAll () {
     // Login
     $('loginForm').addEventListener('submit', doLogin);
@@ -1318,6 +1617,8 @@
         switchTab(a.dataset.tab);
       });
     });
+
+    wireGenerate();
 
     // Dashboard
     $('refreshDashboard').addEventListener('click', loadDashboard);

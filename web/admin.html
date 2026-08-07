@@ -66,6 +66,10 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
             Key Inventory
           </a></li>
+          <li><a href="#" class="admin-nav-link" data-tab="generate">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1" fill="currentColor"/></svg>
+            Generate Keys
+          </a></li>
           <li><a href="#" class="admin-nav-link" data-tab="orders">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
             Orders
@@ -299,6 +303,198 @@
           </div>
           <div class="admin-table-footer" id="invPagination"></div>
         </div>
+      </section>
+
+      <!-- ── TAB: Generate Keys ─────────────────────────────────────────── -->
+      <section id="tab-generate" class="admin-tab" style="display:none">
+        <div class="admin-page-header">
+          <div>
+            <h1 class="admin-page-title">Generate Keys</h1>
+            <p class="admin-page-sub">Cryptographically generate and save license keys to inventory</p>
+          </div>
+        </div>
+
+        <!-- Stats row -->
+        <div class="admin-stat-grid gen-stat-grid" id="genStatsRow">
+          <div class="admin-stat-card admin-stat-card--green">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Available Keys</span>
+              <span class="admin-stat-value" id="genStatAvailable">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--cyan">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Sold Keys</span>
+              <span class="admin-stat-value" id="genStatSold">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--purple">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Generated Today</span>
+              <span class="admin-stat-value" id="genStatToday">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--gold">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Generated This Month</span>
+              <span class="admin-stat-value" id="genStatMonth">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Total Keys</span>
+              <span class="admin-stat-value" id="genStatTotal">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Generator card -->
+        <div class="admin-card" style="margin-top:20px">
+          <div class="admin-card-header">
+            <h2 class="admin-card-title">Key Generator</h2>
+          </div>
+          <div class="gen-form-body">
+            <div class="gen-form-grid">
+
+              <!-- License Plan -->
+              <div class="form-group">
+                <label class="form-label" for="genPlan">License Plan</label>
+                <select id="genPlan" class="admin-select gen-select">
+                  <option value="ghost_trial">Ghost Trial</option>
+                  <option value="ghost_pro_monthly" selected>Ghost Pro (Monthly)</option>
+                  <option value="ghost_pro_lifetime">Ghost Pro (Lifetime)</option>
+                  <option value="ghost_beta">Ghost Beta</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+
+              <!-- Quantity -->
+              <div class="form-group">
+                <label class="form-label" for="genQty">Quantity</label>
+                <input type="number" id="genQty" class="form-input" value="100" min="1" max="10000" placeholder="100" />
+              </div>
+
+              <!-- Prefix -->
+              <div class="form-group">
+                <label class="form-label" for="genPrefix">Prefix</label>
+                <input type="text" id="genPrefix" class="form-input" value="GHOST" maxlength="16" placeholder="GHOST" />
+                <span class="form-hint">e.g. GHOST, GC, GHOSTPRO</span>
+              </div>
+
+              <!-- Key Format -->
+              <div class="form-group">
+                <label class="form-label" for="genFormat">Key Format</label>
+                <select id="genFormat" class="admin-select gen-select">
+                  <option value="seg4x4">{PREFIX}-XXXX-XXXX-XXXX-XXXX</option>
+                  <option value="seg3x5">{PREFIX}-XXXXX-XXXXX-XXXXX</option>
+                  <option value="seg1x12">{PREFIX}-XXXXXXXXXXXX</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+
+              <!-- Character Type -->
+              <div class="form-group">
+                <label class="form-label">Character Type</label>
+                <div class="gen-checkbox-group">
+                  <label class="gen-checkbox-label">
+                    <input type="checkbox" id="genCharUpper" checked />
+                    <span>Uppercase Letters</span>
+                  </label>
+                  <label class="gen-checkbox-label">
+                    <input type="checkbox" id="genCharNum" checked />
+                    <span>Numbers</span>
+                  </label>
+                  <label class="gen-checkbox-label">
+                    <input type="checkbox" id="genCharSym" />
+                    <span>Symbols</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Expiration -->
+              <div class="form-group">
+                <label class="form-label" for="genExpiry">Expiration</label>
+                <select id="genExpiry" class="admin-select gen-select">
+                  <option value="never">Never</option>
+                  <option value="1">1 Day</option>
+                  <option value="7">7 Days</option>
+                  <option value="30">30 Days</option>
+                  <option value="90">90 Days</option>
+                  <option value="365">365 Days</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+
+              <!-- Notes -->
+              <div class="form-group gen-full-col">
+                <label class="form-label" for="genNotes">Notes <span class="form-hint" style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
+                <input type="text" id="genNotes" class="form-input" placeholder="e.g. Summer Sale, Wave #4, VIP Keys" maxlength="200" />
+              </div>
+
+            </div><!-- /gen-form-grid -->
+
+            <!-- Preview -->
+            <div class="gen-preview-row">
+              <span class="form-hint">Preview:</span>
+              <code class="gen-preview-key" id="genPreviewKey">GHOST-XXXX-XXXX-XXXX-XXXX</code>
+            </div>
+
+            <!-- Generate button -->
+            <div class="gen-btn-row">
+              <button class="btn btn-primary gen-btn-generate" id="genBtn">
+                <svg class="gen-btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <span class="btn-text">Generate Keys</span>
+                <span class="btn-spinner" style="display:none"></span>
+              </button>
+            </div>
+
+          </div><!-- /gen-form-body -->
+        </div>
+
+        <!-- Search / Generated Keys table -->
+        <div class="admin-card" style="margin-top:20px">
+          <div class="admin-card-header">
+            <h2 class="admin-card-title">Generated Keys</h2>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <input type="text" id="genSearch" class="admin-search" placeholder="Search plan, prefix, date, status, notes…" style="min-width:220px" />
+              <button class="btn btn-ghost btn--sm" id="genSearchBtn">Search</button>
+            </div>
+          </div>
+          <div class="admin-table-wrap">
+            <table class="admin-table" id="genTable">
+              <thead>
+                <tr>
+                  <th>License Key</th>
+                  <th>Plan</th>
+                  <th>Status</th>
+                  <th>Created</th>
+                  <th>Expiration</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody id="genTableTbody">
+                <tr><td colspan="6" class="admin-table-empty">No keys generated yet in this session.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="admin-table-footer" id="genTableFooter"></div>
+        </div>
+
       </section>
 
       <!-- ── TAB: Orders ──────────────────────────────────────────────── -->
@@ -806,6 +1002,74 @@
       <div class="admin-modal-footer">
         <button class="btn btn-ghost" id="confirmCancel">Cancel</button>
         <button class="btn btn-danger" id="confirmOk">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Generate Keys Success Modal ──────────────────────────────────────── -->
+  <div id="genSuccessModal" class="admin-modal-overlay" style="display:none">
+    <div class="admin-modal admin-modal--lg">
+      <div class="admin-modal-header">
+        <h2 style="display:flex;align-items:center;gap:8px">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          Keys Generated Successfully
+        </h2>
+        <button class="admin-modal-close" id="closeGenSuccessModal">&times;</button>
+      </div>
+      <div class="admin-modal-body">
+        <!-- Result stats -->
+        <div class="import-result-box" style="display:flex">
+          <div class="import-stat import-stat--green">
+            <span class="import-stat-num" id="genResGenerated">0</span>
+            <span class="import-stat-label">Generated</span>
+          </div>
+          <div class="import-stat import-stat--yellow">
+            <span class="import-stat-num" id="genResDuplicates">0</span>
+            <span class="import-stat-label">Duplicates Skipped</span>
+          </div>
+          <div class="import-stat import-stat--green">
+            <span class="import-stat-num" id="genResInventory">—</span>
+            <span class="import-stat-label">Available Inventory</span>
+          </div>
+        </div>
+        <!-- Plan info -->
+        <div style="margin-top:16px;display:flex;gap:20px;flex-wrap:wrap">
+          <div>
+            <span class="admin-stat-label" style="display:block;margin-bottom:4px">Plan</span>
+            <span id="genResPlan" style="color:var(--accent);font-weight:700">—</span>
+          </div>
+          <div>
+            <span class="admin-stat-label" style="display:block;margin-bottom:4px">Expiration</span>
+            <span id="genResExpiry" style="color:var(--text-2);font-weight:600">—</span>
+          </div>
+          <div>
+            <span class="admin-stat-label" style="display:block;margin-bottom:4px">Prefix</span>
+            <code id="genResPrefix" style="color:var(--cyan);font-family:monospace">—</code>
+          </div>
+        </div>
+        <!-- Key preview list -->
+        <div style="margin-top:16px">
+          <span class="admin-stat-label" style="display:block;margin-bottom:8px">Sample Keys</span>
+          <div id="genResKeyPreview" class="gen-key-preview-list"></div>
+        </div>
+      </div>
+      <div class="admin-modal-footer" style="flex-wrap:wrap;gap:8px">
+        <button class="btn btn-ghost" id="closeGenSuccessBtn">Close</button>
+        <button class="btn btn-ghost btn--sm" id="genCopyAllBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copy All
+        </button>
+        <button class="btn btn-ghost btn--sm" id="genDlTxtBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download TXT
+        </button>
+        <button class="btn btn-ghost btn--sm" id="genDlCsvBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download CSV
+        </button>
+        <button class="btn btn-primary" id="genGoInventoryBtn">
+          Go To Inventory
+        </button>
       </div>
     </div>
   </div>

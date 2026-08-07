@@ -692,6 +692,196 @@ app.post('/api/admin/inventory/import', _requireAdminSession, async (req, res) =
   }
 });
 
+// ── POST /api/admin/inventory/generate — cryptographic key generator ─────────
+// Generates N random license keys, deduplicates against existing inventory,
+// saves to Redis in one atomic write, and returns all generated keys + stats.
+//
+// Body: { plan, quantity, prefix, format, charTypes, expiration, notes }
+// Response: { ok, generated, duplicates, keys[], availableInventory }
+//
+// Performance target: 100 keys < 500 ms, 1000 keys < 2 s
+app.post('/api/admin/inventory/generate', _requireAdminSession, async (req, res) => {
+  const t0 = Date.now();
+  let _responded = false;
+  const _guard = setTimeout(() => {
+    if (!_responded) {
+      _responded = true;
+      console.error('[inventory/generate] guard timeout exceeded 12 s');
+      res.status(503).json({ ok: false, error: 'redis_timeout' });
+    }
+  }, 12_000);
+
+  try {
+    const {
+      plan       = 'ghost_pro_monthly',
+      quantity   = 100,
+      prefix     = 'GHOST',
+      format     = 'seg4x4',
+      charTypes  = { upper: true, numbers: true, symbols: false },
+      expiration = 'never',
+      notes      = '',
+    } = req.body || {};
+
+    // ── Validation ──────────────────────────────────────────────────────────
+    const qty = Math.max(1, Math.min(10000, parseInt(quantity, 10) || 100));
+
+    const rawPrefix = String(prefix || 'GHOST').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16) || 'GHOST';
+
+    const useUpper  = charTypes && charTypes.upper   !== false;
+    const useNum    = charTypes && charTypes.numbers  !== false;
+    const useSym    = charTypes && charTypes.symbols  === true;
+
+    // Must have at least one char type
+    if (!useUpper && !useNum && !useSym) {
+      clearTimeout(_guard); _responded = true;
+      return res.status(400).json({ ok: false, error: 'At least one character type must be selected.' });
+    }
+
+    // Build alphabet
+    let alphabet = '';
+    if (useUpper)  alphabet += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    if (useNum)    alphabet += '0123456789';
+    if (useSym)    alphabet += '!@#$%^&*';
+
+    // Segment sizes per format
+    const segMap = {
+      seg4x4:  [4, 4, 4, 4],
+      seg3x5:  [5, 5, 5],
+      seg1x12: [12],
+      custom:  [4, 4, 4, 4],
+    };
+    const segs = segMap[format] || segMap['seg4x4'];
+
+    // Expiration ISO string
+    let expirationISO = null;
+    const expiryDays  = parseInt(expiration, 10);
+    if (!isNaN(expiryDays) && expiryDays > 0) {
+      const d = new Date();
+      d.setDate(d.getDate() + expiryDays);
+      expirationISO = d.toISOString();
+    }
+
+    // ── Read existing inventory (for dupe check) ────────────────────────────
+    let inventory;
+    try {
+      inventory = await _redisGet('ghost:inventory');
+    } catch (err) {
+      if (err.message === 'redis_timeout') {
+        clearTimeout(_guard); _responded = true;
+        return res.status(503).json({ ok: false, error: 'redis_timeout' });
+      }
+      inventory = null;
+    }
+    if (!Array.isArray(inventory)) inventory = [];
+
+    const existing = new Set(inventory.map(k => k && k.key).filter(Boolean));
+
+    // ── Generate keys ───────────────────────────────────────────────────────
+    function _randSegment (len) {
+      const bytes = crypto.randomBytes(len * 2);   // extra headroom
+      let out = '';
+      for (let i = 0; i < bytes.length && out.length < len; i++) {
+        const ch = alphabet[bytes[i] % alphabet.length];
+        out += ch;
+      }
+      return out;
+    }
+
+    function _buildKey () {
+      return rawPrefix + '-' + segs.map(n => _randSegment(n)).join('-');
+    }
+
+    const now        = new Date().toISOString();
+    const generated  = [];
+    const newKeys    = [];
+    let   duplicates = 0;
+    const MAX_ATTEMPTS = qty * 8;   // safety valve against infinite loops
+    let   attempts     = 0;
+
+    while (newKeys.length < qty && attempts < MAX_ATTEMPTS) {
+      attempts++;
+      const k = _buildKey();
+      if (existing.has(k)) { duplicates++; continue; }
+      existing.add(k);
+      generated.push(k);
+      const record = {
+        key:          k,
+        plan:         String(plan).toLowerCase(),
+        status:       'available',
+        customer:     null,
+        hwid:         null,
+        purchaseDate: null,
+        created:      now,
+        expiration:   expirationISO,
+        notes:        String(notes || '').slice(0, 200),
+        // legacy aliases
+        created_date:   now,
+        added_at:       now,
+        purchase_date:  '',
+        order_id:       '',
+        customer_email: '',
+        assigned_user:  '',
+      };
+      inventory.push(record);
+      newKeys.push(record);
+    }
+
+    // ── Save to Redis ────────────────────────────────────────────────────────
+    const writeStart = Date.now();
+    let saved = false;
+    try {
+      saved = await _redisSet('ghost:inventory', inventory);
+    } catch (err) {
+      if (err.message === 'redis_timeout') {
+        clearTimeout(_guard); _responded = true;
+        return res.status(503).json({ ok: false, error: 'redis_timeout' });
+      }
+      saved = false;
+    }
+
+    if (!saved) {
+      clearTimeout(_guard); _responded = true;
+      console.error('[inventory/generate] redis write failed');
+      return res.status(500).json({ ok: false, error: 'storage_write_failed' });
+    }
+
+    const saveDuration = Date.now() - writeStart;
+    const totalMs      = Date.now() - t0;
+
+    // Count available for the response stat
+    const availableCount = inventory.filter(k => k.status === 'available').length;
+
+    console.log(
+      '[inventory/generate] generated=%d duplicates=%d save_duration=%dms total=%dms',
+      generated.length, duplicates, saveDuration, totalMs
+    );
+
+    clearTimeout(_guard);
+    _responded = true;
+    return res.status(201).json({
+      ok:               true,
+      generated:        generated.length,
+      duplicates,
+      keys:             generated,
+      availableInventory: availableCount,
+      plan:             String(plan).toLowerCase(),
+      prefix:           rawPrefix,
+      expiration:       expirationISO,
+      save_duration_ms: saveDuration,
+      total_ms:         totalMs,
+    });
+
+  } catch (err) {
+    clearTimeout(_guard);
+    if (!_responded) {
+      _responded = true;
+      console.error('[inventory/generate] unhandled error name=%s message=%s\n%s',
+        err.name, err.message, err.stack);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+});
+
 // ── GET /api/admin/storage-test — diagnostic endpoint ────────────────────────
 // Verifies Upstash credentials and round-trip independently from inventory code.
 // Protected by admin session. Returns { ok, write, read, delete }.

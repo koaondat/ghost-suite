@@ -705,13 +705,127 @@ input[type="date"].form-input { color-scheme: dark; }
 
 /* ── Activity log ──────────────────────────────────────────────────── */
 
+/* ── Generate Keys page ────────────────────────────────────────────── */
+.gen-stat-grid {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.gen-form-body {
+  padding: 24px 20px 20px;
+}
+.gen-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+.gen-full-col  { grid-column: 1 / -1; }
+.gen-select    { width: 100%; height: 38px; font-size: 0.875rem; }
+
+.gen-checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+.gen-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.875rem;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.gen-checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.gen-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 12px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.gen-preview-key {
+  font-family: 'Fira Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.92rem;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  word-break: break-all;
+}
+
+.gen-btn-row {
+  margin-top: 22px;
+  display: flex;
+  align-items: center;
+}
+.gen-btn-generate {
+  height: 46px;
+  padding: 0 32px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  gap: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+  border-color: var(--accent);
+  box-shadow: 0 0 24px var(--accent-glow);
+  transition: all var(--transition);
+}
+.gen-btn-generate:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--accent-dim), #5b21b6);
+  box-shadow: 0 0 36px var(--accent-glow);
+  transform: translateY(-1px);
+}
+.gen-btn-generate:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.gen-btn-icon { flex-shrink: 0; }
+
+/* Success modal key list */
+.gen-key-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+}
+.gen-key-preview-list code {
+  font-family: 'Fira Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.82rem;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+  line-height: 1.7;
+}
+.gen-key-preview-more {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 6px;
+  font-style: italic;
+}
+
 /* ── Responsive ────────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .admin-stat-grid { grid-template-columns: repeat(4, 1fr); }
+  .gen-stat-grid   { grid-template-columns: repeat(3, 1fr); }
   .dl-grid, .settings-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 900px) {
   .admin-stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .gen-stat-grid   { grid-template-columns: repeat(2, 1fr); }
+  .gen-form-grid   { grid-template-columns: 1fr; }
   .admin-main { padding: 20px 16px; }
   .order-detail-grid { grid-template-columns: 1fr; }
   .customer-detail-header { grid-template-columns: 1fr 1fr; }
