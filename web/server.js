@@ -360,10 +360,30 @@ app.get('/api/config/audit', (req, res) => {
 // The cookie uses the __Host- prefix which enforces Secure, Path=/, no Domain.
 // Never returns the token in the JSON body — the browser reads it from the cookie.
 app.post('/api/admin/panel/auth', (req, res) => {
-  if (!ADMIN_PANEL_PASSWORD_HASH) {
+  // ── Safe diagnostics — never log the password or actual hash values ──────────
+  const hashPresent    = ADMIN_PANEL_PASSWORD_HASH.length > 0;
+  const storedHashLen  = ADMIN_PANEL_PASSWORD_HASH.length;
+  console.log('[ghost/admin] auth_attempt hash_present=%s stored_hash_len=%d ip=%s',
+    hashPresent, storedHashLen, req.ip);
+
+  if (!hashPresent) {
     console.error('[ghost/admin] login_fail reason=ADMIN_PANEL_PASSWORD_HASH_not_set ip=%s', req.ip);
     return res.status(503).json({ ok: false, error: 'Admin panel not configured. Set ADMIN_PANEL_PASSWORD_HASH.' });
   }
+  // SHA-256 hex digest is always exactly 64 characters. Any other length means the
+  // env var holds the wrong value (e.g. plain-text password, partial hash, extra whitespace).
+  if (storedHashLen !== 64) {
+    console.error(
+      '[ghost/admin] login_fail reason=ADMIN_PANEL_PASSWORD_HASH_wrong_length stored_hash_len=%d expected=64 ip=%s ' +
+      '— The env var must contain a SHA-256 hex digest (64 chars), not the plain-text password.',
+      storedHashLen, req.ip,
+    );
+    return res.status(503).json({
+      ok: false,
+      error: 'Admin panel misconfigured: ADMIN_PANEL_PASSWORD_HASH must be a 64-character SHA-256 hex digest.',
+    });
+  }
+
   if (!process.env.ADMIN_SESSION_SECRET) {
     console.error('[ghost/admin] login_fail reason=ADMIN_SESSION_SECRET_not_set ip=%s', req.ip);
     return res.status(503).json({ ok: false, error: 'Admin session secret not configured. Set ADMIN_SESSION_SECRET.' });
@@ -374,16 +394,32 @@ app.post('/api/admin/panel/auth', (req, res) => {
     return res.status(400).json({ ok: false, error: 'Password is required.' });
   }
 
-  const submitted = crypto.createHash('sha256').update(String(password)).digest('hex');
+  const submitted        = crypto.createHash('sha256').update(String(password)).digest('hex');
+  const calculatedHashLen = submitted.length; // always 64 for SHA-256 hex
   let match = false;
   try {
     match = crypto.timingSafeEqual(
       Buffer.from(submitted),
       Buffer.from(ADMIN_PANEL_PASSWORD_HASH),
     );
-  } catch (_) {
-    // length mismatch → not equal
+  } catch (lengthErr) {
+    // This should never happen after the storedHashLen !== 64 guard above,
+    // but log it explicitly if it somehow does to make root-cause obvious.
+    console.error(
+      '[ghost/admin] login_fail reason=hash_length_mismatch calculated_len=%d stored_len=%d ip=%s',
+      calculatedHashLen, storedHashLen, req.ip,
+    );
+    return res.status(503).json({
+      ok: false,
+      error: 'Admin panel misconfigured: stored hash length does not match SHA-256 output.',
+    });
   }
+
+  // Safe diagnostic: log lengths and match result, never the values themselves.
+  console.log(
+    '[ghost/admin] auth_check hash_present=%s stored_hash_len=%d calculated_hash_len=%d password_match=%s ip=%s',
+    hashPresent, storedHashLen, calculatedHashLen, match, req.ip,
+  );
 
   if (!match) {
     console.warn('[ghost/admin] login_rejected ip=%s reason=wrong_password', req.ip);
