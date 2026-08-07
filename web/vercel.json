@@ -19,10 +19,6 @@
   ],
   "routes": [
     {
-      "src": "/assets/(.*)",
-      "dest": "/assets/$1"
-    },
-    {
       "src": "/api/(.*)",
       "dest": "server.js"
     },
@@ -32,18 +28,6 @@
     },
     {
       "src": "/status",
-      "dest": "server.js"
-    },
-    {
-      "src": "/(login|register|dashboard|pricing|checkout)",
-      "dest": "server.js"
-    },
-    {
-      "src": "/(.*\\.html)",
-      "dest": "server.js"
-    },
-    {
-      "src": "/",
       "dest": "server.js"
     },
     {
