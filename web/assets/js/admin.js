@@ -15,7 +15,12 @@
   // admin fetch uses credentials: "include".
   // We track login state client-side only to control UI visibility — the cookie
   // is the real authority; the server validates it on every authenticated request.
-  let _loggedIn   = false;
+  //
+  // _sessionVerified: true once /api/admin/session has returned a definitive answer.
+  // Before it is true, 401 responses from background requests must NOT trigger
+  // session-expiry UI — the initial check hasn't finished yet.
+  let _loggedIn        = false;
+  let _sessionVerified = false;
   let _invPage    = 1;
   let _ordPage    = 1;
   let _custPage   = 1;
@@ -67,9 +72,11 @@
   // every same-origin request.  The browser manages the cookie automatically;
   // we never read or set it from JavaScript.
   //
-  // 401 deduplication: only the FIRST 401 received while _loggedIn=true
-  // triggers a UI transition + toast.  Subsequent concurrent 401 responses
-  // (from multiple in-flight requests) are silently ignored.
+  // 401 deduplication: only the FIRST 401 received while _loggedIn=true AND
+  // _sessionVerified=true triggers a UI transition + toast.
+  // Before _sessionVerified is set, 401 responses from background requests
+  // are returned to callers but do NOT affect the UI — the initial session
+  // check may still be in-flight.
   let _handlingSessionExpiry = false;
 
   async function apiFetch (path, opts = {}, retries = 2) {
@@ -81,12 +88,18 @@
         // Do NOT retry 401 responses — retrying would just produce more alerts.
         if (res.status === 401) {
           const data = await res.json().catch(() => ({}));
-          // Only transition to login screen once, even if multiple requests
-          // return 401 simultaneously (e.g. dashboard + inventory in parallel).
-          if (_loggedIn && !_handlingSessionExpiry) {
+          // Guard 1: _sessionVerified must be true — we only react to 401s that
+          //   happen AFTER the initial /api/admin/session check completed and
+          //   confirmed the user was authenticated.
+          // Guard 2: _loggedIn must be true — prevents duplicate handling.
+          // Guard 3: _handlingSessionExpiry prevents multiple simultaneous 401s
+          //   (e.g. dashboard + inventory in parallel) from each showing a toast.
+          if (_sessionVerified && _loggedIn && !_handlingSessionExpiry) {
             _handlingSessionExpiry = true;
             _loggedIn = false;
+            console.log('[admin] logout_triggered_reason=session_expired_401 path=' + path);
             hide('adminShell');
+            hide('adminLoading');
             show('adminLogin');
             toast('Session expired. Please log in again.', 'error');
             // Reset the guard after the toast duration so a fresh login
@@ -126,21 +139,33 @@
     setBusy('loginBtn', true);
     hideAlert('loginAlert');
     try {
-      // credentials: "include" is set by apiFetch so the browser stores the
-      // __Host-ghost_admin_session HttpOnly cookie the server sets on success.
-      // We never read the cookie from JS — we only check ok:true.
-      const { ok, data } = await apiFetch('/api/admin/panel/auth', {
+      // Step 1: POST credentials → server sets HttpOnly session cookie on success.
+      const { ok: authOk, data: authData } = await apiFetch('/api/admin/panel/auth', {
         method: 'POST',
         body:   JSON.stringify({ password: pw }),
       });
-      if (ok) {
-        _loggedIn = true;
-        hide('adminLogin');
-        show('adminShell');
-        loadDashboard();
-      } else {
-        showAlert('loginAlert', 'error', data.error || 'Invalid password.');
+      if (!authOk) {
+        showAlert('loginAlert', 'error', authData.error || 'Invalid password.');
+        return;
       }
+
+      // Step 2: Verify the session cookie was actually set before rendering.
+      // This confirms the cookie round-trip works and avoids a flash+logout cycle.
+      const verifyRes  = await fetch('/api/admin/session', { credentials: 'include' });
+      const verifyData = await verifyRes.json().catch(() => ({}));
+      if (!verifyRes.ok || !verifyData.authenticated) {
+        showAlert('loginAlert', 'error', 'Session could not be established. Please try again.');
+        return;
+      }
+
+      // Session confirmed — now it is safe to render the dashboard.
+      _loggedIn        = true;
+      _sessionVerified = true;
+      console.log('[admin] admin_ui_rendered source=login');
+      hide('adminLogin');
+      hide('adminLoading');
+      show('adminShell');
+      loadDashboard();
     } catch (_) {
       showAlert('loginAlert', 'error', 'Network error. Please try again.');
     } finally {
@@ -149,11 +174,14 @@
   }
 
   async function doLogout () {
+    console.log('[admin] logout_triggered_reason=user_requested');
     _loggedIn = false;
+    _sessionVerified = false;
     // POST to /api/admin/panel/logout so the server can expire the HttpOnly cookie.
     // JS cannot delete an HttpOnly cookie directly.
     await fetch('/api/admin/panel/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     hide('adminShell');
+    hide('adminLoading');
     show('adminLogin');
     $('adminPassword').value = '';
   }
@@ -1173,25 +1201,44 @@
 
   /* ── Auto-login check ───────────────────────────────────────────────── */
   async function checkExistingSession () {
-    // Use /api/admin/session — a dedicated endpoint that returns
-    // { authenticated: true } on 200 or { authenticated: false } on 401.
-    // We call this BEFORE setting _loggedIn=true so a 401 here does NOT
-    // trigger the "session expired" toast — it is expected on a fresh page load.
-    // We do NOT use apiFetch here because apiFetch triggers the expiry toast
-    // when _loggedIn is true; on initial load _loggedIn is false, so it is safe,
-    // but using a plain fetch with credentials is clearer and avoids any race.
+    // ── Initial session gate ──────────────────────────────────────────────
+    // The loading screen (#adminLoading) is visible by default.
+    // This function makes exactly ONE request to /api/admin/session and uses
+    // its result to decide whether to show the dashboard or the login form.
+    //
+    // NOTHING else runs before this resolves — _loggedIn and _sessionVerified
+    // are both false until the response arrives, so apiFetch's 401 handler
+    // cannot trigger an erroneous session-expiry UI transition during this window.
+    console.log('[admin] session_check_started');
     try {
       const res  = await fetch('/api/admin/session', { credentials: 'include' });
       const data = await res.json().catch(() => ({}));
+      console.log('[admin] session_check_status=' + res.status + ' authenticated=' + Boolean(data.authenticated));
+
       if (res.ok && data.authenticated) {
-        _loggedIn = true;
+        // Session is valid — mark state, hide loading screen, show dashboard.
+        _loggedIn        = true;
+        _sessionVerified = true;
+        console.log('[admin] admin_ui_rendered source=session_check');
+        hide('adminLoading');
         hide('adminLogin');
         show('adminShell');
         loadDashboard();
+      } else {
+        // No valid session — hide loading screen, show login form.
+        _sessionVerified = true;   // check is complete; 401 handling can now activate
+        hide('adminLoading');
+        show('adminLogin');
+        // Attempt to focus the password field only if available.
+        const pwField = $('adminPassword');
+        if (pwField) pwField.focus();
       }
-      // 401 here means no active session — show login screen (already visible by default).
     } catch (_) {
-      // Network error — login screen stays visible.
+      // Network error — hide loading screen, show login form so the user can retry.
+      _sessionVerified = true;
+      console.log('[admin] session_check_status=network_error');
+      hide('adminLoading');
+      show('adminLogin');
     }
   }
 

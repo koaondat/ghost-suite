@@ -70,6 +70,36 @@ html, body { height: 100%; }
 .toast--error    { border-color: rgba(239,68,68,0.4);  background: rgba(239,68,68,0.08); color: #fca5a5; }
 .toast--warning  { border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.08);color: #fcd34d; }
 
+/* ── Session-check loading screen ──────────────────────────────────── */
+.admin-loading-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  z-index: 9000;
+}
+.admin-loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.admin-loading-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--border-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.admin-loading-text {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+/* @keyframes spin is defined later in this file — shared with .btn-spinner */
+
 /* ── Login ─────────────────────────────────────────────────────────── */
 .admin-login-overlay {
   min-height: 100vh;
