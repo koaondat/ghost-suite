@@ -850,6 +850,33 @@
     }
   };
 
+  /* ── Fulfill all pending orders in one click ────────────────────────── */
+  async function fulfillPendingOrders () {
+    setBusy('fulfillPendingBtn', true);
+    try {
+      const { ok, data } = await apiFetch('/api/admin/orders/fulfill-pending', { method: 'POST' });
+      if (ok) {
+        const fulfilled = data.fulfilled || 0;
+        const failed    = data.failed    || 0;
+        const skipped   = data.skipped   || 0;
+        if (fulfilled > 0) {
+          toast(`Fulfilled ${fulfilled} order(s). Failed: ${failed}. Already done: ${skipped}.`, 'success');
+        } else if (failed > 0) {
+          toast(`No orders fulfilled. ${failed} failed (check inventory stock). Skipped: ${skipped}.`, 'error');
+        } else {
+          toast(`No pending orders found. All ${skipped} order(s) already delivered.`, 'info');
+        }
+        loadOrders();
+      } else {
+        toast(data.error || 'Fulfill-pending failed.', 'error');
+      }
+    } catch (_) {
+      toast('Network error during fulfill-pending.', 'error');
+    } finally {
+      setBusy('fulfillPendingBtn', false);
+    }
+  }
+
   /* ── Customer Licenses ──────────────────────────────────────────────── */
   let _allCustomerLicenses = [];
   let _clPage = 1;
@@ -1845,6 +1872,7 @@
 
     // Orders
     $('refreshOrders').addEventListener('click', loadOrders);
+    $('fulfillPendingBtn')?.addEventListener('click', fulfillPendingOrders);
     $('applyOrderFilter').addEventListener('click', applyOrderFilter);
     $('orderSearch').addEventListener('keydown', e => { if (e.key === 'Enter') applyOrderFilter(); });
     $('orderStatusFilter').addEventListener('change', applyOrderFilter);

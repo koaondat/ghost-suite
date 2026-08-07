@@ -374,17 +374,21 @@ def confirm_payment_and_deliver(
     plan_label     = PLAN_PRICES[plan]["label"]
 
     with _orders_lock:
-        # ── Idempotency: already delivered? ──────────────────────────────
+        # ── Step 1: Load order record ─────────────────────────────────────
         existing = _load_single_order(order_id) if _USE_REDIS else _find_order(order_id, _load_orders())
+        log.info("fulfill order=%s step=order_loaded existing=%s", order_id, bool(existing))
+
+        # ── Idempotency: already delivered? ──────────────────────────────
         if existing:
             if existing.get("payment_verified") and existing.get("license_key"):
-                log.info("Duplicate confirm for order %s — returning existing key", order_id)
+                log.info("fulfill order=%s step=idempotent returning_existing_key", order_id)
                 return _safe_response(existing)
             if existing.get("delivery_status") == "out_of_stock":
                 # Try to fulfill from inventory now that more keys may be stocked
+                log.info("fulfill order=%s step=retry_out_of_stock", order_id)
                 pass  # fall through to inventory lookup below
 
-        # ── Inventory diagnostic logging ──────────────────────────────────
+        # ── Step 2: Check available licenses in inventory ─────────────────
         all_inv        = _inv_load_all()
         inv_total      = len(all_inv)
         inv_available  = [r for r in all_inv if r.get("status") in ("available", "unused")]
@@ -392,18 +396,21 @@ def confirm_payment_and_deliver(
         plan_available = [r for r in inv_available if _inv.normalize_plan(r.get("plan", "")) == plan]
         match_count    = len(plan_available)
         log.info(
-            "fulfill_diagnostic order=%s order_plan=%s inventory_total=%d "
-            "available_total=%d matching_plan_available=%d",
+            "fulfill order=%s step=available_licenses_found plan=%s "
+            "inventory_total=%d available_total=%d matching_plan=%d",
             order_id, plan, inv_total, avail_total, match_count,
         )
 
-        # ── Check inventory for an unused key ────────────────────────────
+        # ── Step 3: Pick the next available key ───────────────────────────
         inv_record = _inv_get_next_available(plan)
         created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         if inv_record is None:
-            # ── Out of stock ──────────────────────────────────────────────
-            log.warning("OUT OF STOCK for order %s plan=%s", order_id, plan)
+            # ── Out of stock — never leave delivery_status=pending ────────
+            log.warning(
+                "fulfill order=%s step=out_of_stock plan=%s — setting delivery_status=out_of_stock",
+                order_id, plan,
+            )
             _log_delivery_failure(order_id, "out_of_stock", f"plan={plan}")
 
             order_record: dict = {
@@ -424,6 +431,7 @@ def confirm_payment_and_deliver(
                 "license_status":   "pending",
             }
             _persist_order(order_id, order_record, existing)
+            log.info("fulfill order=%s step=order_updated delivery_status=out_of_stock", order_id)
             return {
                 "ok":               True,
                 "out_of_stock":     True,
@@ -441,7 +449,9 @@ def confirm_payment_and_deliver(
                 ),
             }
 
-        # ── Assign the key ────────────────────────────────────────────────
+        log.info("fulfill order=%s step=selected_license key=[redacted]", order_id)
+
+        # ── Step 4: Assign the selected key ───────────────────────────────
         assigned = _inv_assign_key(
             key=inv_record["key"],
             order_id=order_id,
@@ -451,17 +461,32 @@ def confirm_payment_and_deliver(
         )
         if not assigned:
             # Race condition — another request grabbed the same key; retry once
+            log.warning("fulfill order=%s step=assignment_race retrying", order_id)
             inv_record = _inv_get_next_available(plan)
             if inv_record is None:
                 _log_delivery_failure(order_id, "out_of_stock_race", f"plan={plan}")
+                # Persist as out_of_stock rather than leaving status=pending
+                oos_record: dict = {
+                    "order_id":         order_id,
+                    "plan":             plan,
+                    "plan_label":       plan_label,
+                    "email":            email,
+                    "discord":          discord,
+                    "price_usd":        resolved_price,
+                    "currency":         "USD",
+                    "created_at":       created_at,
+                    "payment_status":   "verified",
+                    "payment_verified": True,
+                    "delivery_status":  "out_of_stock",
+                    "license_key":      None,
+                    "license_status":   "pending",
+                }
+                _persist_order(order_id, oos_record, existing)
+                log.warning("fulfill order=%s step=out_of_stock_race delivery_status=out_of_stock", order_id)
                 return {"ok": False, "error": "Temporarily out of stock. Contact support."}
             assigned = _inv_assign_key(inv_record["key"], order_id, email, discord, created_at)
 
-        assigned_key = inv_record["key"]
-        log.info(
-            "fulfill_diagnostic order=%s selected_license=true assignment_saved=%s",
-            order_id, str(assigned).lower(),
-        )
+        log.info("fulfill order=%s step=assignment_committed assigned=%s", order_id, assigned)
 
         # Preserve payment_status='completed' if already set by the capture step;
         # otherwise fall back to 'verified' (legacy token-based path).
@@ -471,6 +496,8 @@ def confirm_payment_and_deliver(
             if existing_payment_status == "completed" or payment_token.startswith("paypal:")
             else "verified"
         )
+
+        assigned_key = inv_record["key"]
         order_record = {
             "order_id":         order_id,
             "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else "",
@@ -491,19 +518,20 @@ def confirm_payment_and_deliver(
             "download_url":     f"/api/order/{order_id}/download",
         }
 
+        # ── Step 5: Persist the final order record ────────────────────────
         try:
             _persist_order(order_id, order_record, existing)
+            log.info(
+                "fulfill order=%s step=order_updated delivery_status=delivered",
+                order_id,
+            )
         except Exception as exc:
-            log.error("Failed to save order record for %s: %s", order_id, exc)
+            log.error("fulfill order=%s step=order_save_failed error=%s", order_id, exc)
             _log_delivery_failure(order_id, "order_save_failed", str(exc))
             # Key was already assigned — return it anyway; admin can repair the order record
             pass
 
-    log.info(
-        "fulfill_diagnostic order=%s delivery_status=%s",
-        order_id, order_record.get("delivery_status", "unknown"),
-    )
-    log.info("License assigned — order=%s plan=%s key=[redacted]", order_id, plan)
+    log.info("fulfill order=%s complete delivery_status=delivered key=[redacted]", order_id)
     return _safe_response(order_record)
 
 

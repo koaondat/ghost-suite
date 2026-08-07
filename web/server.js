@@ -1131,6 +1131,92 @@ app.get('/api/admin/orders/:orderId', _requireAdminSession, async (req, res) => 
   }
 });
 
+// ── POST /api/admin/orders/fulfill-pending ────────────────────────────────────
+// Retry license delivery for every paid order that does not yet have a key.
+// Never re-charges. Calls POST /api/order/:orderId/fulfill on the delivery
+// backend (idempotent — already-delivered orders are returned unchanged).
+app.post('/api/admin/orders/fulfill-pending', _requireAdminSession, async (req, res) => {
+  const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
+  if (!DELIVERY_BACKEND_URL) {
+    return res.status(503).json({ ok: false, error: 'Delivery backend not configured.' });
+  }
+
+  // Gather all orders that are paid but not yet delivered
+  let allOrders = [];
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      const ids   = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+      if (Array.isArray(ids) && ids.length) {
+        const records = await Promise.all(
+          ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+        );
+        allOrders = records.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+      }
+    } catch (err) {
+      console.error('[ghost/admin] fulfill-pending: Redis read error:', err.message);
+    }
+  }
+
+  // Also pull from delivery backend in case Redis is empty or partial
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const remoteRes = await fetch(`${DELIVERY_BACKEND_URL}/api/admin/orders`);
+    if (remoteRes.ok) {
+      const remote = await remoteRes.json().catch(() => null);
+      if (remote && Array.isArray(remote.orders)) {
+        const existingIds = new Set(allOrders.map(o => o.order_id));
+        for (const o of remote.orders) {
+          if (o.order_id && !existingIds.has(o.order_id)) allOrders.push(o);
+        }
+      }
+    }
+  } catch (_) {}
+
+  // Filter to orders that are paid but key not yet assigned
+  const pending = allOrders.filter(o => {
+    const ps = (o.payment_status || '').toLowerCase();
+    const ds = (o.delivery_status || '').toLowerCase();
+    const paid = ps === 'completed' || ps === 'verified';
+    const noKey = !o.license_key || ds === 'pending' || ds === 'delivery_pending' || ds === 'out_of_stock';
+    return paid && noKey;
+  });
+
+  if (!pending.length) {
+    return res.json({ ok: true, fulfilled: 0, failed: 0, skipped: allOrders.length, message: 'No pending orders found.' });
+  }
+
+  let fulfilled = 0;
+  let failed    = 0;
+  let skipped   = allOrders.length - pending.length;
+
+  const { default: fetch } = await import('node-fetch');
+
+  for (const order of pending) {
+    const orderId = order.order_id;
+    try {
+      const fulfillRes = await fetch(
+        `${DELIVERY_BACKEND_URL}/api/order/${encodeURIComponent(orderId)}/fulfill`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+      );
+      const data = await fulfillRes.json().catch(() => ({}));
+      if (data.license_key && data.delivery_status === 'delivered') {
+        fulfilled++;
+        console.log('[ghost/admin] fulfill-pending: fulfilled orderId=%s', orderId);
+      } else {
+        failed++;
+        console.warn('[ghost/admin] fulfill-pending: could not fulfill orderId=%s reason=%s',
+          orderId, data.error || data.delivery_status || 'unknown');
+      }
+    } catch (err) {
+      failed++;
+      console.error('[ghost/admin] fulfill-pending: error for orderId=%s: %s', orderId, err.message);
+    }
+  }
+
+  return res.json({ ok: true, fulfilled, failed, skipped, total: allOrders.length });
+});
+
 // ── Customer Licenses — sold keys from inventory ──────────────────────────────
 app.get('/api/admin/customer-licenses', _requireAdminSession, async (req, res) => {
   const inventory = await _redisGet('ghost:inventory') || [];

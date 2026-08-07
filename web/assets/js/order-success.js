@@ -25,9 +25,10 @@
   const _token   = (_params.get('token') || '').trim();
 
   /* ── Polling state ────────────────────────────────────────────────────────── */
-  let _pollTimer   = null;
-  let _pollCount   = 0;
-  const MAX_POLL   = 150;  // ~5 min at 2 s intervals
+  let _pollTimer      = null;
+  let _pollCount      = 0;
+  const MAX_POLL      = 150;   // ~5 min at 2 s intervals — kept for long-tail
+  const FALLBACK_POLL = 3;     // after 3 polls (~6 s) show fallback UI if still pending
 
   /* ── Helpers ─────────────────────────────────────────────────────────────── */
   function _show (id) {
@@ -108,8 +109,12 @@
 
   /* ── Show license key (called once delivery_status = delivered) ──────────── */
   function _renderLicenseDelivered (licenseKey) {
-    // Hide pending spinner, show key section
+    // Stop any outstanding poll first
+    if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
+
+    // Hide all pending/fallback states, show key section
     _hide('os-license-pending');
+    _hide('os-license-fallback');
     _show('os-license-delivered');
 
     _setText('os-license-key', licenseKey);
@@ -122,8 +127,41 @@
   /* ── Show license pending spinner ───────────────────────────────────────── */
   function _renderLicensePending () {
     _hide('os-license-delivered');
+    _hide('os-license-fallback');
     _show('os-license-pending');
     _hide('os-actions');
+  }
+
+  /* ── Show fallback message after 5 s with no key ────────────────────────── */
+  function _renderLicenseFallback () {
+    _hide('os-license-pending');
+    _hide('os-license-delivered');
+    _show('os-license-fallback');
+    _hide('os-actions');
+    // Wire the refresh button
+    const btn = document.getElementById('os-refresh-license-btn');
+    if (btn) {
+      const fresh = btn.cloneNode(true);
+      btn.parentNode.replaceChild(fresh, btn);
+      fresh.addEventListener('click', async () => {
+        fresh.disabled = true;
+        fresh.textContent = 'Checking…';
+        try {
+          const r    = await fetch(_buildApiUrl(_orderId));
+          const data = await r.json().catch(() => ({}));
+          if (r.ok && data.ok) {
+            const licenseKey = data.license_key || data.key || null;
+            if (licenseKey && data.delivery_status === 'delivered') {
+              _renderLicenseDelivered(licenseKey);
+              return;
+            }
+          }
+        } catch (_) {}
+        // Not yet — re-show fallback and reset button
+        fresh.disabled = false;
+        fresh.textContent = 'Refresh License';
+      });
+    }
   }
 
   /* ── Full render on first load ───────────────────────────────────────────── */
@@ -329,13 +367,15 @@
           _renderInvoice(data, { orderId, invoiceId, captureId, planLabel, amountStr, dateStr, payStatus, licenseKey });
 
           _renderLicenseDelivered(licenseKey);
-          return; // Stop polling
+          return; // Stop polling — timer cleared inside _renderLicenseDelivered
         }
       }
 
       // Expired token — stop polling, show error
       if (r.status === 403) {
+        if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
         _hide('os-license-pending');
+        _hide('os-license-fallback');
         _show('os-license-error');
         _setText('os-license-error-msg', 'Your access link has expired. Please contact support with your Order ID.');
         return;
@@ -345,13 +385,18 @@
     }
 
     if (_pollCount < MAX_POLL) {
+      // After ~5 seconds (FALLBACK_POLL polls × 2 s), replace the spinner with
+      // a calm fallback message + [Refresh License] button.  Polling continues
+      // in the background every 2 s so the key still appears automatically.
+      if (_pollCount === FALLBACK_POLL) {
+        _renderLicenseFallback();
+      }
       _schedulePoll();
     } else {
-      // Timed out — update pending note
-      const el = document.getElementById('os-license-pending-timeout');
-      if (el) el.hidden = false;
-      const note = document.getElementById('os-license-pending-note');
-      if (note) note.hidden = true;
+      // Hard timeout — show fallback if not already shown
+      if (document.getElementById('os-license-fallback')?.hidden !== false) {
+        _renderLicenseFallback();
+      }
     }
   }
 
