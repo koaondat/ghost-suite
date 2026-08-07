@@ -354,12 +354,17 @@ def confirm_payment_and_deliver(
     One order may only ever receive one key.
     """
     order_id = order_id.strip() if order_id else ""
-    # Normalise the plan slug — generator may store 'ghost_pro_monthly', checkout sends 'pro'.
-    plan     = _inv.normalize_plan((plan or "").strip().lower())
+
+    # ── Normalise the plan slug up front and log it ───────────────────────────
+    raw_plan  = (plan or "").strip()
+    plan      = _inv.normalize_plan(raw_plan.lower())
+    log.info("fulfill order=%s step=normalized_plan raw=%r canonical=%r", order_id, raw_plan, plan)
 
     if not order_id:
         return {"ok": False, "error": "order_id is required"}
     if not plan or plan not in PLAN_PRICES:
+        log.error("fulfill order=%s step=unknown_plan raw=%r canonical=%r known=%s",
+                  order_id, raw_plan, plan, list(PLAN_PRICES))
         return {"ok": False, "error": f"Unknown plan '{plan}'. Choose from: {list(PLAN_PRICES)}"}
     if not email or "@" not in email:
         return {"ok": False, "error": "A valid email is required"}
@@ -378,27 +383,54 @@ def confirm_payment_and_deliver(
         existing = _load_single_order(order_id) if _USE_REDIS else _find_order(order_id, _load_orders())
         log.info("fulfill order=%s step=order_loaded existing=%s", order_id, bool(existing))
 
+        if existing:
+            # ── Log what plan is stored vs what was requested ─────────────
+            stored_plan = existing.get("plan", "")
+            stored_plan_canonical = _inv.normalize_plan(stored_plan)
+            log.info(
+                "fulfill order=%s step=plan_check "
+                "order_plan_raw=%r order_plan_canonical=%r "
+                "request_plan_raw=%r request_plan_canonical=%r match=%s",
+                order_id,
+                stored_plan, stored_plan_canonical,
+                raw_plan, plan,
+                stored_plan_canonical == plan,
+            )
+
         # ── Idempotency: already delivered? ──────────────────────────────
         if existing:
-            if existing.get("payment_verified") and existing.get("license_key"):
+            if existing.get("license_key") and existing.get("delivery_status") == "delivered":
                 log.info("fulfill order=%s step=idempotent returning_existing_key", order_id)
                 return _safe_response(existing)
             if existing.get("delivery_status") == "out_of_stock":
                 # Try to fulfill from inventory now that more keys may be stocked
                 log.info("fulfill order=%s step=retry_out_of_stock", order_id)
                 pass  # fall through to inventory lookup below
+            # pending / delivery_pending — fall through to assign a key
 
         # ── Step 2: Check available licenses in inventory ─────────────────
         all_inv        = _inv_load_all()
         inv_total      = len(all_inv)
         inv_available  = [r for r in all_inv if r.get("status") in ("available", "unused")]
         avail_total    = len(inv_available)
+
+        # Log the raw plan stored on every inventory record so mismatches are obvious
+        inv_plans_raw      = [r.get("plan", "") for r in all_inv]
+        inv_plans_canonical = [_inv.normalize_plan(p) for p in inv_plans_raw]
+        log.info(
+            "fulfill order=%s step=available_keys_found "
+            "inventory_total=%d available_total=%d "
+            "inventory_plans_raw=%r inventory_plans_canonical=%r "
+            "searching_for_plan=%r",
+            order_id, inv_total, avail_total,
+            inv_plans_raw, inv_plans_canonical, plan,
+        )
+
         plan_available = [r for r in inv_available if _inv.normalize_plan(r.get("plan", "")) == plan]
         match_count    = len(plan_available)
         log.info(
-            "fulfill order=%s step=available_licenses_found plan=%s "
-            "inventory_total=%d available_total=%d matching_plan=%d",
-            order_id, plan, inv_total, avail_total, match_count,
+            "fulfill order=%s step=available_keys_found matching_plan=%d plan=%r",
+            order_id, match_count, plan,
         )
 
         # ── Step 3: Pick the next available key ───────────────────────────
@@ -408,30 +440,39 @@ def confirm_payment_and_deliver(
         if inv_record is None:
             # ── Out of stock — never leave delivery_status=pending ────────
             log.warning(
-                "fulfill order=%s step=out_of_stock plan=%s — setting delivery_status=out_of_stock",
+                "fulfill order=%s step=out_of_stock plan=%r — setting delivery_status=out_of_stock",
                 order_id, plan,
             )
             _log_delivery_failure(order_id, "out_of_stock", f"plan={plan}")
 
+            # Preserve any existing fields from the Redis-saved pending order
+            existing_payment_status = (existing or {}).get("payment_status", "")
+            oos_payment_status = (
+                "completed"
+                if existing_payment_status == "completed" or payment_token.startswith("paypal:")
+                else "verified"
+            )
             order_record: dict = {
+                **(existing or {}),
                 "order_id":         order_id,
-                "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else "",
-                "paypal_order_id":  paypal_order_id or (data_extra or {}).get("paypal_order_id", ""),
+                "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else (existing or {}).get("paypal_capture_id", ""),
+                "paypal_order_id":  paypal_order_id or (data_extra or {}).get("paypal_order_id", "") or (existing or {}).get("paypal_order_id", ""),
                 "plan":             plan,
                 "plan_label":       plan_label,
                 "email":            email,
                 "discord":          discord,
                 "price_usd":        resolved_price,
                 "currency":         "USD",
-                "created_at":       created_at,
-                "payment_status":   "verified",
+                "created_at":       (existing or {}).get("created_at", created_at),
+                "payment_status":   oos_payment_status,
                 "payment_verified": True,
                 "delivery_status":  "out_of_stock",
                 "license_key":      None,
                 "license_status":   "pending",
+                "failure_reason":   "out_of_stock",
             }
             _persist_order(order_id, order_record, existing)
-            log.info("fulfill order=%s step=order_updated delivery_status=out_of_stock", order_id)
+            log.info("fulfill order=%s step=order_saved delivery_status=out_of_stock", order_id)
             return {
                 "ok":               True,
                 "out_of_stock":     True,
@@ -439,8 +480,8 @@ def confirm_payment_and_deliver(
                 "plan":             plan,
                 "email":            email,
                 "price_usd":        resolved_price,
-                "created_at":       created_at,
-                "payment_status":   "verified",
+                "created_at":       order_record["created_at"],
+                "payment_status":   oos_payment_status,
                 "delivery_status":  "out_of_stock",
                 "license_key":      None,
                 "message": (
@@ -449,9 +490,10 @@ def confirm_payment_and_deliver(
                 ),
             }
 
-        log.info("fulfill order=%s step=selected_license key=[redacted]", order_id)
+        log.info("fulfill order=%s step=selected_key key=%s plan=%r",
+                 order_id, inv_record["key"], inv_record.get("plan", ""))
 
-        # ── Step 4: Assign the selected key ───────────────────────────────
+        # ── Step 4: Assign the selected key (atomic) ──────────────────────
         assigned = _inv_assign_key(
             key=inv_record["key"],
             order_id=order_id,
@@ -466,7 +508,14 @@ def confirm_payment_and_deliver(
             if inv_record is None:
                 _log_delivery_failure(order_id, "out_of_stock_race", f"plan={plan}")
                 # Persist as out_of_stock rather than leaving status=pending
+                existing_payment_status = (existing or {}).get("payment_status", "")
+                oos_payment_status2 = (
+                    "completed"
+                    if existing_payment_status == "completed" or payment_token.startswith("paypal:")
+                    else "verified"
+                )
                 oos_record: dict = {
+                    **(existing or {}),
                     "order_id":         order_id,
                     "plan":             plan,
                     "plan_label":       plan_label,
@@ -474,19 +523,21 @@ def confirm_payment_and_deliver(
                     "discord":          discord,
                     "price_usd":        resolved_price,
                     "currency":         "USD",
-                    "created_at":       created_at,
-                    "payment_status":   "verified",
+                    "created_at":       (existing or {}).get("created_at", created_at),
+                    "payment_status":   oos_payment_status2,
                     "payment_verified": True,
                     "delivery_status":  "out_of_stock",
                     "license_key":      None,
                     "license_status":   "pending",
+                    "failure_reason":   "out_of_stock_race",
                 }
                 _persist_order(order_id, oos_record, existing)
                 log.warning("fulfill order=%s step=out_of_stock_race delivery_status=out_of_stock", order_id)
                 return {"ok": False, "error": "Temporarily out of stock. Contact support."}
             assigned = _inv_assign_key(inv_record["key"], order_id, email, discord, created_at)
 
-        log.info("fulfill order=%s step=assignment_committed assigned=%s", order_id, assigned)
+        log.info("fulfill order=%s step=license_saved key=%s assigned=%s",
+                 order_id, inv_record["key"], assigned)
 
         # Preserve payment_status='completed' if already set by the capture step;
         # otherwise fall back to 'verified' (legacy token-based path).
@@ -499,9 +550,10 @@ def confirm_payment_and_deliver(
 
         assigned_key = inv_record["key"]
         order_record = {
+            **(existing or {}),
             "order_id":         order_id,
-            "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else "",
-            "paypal_order_id":  paypal_order_id or (data_extra or {}).get("paypal_order_id", ""),
+            "paypal_capture_id": (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else (existing or {}).get("paypal_capture_id", ""),
+            "paypal_order_id":  paypal_order_id or (data_extra or {}).get("paypal_order_id", "") or (existing or {}).get("paypal_order_id", ""),
             "plan":             plan,
             "plan_label":       plan_label,
             "tier":             PLAN_PRICES[plan]["tier"],
@@ -509,7 +561,7 @@ def confirm_payment_and_deliver(
             "discord":          discord,
             "price_usd":        resolved_price,
             "currency":         "USD",
-            "created_at":       created_at,
+            "created_at":       (existing or {}).get("created_at", created_at),
             "payment_status":   payment_status_final,
             "payment_verified": True,
             "delivery_status":  "delivered",
@@ -522,16 +574,16 @@ def confirm_payment_and_deliver(
         try:
             _persist_order(order_id, order_record, existing)
             log.info(
-                "fulfill order=%s step=order_updated delivery_status=delivered",
-                order_id,
+                "fulfill order=%s step=order_saved delivery_status=delivered license_key=%s",
+                order_id, assigned_key,
             )
         except Exception as exc:
             log.error("fulfill order=%s step=order_save_failed error=%s", order_id, exc)
             _log_delivery_failure(order_id, "order_save_failed", str(exc))
-            # Key was already assigned — return it anyway; admin can repair the order record
+            # Key was already assigned — return it anyway so the customer gets their key
             pass
 
-    log.info("fulfill order=%s complete delivery_status=delivered key=[redacted]", order_id)
+    log.info("fulfill order=%s step=delivery_status status=delivered", order_id)
     return _safe_response(order_record)
 
 
@@ -691,7 +743,8 @@ if _flask_available:
         record = get_order(order_id)
         if not record:
             return jsonify({"ok": False, "error": "Order not found"}), 404
-        if record.get("payment_status") != "verified":
+        # Accept both "verified" (legacy/Stripe) and "completed" (PayPal capture path)
+        if record.get("payment_status") not in ("verified", "completed"):
             return jsonify({"ok": False, "error": "Payment not verified for this order"}), 403
         if record.get("delivery_status") != "delivered":
             return jsonify({"ok": False, "error": "Order delivery is pending"}), 403
@@ -725,19 +778,23 @@ if _flask_available:
     @app.route("/api/order/<order_id>/fulfill", methods=["POST"])
     def route_fulfill_order(order_id: str):
         """
-        Retry delivery for an out-of-stock or delivery_pending order.
+        Retry delivery for a pending, delivery_pending, or out_of_stock order.
         NEVER re-charges. Idempotent — returns existing key if already delivered.
         """
         record = get_order(order_id)
         if not record:
             return jsonify({"ok": False, "error": "Order not found. Payment may not be saved yet."}), 404
 
-        # Already delivered — return existing key
+        log.info("fulfill_retry order=%s step=order_loaded delivery_status=%s license_key=%s",
+                 order_id, record.get("delivery_status"), "[present]" if record.get("license_key") else "[missing]")
+
+        # Already delivered — return existing key (idempotent)
         if record.get("license_key") and record.get("delivery_status") == "delivered":
             safe = {k: v for k, v in record.items() if k != "payment_verified"}
             safe["ok"] = True
             if not safe.get("download_url"):
                 safe["download_url"] = f"/api/order/{order_id}/download"
+            log.info("fulfill_retry order=%s step=idempotent already_delivered", order_id)
             return jsonify(safe), 200
 
         if record.get("payment_status") not in ("verified", "completed"):
@@ -747,18 +804,45 @@ if _flask_available:
                 "payment_status": record.get("payment_status"),
             }), 409
 
-        # Try to assign from inventory
-        plan = _inv.normalize_plan(record.get("plan", ""))
+        # Normalize plan from the stored order record
+        raw_plan = record.get("plan", "")
+        plan     = _inv.normalize_plan(raw_plan)
+        log.info("fulfill_retry order=%s step=normalized_plan raw=%r canonical=%r", order_id, raw_plan, plan)
+
         if not plan or plan not in PLAN_PRICES:
             return jsonify({"ok": False, "error": f"Unknown plan '{plan}' on stored order"}), 500
 
+        # Validate inventory and log what is available
+        all_inv       = _inv_load_all()
+        inv_available = [r for r in all_inv if r.get("status") in ("available", "unused")]
+        plan_avail    = [r for r in inv_available if _inv.normalize_plan(r.get("plan", "")) == plan]
+        log.info(
+            "fulfill_retry order=%s step=available_keys_found "
+            "inventory_total=%d available_total=%d matching_plan=%d plan=%r",
+            order_id, len(all_inv), len(inv_available), len(plan_avail), plan,
+        )
+
         inv_record = _inv_get_next_available(plan)
         if inv_record is None:
+            # Update the order to out_of_stock so it never stays pending
+            with _orders_lock:
+                rec_upd = _load_single_order(order_id) if _USE_REDIS else _find_order(order_id, _load_orders())
+                if rec_upd:
+                    rec_upd["delivery_status"] = "out_of_stock"
+                    rec_upd["failure_reason"]  = "out_of_stock"
+                    try:
+                        _persist_order(order_id, rec_upd, None)
+                        log.info("fulfill_retry order=%s step=order_saved delivery_status=out_of_stock", order_id)
+                    except Exception as exc:
+                        log.error("fulfill_retry order=%s failed to save out_of_stock: %s", order_id, exc)
             return jsonify({
-                "ok": False,
-                "error": "Still out of stock. Please contact support.",
+                "ok":              False,
+                "error":           "Still out of stock. Please contact support.",
                 "delivery_status": "out_of_stock",
             }), 200
+
+        log.info("fulfill_retry order=%s step=selected_key key=%s plan=%r",
+                 order_id, inv_record["key"], inv_record.get("plan", ""))
 
         created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         assigned   = _inv_assign_key(
@@ -770,6 +854,8 @@ if _flask_available:
         )
         if not assigned:
             return jsonify({"ok": False, "error": "Could not assign key. Try again."}), 500
+
+        log.info("fulfill_retry order=%s step=license_saved key=%s", order_id, inv_record["key"])
 
         with _orders_lock:
             rec2 = _load_single_order(order_id) if _USE_REDIS else _find_order(order_id, _load_orders())
@@ -786,11 +872,13 @@ if _flask_available:
                 rec2["download_url"]    = f"/api/order/{order_id}/download"
                 try:
                     _persist_order(order_id, rec2, None)
+                    log.info("fulfill_retry order=%s step=order_saved delivery_status=delivered license_key=%s",
+                             order_id, inv_record["key"])
                 except Exception as exc:
                     log.error("Failed to save fulfill update for order %s: %s", order_id, exc)
                     return jsonify({"ok": False, "error": "Order update could not be saved"}), 500
 
-        log.info("Fulfill — order=%s key=%s", order_id, inv_record["key"])
+        log.info("fulfill_retry order=%s step=delivery_status status=delivered", order_id)
         safe = {k: v for k, v in (rec2 or {}).items() if k != "payment_verified"}
         safe["ok"] = True
         if not safe.get("download_url"):
