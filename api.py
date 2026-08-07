@@ -114,6 +114,12 @@ if not os.environ.get("GHOST_HMAC_SECRET"):
 API_AUDIT_LOG = _HERE / "api_audit.json"
 ORDERS_DB     = _HERE / "orders.json"
 
+# ── Admin panel token ─────────────────────────────────────────────────────────
+# A separate short-lived JWT used only by the web admin panel UI.
+# Issued by /api/admin/panel/auth and verified by require_admin via X-Admin-Panel-Token.
+_PANEL_JWT_ALGO = "HS256"
+_PANEL_JWT_TTL  = 8 * 3600   # 8 hours
+
 # ── Thread lock for the audit log ─────────────────────────────────────────────
 _audit_lock = threading.Lock()
 
@@ -220,6 +226,30 @@ def _decode_jwt(token: str) -> dict | None:
         return None
 
 
+def _issue_panel_jwt(actor: str = "admin") -> str:
+    """Issue a short-lived JWT for the web admin panel UI."""
+    payload = {
+        "sub":   actor,
+        "scope": "admin_panel",
+        "iat":   int(time.time()),
+        "exp":   int(time.time()) + _PANEL_JWT_TTL,
+    }
+    return _pyjwt.encode(payload, _JWT_SECRET, algorithm=_PANEL_JWT_ALGO)
+
+
+def _decode_panel_jwt(token: str) -> dict | None:
+    """Validate a panel JWT; returns claims or None."""
+    try:
+        claims = _pyjwt.decode(token, _JWT_SECRET, algorithms=[_PANEL_JWT_ALGO])
+        if claims.get("scope") != "admin_panel":
+            return None
+        return claims
+    except _pyjwt.ExpiredSignatureError:
+        return None
+    except _pyjwt.InvalidTokenError:
+        return None
+
+
 def _get_token() -> str | None:
     """Extract Bearer token from Authorization header or ghost_token cookie."""
     auth = request.headers.get("Authorization", "")
@@ -250,27 +280,38 @@ def require_session(f):
 
 def require_admin(f):
     """
-    Require either:
+    Require one of:
       • X-Admin-Key header matching GHOST_ADMIN_API_KEY, OR
+      • X-Admin-Panel-Token header (signed panel JWT issued by /api/admin/panel/auth), OR
       • A valid JWT whose tier is ADMIN.
     Sets g.actor for audit logging.
     """
     @wraps(f)
     def wrapper(*args, **kwargs):
-        # API key path (bot, desktop panel, CI scripts)
+        import hmac as _hmac
+
+        # ── Path 1: raw API key (bot, desktop panel, CI scripts) ──────────────
         api_key = request.headers.get("X-Admin-Key", "").strip()
         if api_key:
             if not _ADMIN_API_KEY:
                 return jsonify({"ok": False, "error": "Admin access not configured"}), 403
-            # Constant-time compare
-            import hmac as _hmac
             if not _hmac.compare_digest(api_key.encode(), _ADMIN_API_KEY.encode()):
                 _audit("admin_auth_fail", "apikey", "", "Bad X-Admin-Key", ok=False)
                 return jsonify({"ok": False, "error": "Invalid admin key"}), 403
             g.actor = "__api_key__"
             return f(*args, **kwargs)
 
-        # JWT path (ADMIN-tier user logged in through dashboard)
+        # ── Path 2: web admin panel JWT (X-Admin-Panel-Token) ─────────────────
+        panel_token = request.headers.get("X-Admin-Panel-Token", "").strip()
+        if panel_token:
+            claims = _decode_panel_jwt(panel_token)
+            if not claims:
+                return jsonify({"ok": False, "error": "Admin session expired. Please log in again."}), 401
+            g.actor = claims.get("sub", "admin")
+            g.tier  = "ADMIN"
+            return f(*args, **kwargs)
+
+        # ── Path 3: ADMIN-tier customer JWT ───────────────────────────────────
         token = _get_token()
         if not token:
             return jsonify({"ok": False, "error": "Admin authentication required"}), 401
@@ -366,6 +407,70 @@ def _user_purchases(username: str) -> list[dict]:
                 "key_expires":    o.get("key_expires", ""),
             })
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin Panel auth  (web UI login — separate from the customer auth)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/panel/auth", methods=["POST"])
+@limiter.limit("10 per minute")
+def route_admin_panel_auth():
+    """
+    POST /api/admin/panel/auth { password }
+    Authenticates the admin panel UI.  Accepts either:
+      • A raw GHOST_ADMIN_API_KEY as the password (always works when configured)
+      • A SHA-256 password hash stored in admin_settings.json (set via /api/admin/settings/password)
+    Returns a short-lived panel JWT that must be sent as X-Admin-Panel-Token.
+    """
+    import hmac as _hmac
+    data = request.get_json(silent=True) or {}
+    password = (data.get("password") or "").strip()
+
+    if not password:
+        return jsonify({"ok": False, "error": "Password is required"}), 400
+
+    authenticated = False
+
+    # Check 1: direct match against raw admin API key
+    if _ADMIN_API_KEY and _hmac.compare_digest(password.encode(), _ADMIN_API_KEY.encode()):
+        authenticated = True
+
+    # Check 2: SHA-256 hash stored in settings (allows a web-UI-only password)
+    if not authenticated:
+        settings = _load_settings()
+        stored_hash = settings.get("admin_password_hash", "").strip().lower()
+        if stored_hash:
+            pw_hash = hashlib.sha256(password.encode()).hexdigest().lower()
+            if _hmac.compare_digest(pw_hash, stored_hash):
+                authenticated = True
+
+    if not authenticated:
+        log.warning("admin_panel_auth_fail ip=%s", request.remote_addr)
+        _audit("admin_panel_auth_fail", "panel", "", "Bad password", ok=False)
+        return jsonify({"ok": False, "error": "Invalid password"}), 401
+
+    token = _issue_panel_jwt("admin")
+    log.info("admin_panel_auth_success ip=%s", request.remote_addr)
+    _audit("admin_panel_auth", "admin", "", "Panel login", ok=True)
+    return jsonify({"ok": True, "token": token, "ttl": _PANEL_JWT_TTL})
+
+
+@app.route("/api/admin/panel/verify", methods=["GET"])
+def route_admin_panel_verify():
+    """
+    GET /api/admin/panel/verify
+    Returns 200 if the X-Admin-Panel-Token is still valid, 401 otherwise.
+    Used by the admin UI on page load to decide whether to skip the login form.
+    """
+    panel_token = request.headers.get("X-Admin-Panel-Token", "").strip()
+    if not panel_token:
+        return jsonify({"ok": False, "error": "No panel token provided"}), 401
+    claims = _decode_panel_jwt(panel_token)
+    if not claims:
+        return jsonify({"ok": False, "error": "Session expired or invalid"}), 401
+    remaining = int(claims.get("exp", 0) - time.time())
+    return jsonify({"ok": True, "actor": claims.get("sub", "admin"), "expires_in": remaining})
 
 
 # ─────────────────────────────────────────────────────────────────────────────

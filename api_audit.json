@@ -340,5 +340,23 @@
     "details": "",
     "ok": true,
     "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T04:31:30.887394+00:00",
+    "action": "admin_panel_auth",
+    "actor": "admin",
+    "target": "",
+    "details": "Panel login",
+    "ok": true,
+    "ip": "127.0.0.1"
+  },
+  {
+    "timestamp": "2026-08-07T04:31:30.897787+00:00",
+    "action": "admin_panel_auth_fail",
+    "actor": "panel",
+    "target": "",
+    "details": "Bad password",
+    "ok": false,
+    "ip": "127.0.0.1"
   }
 ]

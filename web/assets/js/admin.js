@@ -57,13 +57,35 @@
     }, dur);
   }
 
-  /* ── Authenticated fetch ───────────────────────────────────────────── */
-  async function apiFetch (path, opts = {}) {
+  /* ── Authenticated fetch with retry ───────────────────────────────── */
+  async function apiFetch (path, opts = {}, retries = 2) {
     const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
     if (_token) headers['X-Admin-Panel-Token'] = _token;
-    const res  = await fetch(path, { ...opts, headers });
-    const data = await res.json().catch(() => ({}));
-    return { ok: res.ok, status: res.status, data };
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res  = await fetch(path, { ...opts, headers });
+        // If the session expired, clear token and redirect to login
+        if (res.status === 401) {
+          const data = await res.json().catch(() => ({}));
+          if (_token && (data.error || '').toLowerCase().includes('session')) {
+            _token = '';
+            sessionStorage.removeItem('ghost_admin_panel_token');
+            hide('adminShell');
+            show('adminLogin');
+            toast('Session expired. Please log in again.', 'error');
+          }
+          return { ok: false, status: 401, data };
+        }
+        const data = await res.json().catch(() => ({}));
+        return { ok: res.ok, status: res.status, data };
+      } catch (networkErr) {
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+        } else {
+          throw networkErr;
+        }
+      }
+    }
   }
 
   /* ── Alert banner ──────────────────────────────────────────────────── */
@@ -134,7 +156,10 @@
   async function loadDashboard () {
     try {
       const { ok, data } = await apiFetch('/api/admin/dashboard');
-      if (!ok) return;
+      if (!ok) {
+        toast(data.error || 'Dashboard failed to load. Check server logs.', 'error');
+        return;
+      }
       _dashData = data;
       const c = data.cards || {};
       setText('statRevToday',   `$${(c.revenue_today  || 0).toFixed(2)}`);
@@ -154,7 +179,9 @@
       if (ordRes.ok) {
         renderRecentOrders((ordRes.data.orders || []).slice(-10).reverse());
       }
-    } catch (_) {}
+    } catch (err) {
+      toast(`Dashboard error: ${err.message || 'Network failure'}`, 'error');
+    }
   }
 
   function renderChart (type) {
@@ -790,7 +817,10 @@
   async function loadDownloads () {
     try {
       const { ok, data } = await apiFetch('/api/admin/downloads');
-      if (!ok) return;
+      if (!ok) {
+        toast(data.error || 'Failed to load downloads info.', 'error');
+        return;
+      }
       const v = data.current_version || '';
       setText('dlVersion',     v || 'Not set');
       setText('dlReleaseDate', data.release_date || '—');
@@ -814,7 +844,9 @@
           </div>
         `).join('');
       }
-    } catch (_) {}
+    } catch (err) {
+      toast(`Downloads error: ${err.message || 'Network failure'}`, 'error');
+    }
   }
 
   window.rollbackVersion = function (version) {
@@ -918,7 +950,10 @@
   async function loadSettings () {
     try {
       const { ok, data } = await apiFetch('/api/admin/settings');
-      if (!ok) return;
+      if (!ok) {
+        toast(data.error || 'Failed to load settings.', 'error');
+        return;
+      }
       const s = data.settings || {};
       $('settingSiteName').value        = s.site_name           || '';
       $('settingLogoUrl').value         = s.logo_url            || '';
@@ -928,7 +963,9 @@
       $('settingMaintenance').checked   = !!s.maintenance_mode;
       $('settingPaypalClientId').value  = s.paypal_client_id    || '';
       $('settingPaypalEnv').value       = s.paypal_environment  || 'sandbox';
-    } catch (_) {}
+    } catch (err) {
+      toast(`Settings error: ${err.message || 'Network failure'}`, 'error');
+    }
   }
 
   async function saveSiteSettings () {
