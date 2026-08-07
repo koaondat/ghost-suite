@@ -204,32 +204,30 @@
             </div>
           </div>
 
-          <!-- ── STEP 2 (FREE): Free Checkout section (shown instead of Payment when total=$0.00) ── -->
+          <!-- ── STEP 2 (FREE): Free License Redemption (shown instead of Payment when total=$0.00) ── -->
           <div id="co-free-checkout-section" hidden aria-live="polite">
             <div class="co-section-heading" style="margin-top:1.5rem;">
               <span class="co-step-badge">2</span>
-              <h2>Free Checkout</h2>
+              <h2>🎉 Free License Redemption</h2>
             </div>
-            <div style="background:var(--surface,#f7f8fa);border:1px solid var(--border,#e5e7eb);border-radius:10px;padding:1.25rem 1.25rem 1rem;margin-bottom:1rem;">
-              <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.75rem;font-weight:600;color:var(--text,#1f2328);">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-                Coupon Applied
+            <div style="background:var(--surface,#f7f8fa);border:1px solid rgba(34,197,94,0.25);border-radius:10px;padding:1.5rem 1.25rem 1.25rem;margin-bottom:1rem;text-align:center;">
+              <div style="width:52px;height:52px;border-radius:50%;background:rgba(34,197,94,0.12);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
               </div>
-              <p style="font-size:.9375rem;color:var(--muted,#57606a);margin:0 0 .5rem;">
-                🎉 This order is completely free.<br>
-                Your coupon covers 100% of the purchase.
+              <p style="font-size:1rem;font-weight:600;color:var(--text,#1f2328);margin:0 0 .5rem;">
+                Your coupon covers 100% of this purchase.
               </p>
-              <p style="font-size:.9375rem;color:var(--muted,#57606a);margin:0;">
-                Click below to instantly receive your license.
+              <p style="font-size:.9375rem;color:var(--muted,#57606a);margin:0 0 1rem;">
+                No payment is required. Click below to instantly receive your license.
               </p>
-              <div style="margin-top:1rem;padding-top:.875rem;border-top:1px solid var(--border,#e5e7eb);">
+              <div style="padding-top:.875rem;border-top:1px solid var(--border,#e5e7eb);">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                   <span style="font-size:.875rem;color:var(--muted,#57606a);">Total Due Today</span>
-                  <span style="font-size:1.25rem;font-weight:700;color:var(--text,#1f2328);">$0.00</span>
+                  <span style="font-size:1.25rem;font-weight:700;color:#22c55e;">$0.00 FREE</span>
                 </div>
               </div>
             </div>
-            <button type="button" class="btn btn-primary co-submit-btn" id="co-free-coupon-btn" style="width:100%;">
+            <button type="button" class="btn btn-primary co-submit-btn" id="co-free-coupon-btn" style="width:100%;background:linear-gradient(135deg,#16a34a,#15803d);border:none;">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               Claim Free License
             </button>
@@ -307,8 +305,8 @@
 
           </div><!-- /co-payment-section -->
 
-          <!-- Secure notice -->
-          <div class="co-secure-notice">
+          <!-- Secure notice (only shown for paid checkout) -->
+          <div class="co-secure-notice" id="co-secure-notice">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             Secured with 256-bit TLS encryption. Payment processed by PayPal.
             We never store your card details.

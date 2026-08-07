@@ -382,6 +382,7 @@ html, body { height: 100%; }
 }
 .btn-icon:hover { color: var(--text); background: var(--surface-3); border-color: var(--border-2); }
 .btn-icon--danger:hover { color: #f87171; border-color: rgba(239,68,68,0.35); background: rgba(239,68,68,0.08); }
+.btn-icon--green:hover  { color: #4ade80; border-color: rgba(34,197,94,0.35);  background: rgba(34,197,94,0.08); }
 
 /* ── Table ─────────────────────────────────────────────────────────── */
 .admin-table-wrap { overflow-x: auto; }
@@ -867,3 +868,113 @@ input[type="date"].form-input { color-scheme: dark; }
 }
 .admin-status-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .admin-status-tab:hover:not(.active) { color: var(--text); border-bottom-color: var(--border); }
+
+/* ── Skeleton loader cells ─────────────────────────────────────────── */
+.skel-cell {
+  height: 14px;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  border-radius: 4px;
+  animation: skelShimmer 1.4s infinite;
+  width: 80%;
+}
+@keyframes skelShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Global search results dropdown ───────────────────────────────── */
+.gs-loading, .gs-empty {
+  padding: 12px 16px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+.gs-section-title {
+  padding: 6px 14px 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.gs-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background var(--transition);
+}
+.gs-item:hover { background: var(--surface-3); }
+.gs-item:last-child { border-bottom: none; }
+.gs-item-main { font-size: 0.85rem; color: var(--text); font-weight: 500; }
+.gs-item-sub  { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+
+/* ── Animated status badges ────────────────────────────────────────── */
+.badge--green, .badge--cyan, .badge--red, .badge--yellow, .badge--purple {
+  position: relative;
+}
+.badge--green::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  margin-right: 5px;
+  animation: badgePulse 2.2s infinite;
+  vertical-align: middle;
+}
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* ── Responsive admin fixes ────────────────────────────────────────── */
+@media (max-width: 680px) {
+  .global-search-wrap { max-width: 100% !important; }
+  .admin-page-header { flex-wrap: wrap; }
+}
+
+/* ── Additional responsive improvements ─────────────────────────── */
+
+/* Stat grid — ensure cards wrap nicely on all widths */
+@media (max-width: 480px) {
+  .admin-stat-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .admin-stat-card { padding: 14px 12px; }
+  .admin-stat-value { font-size: 1.15rem; }
+  .admin-page-header h1 { font-size: 1.15rem; }
+  .admin-page-header p { font-size: 0.78rem; }
+}
+
+/* Table action cells — wrap on narrow screens */
+@media (max-width: 860px) {
+  .actions-cell { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px; }
+  .admin-toolbar { gap: 8px; }
+}
+
+/* Customer-licenses table — hide HWID column on tablet */
+@media (max-width: 960px) {
+  #clTable th:nth-child(8),
+  #clTable td:nth-child(8) { display: none; }
+}
+
+/* Customer-licenses table — hide Discord+Order on mobile */
+@media (max-width: 640px) {
+  #clTable th:nth-child(5),
+  #clTable td:nth-child(5) { display: none; }
+  #clTable th:nth-child(6),
+  #clTable td:nth-child(6) { display: none; }
+}
+
+/* Admin mobile hamburger */
+@media (max-width: 680px) {
+  .admin-hamburger { display: flex; }
+  .global-search-wrap { flex: 1; }
+  .admin-topbar-right { gap: 8px; }
+}
+
+/* Coupon table — hide Created on mobile */
+@media (max-width: 640px) {
+  .coupon-table th:last-child,
+  .coupon-table td:last-child { display: none; }
+}

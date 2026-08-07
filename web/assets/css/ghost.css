@@ -4566,3 +4566,43 @@ section { padding: 100px 0; }
   .os-actions .btn     { width: 100%; }
   .os-invoice-header   { flex-direction: column; align-items: flex-start; gap: 8px; }
 }
+
+/* ============================================================
+   RESPONSIVE POLISH — Additional breakpoints
+   ============================================================ */
+
+/* Purchase history table — tablet */
+@media (max-width: 768px) {
+  .pur-table th:nth-child(5),
+  .pur-table td:nth-child(5) { display: none; } /* hide payment status */
+  .pur-table th:nth-child(7),
+  .pur-table td:nth-child(7) { display: none; } /* hide license status */
+  .pur-summary { gap: 16px; }
+}
+
+/* Dashboard stat grid — fine-tune */
+@media (max-width: 380px) {
+  .db-stat-grid { grid-template-columns: 1fr; }
+}
+
+/* Purchases table — no horizontal overflow on narrow screens */
+@media (max-width: 480px) {
+  .pur-table th:nth-child(2),
+  .pur-table td:nth-child(2) { display: none; } /* hide date */
+  .pur-table th:nth-child(3),
+  .pur-table td:nth-child(3) { font-size: 0.72rem; max-width: 80px; white-space: normal; }
+  .pur-summary { flex-wrap: wrap; gap: 12px; }
+  .pur-summary-item { flex: 1 0 calc(50% - 12px); }
+}
+
+/* DB Key card — prevent overflow on very small screens */
+@media (max-width: 360px) {
+  .db-key-mono { font-size: 0.72rem; word-break: break-all; }
+}
+
+/* Checkout responsive improvements */
+@media (max-width: 520px) {
+  .co-confirm-section { padding: 16px; }
+  .co-section-heading h2 { font-size: 1rem; }
+  .co-order-item { flex-direction: column; align-items: flex-start; gap: 4px; }
+}

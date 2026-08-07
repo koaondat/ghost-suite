@@ -1120,10 +1120,10 @@
             ? p.licenseKey.slice(0, 10) + '…' + p.licenseKey.slice(-6)
             : p.licenseKey
           : '—';
-        const receiptBtn = p.receiptToken
-          ? `<button class="pur-receipt-btn" data-receipt="${_esc(p.receiptToken)}" aria-label="View receipt for ${_esc(p.orderId)}">
+        const invoiceBtn = p.orderId
+          ? `<button class="pur-receipt-btn" data-orderid="${_esc(p.orderId)}" aria-label="Download invoice for ${_esc(p.orderId)}">
                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-               Receipt
+               Invoice
              </button>`
           : '<span style="color:var(--muted);font-size:0.78rem">—</span>';
 
@@ -1141,7 +1141,7 @@
               </button>` : ''}
             </td>
             <td><span class="db-status-badge ${lStat.cls}">${lStat.label}</span></td>
-            <td>${receiptBtn}</td>
+            <td>${invoiceBtn}</td>
           </tr>
         `;
       }).join('');
@@ -1159,11 +1159,35 @@
         });
       });
 
-      // Wire receipt buttons (stub — backend resolves token to receipt URL)
+      // Wire invoice download buttons
       tbody.querySelectorAll('.pur-receipt-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          // TODO: fetch('/api/receipt/' + btn.dataset.receipt) → redirect to PDF
-          toast('Receipt download is not yet connected. Check your email for receipts.', 'success');
+          const p = allPurchases.find(x => x.orderId === btn.dataset.orderid);
+          if (!p) return;
+          const lines = [
+            '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+            '              GHOST — INVOICE',
+            '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+            `Invoice ID  : ${p.orderId}`,
+            `Date        : ${_fmt(p.purchaseDate)}`,
+            `Plan        : ${p.plan}`,
+            `Amount      : ${Number(p.amount) > 0 ? '$' + Number(p.amount).toFixed(2) : 'Free'}`,
+            `Payment     : ${p.paymentStatus}`,
+            `License Key : ${p.licenseKey || 'Not assigned'}`,
+            '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+            'ghost.gg — Thank you for your purchase.',
+            '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+          ];
+          const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+          const url  = URL.createObjectURL(blob);
+          const a    = document.createElement('a');
+          a.href     = url;
+          a.download = `ghost-invoice-${p.orderId.replace(/^#/, '')}.txt`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          toast('Invoice downloaded!', 'success');
         });
       });
 

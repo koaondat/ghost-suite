@@ -115,6 +115,14 @@
     <!-- Main content -->
     <main class="admin-main" id="adminMain">
 
+      <!-- ── Global Search Bar ───────────────────────────────────────────── -->
+      <div class="global-search-wrap" style="position:relative;max-width:380px;margin-bottom:20px;">
+        <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" id="globalSearch" class="admin-search" placeholder="Search orders, emails, licenses, coupons…" style="padding-left:34px;width:100%;" autocomplete="off" />
+        <div id="globalSearchResults" class="global-search-results" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--surface-2);border:1px solid var(--border-2);border-radius:var(--radius);z-index:200;max-height:320px;overflow-y:auto;box-shadow:var(--shadow);"></div>
+      </div>
+
+
       <!-- ── TAB: Dashboard ──────────────────────────────────────────── -->
       <section id="tab-dashboard" class="admin-tab">
         <div class="admin-page-header">
@@ -184,13 +192,31 @@
               <span class="admin-stat-value" id="statKeysLeft">—</span>
             </div>
           </div>
+          <div class="admin-stat-card admin-stat-card--cyan">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Orders Today</span>
+              <span class="admin-stat-value" id="statOrdersToday">—</span>
+            </div>
+          </div>
           <div class="admin-stat-card admin-stat-card--yellow">
             <div class="stat-icon">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             </div>
             <div>
-              <span class="admin-stat-label">Pending Orders</span>
+              <span class="admin-stat-label">Pending Deliveries</span>
               <span class="admin-stat-value" id="statPending">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card admin-stat-card--purple">
+            <div class="stat-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Active Coupons</span>
+              <span class="admin-stat-value" id="statCoupons">—</span>
             </div>
           </div>
           <div class="admin-stat-card admin-stat-card--red">
@@ -913,10 +939,18 @@
             <h1 class="admin-page-title">Coupons</h1>
             <p class="admin-page-sub">Manage discount codes and promotions</p>
           </div>
-          <button class="btn btn-primary btn--sm" id="openCreateCouponBtn">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Create Coupon
-          </button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <!-- Quick-create preset coupons -->
+            <button class="btn btn-ghost btn--sm" data-quick-coupon="20">+20%</button>
+            <button class="btn btn-ghost btn--sm" data-quick-coupon="25">+25%</button>
+            <button class="btn btn-ghost btn--sm" data-quick-coupon="50">+50%</button>
+            <button class="btn btn-ghost btn--sm" data-quick-coupon="75">+75%</button>
+            <button class="btn btn-ghost btn--sm" data-quick-coupon="100" style="color:var(--green);border-color:rgba(34,197,94,0.4)">+FREE</button>
+            <button class="btn btn-primary btn--sm" id="openCreateCouponBtn">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Create Custom
+            </button>
+          </div>
         </div>
 
         <div id="couponAlert" class="admin-alert" style="display:none; margin-bottom:14px"></div>
@@ -927,13 +961,13 @@
               <thead>
                 <tr>
                   <th>Code</th>
-                  <th>Type</th>
                   <th>Discount</th>
                   <th>Plan</th>
                   <th>Uses</th>
-                  <th>Limit</th>
+                  <th>Remaining</th>
                   <th>Expires</th>
                   <th>Status</th>
+                  <th>Created</th>
                   <th>Actions</th>
                 </tr>
               </thead>

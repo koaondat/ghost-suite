@@ -104,13 +104,10 @@
           if (_sessionVerified && _loggedIn && !_handlingSessionExpiry) {
             _handlingSessionExpiry = true;
             _loggedIn = false;
-            console.log('[admin] logout_triggered_reason=session_expired_401 path=' + path);
             hide('adminShell');
             hide('adminLoading');
             show('adminLogin');
             toast('Session expired. Please log in again.', 'error');
-            // Reset the guard after the toast duration so a fresh login
-            // can trigger it again if needed.
             setTimeout(() => { _handlingSessionExpiry = false; }, 4000);
           }
           return { ok: false, status: 401, data };
@@ -170,7 +167,6 @@
       // Session confirmed — safe to render.
       _loggedIn        = true;
       _sessionVerified = true;
-      console.log('[admin] admin_ui_rendered source=login');
       hide('adminLogin');
       hide('adminLoading');
       show('adminShell');
@@ -183,7 +179,6 @@
   }
 
   async function doLogout () {
-    console.log('[admin] logout_triggered_reason=user_requested');
     _loggedIn = false;
     _sessionVerified = false;
     // POST to /api/admin/logout so the server can clear the HttpOnly cookie.
@@ -217,27 +212,41 @@
   /* ── Dashboard ─────────────────────────────────────────────────────── */
   async function loadDashboard () {
     try {
-      const { ok, data } = await apiFetch('/api/admin/dashboard');
-      if (!ok) {
-        toast(data.error || 'Dashboard failed to load. Check server logs.', 'error');
+      const [dashRes, ordRes, couponRes] = await Promise.all([
+        apiFetch('/api/admin/dashboard'),
+        apiFetch('/api/admin/orders'),
+        apiFetch('/api/admin/coupons'),
+      ]);
+      if (!dashRes.ok) {
+        toast(dashRes.data.error || 'Dashboard failed to load. Check server logs.', 'error');
         return;
       }
+      const data = dashRes.data;
       _dashData = data;
-      const c = data.cards || {};
-      setText('statRevToday',   `$${(c.revenue_today  || 0).toFixed(2)}`);
-      setText('statRevMonth',   `$${(c.revenue_month  || 0).toFixed(2)}`);
-      setText('statRevTotal',   `$${(c.revenue_total  || 0).toFixed(2)}`);
-      setText('statTotalOrders', c.total_orders   || 0);
-      setText('statActiveLic',   c.active_licenses|| 0);
-      setText('statKeysLeft',    c.keys_remaining || 0);
-      setText('statPending',     c.pending_orders || 0);
-      setText('statFailed',      c.failed_payments|| 0);
+      const c       = data.cards || {};
+      const graphs  = data.graphs || {};
+      const ordToday = (graphs.orders || []).slice(-1)[0] || 0;
+
+      setText('statRevToday',    `$${(c.revenue_today  || 0).toFixed(2)}`);
+      setText('statRevMonth',    `$${(c.revenue_month  || 0).toFixed(2)}`);
+      setText('statRevTotal',    `$${(c.revenue_total  || 0).toFixed(2)}`);
+      setText('statTotalOrders',  c.total_orders    || 0);
+      setText('statActiveLic',    c.active_licenses || 0);
+      setText('statKeysLeft',     c.keys_remaining  || 0);
+      setText('statPending',      c.pending_orders  || 0);
+      setText('statFailed',       c.failed_payments || 0);
+      setText('statOrdersToday',  ordToday);
+
+      // Coupon count
+      if (couponRes.ok) {
+        const coupons = couponRes.data.coupons || [];
+        const activeCoupons = coupons.filter(cp => !cp.disabled && (cp.uses == null || cp.remaining == null || cp.remaining > 0));
+        setText('statCoupons', activeCoupons.length);
+      }
 
       _graphData = data.graphs;
       renderChart('revenue');
 
-      // Load recent orders for the table
-      const ordRes = await apiFetch('/api/admin/orders');
       if (ordRes.ok) {
         renderRecentOrders((ordRes.data.orders || []).slice(-10).reverse());
       }
@@ -375,7 +384,8 @@
   /* ── Key Inventory ─────────────────────────────────────────────────── */
   async function loadInventory (filter = {}) {
     const tb = $('inventoryTbody');
-    tb.innerHTML = '<tr><td colspan="12" class="admin-table-empty skeleton-row">Loading…</td></tr>';
+    // Skeleton loader
+    tb.innerHTML = Array(5).fill('<tr>' + Array(12).fill('<td><div class="skel-cell"></div></td>').join('') + '</tr>').join('');
     try {
       const params = new URLSearchParams();
       // Active tab sets the status. '__all__' = no filter. '' or 'available' = status=available.
@@ -391,20 +401,8 @@
       const { ok, data } = await apiFetch(`/api/admin/inventory?${params}`);
       if (!ok) throw new Error(data.error || 'Failed to load inventory');
 
-      // Diagnostic: log response shape so malformed data is never silent
-      console.log('[inventory] response shape — typeof:', typeof data,
-        '| Array.isArray(data):', Array.isArray(data),
-        '| top-level keys:', Object.keys(data || {}).join(', '),
-        '| items isArray:', Array.isArray(data.items),
-        '| items length:', Array.isArray(data.items) ? data.items.length : '(not array)');
-
       // Normalize: always guarantee an array regardless of what the server sent
       const items = Array.isArray(data.items) ? data.items : [];
-      if (!Array.isArray(data.items)) {
-        console.warn('[inventory] WARNING: data.items is not an array — got typeof=' +
-          typeof data.items + ' value=' + JSON.stringify(data.items).slice(0, 120) +
-          ' — falling back to []');
-      }
 
       _allInventory = items;
       renderInventory(_allInventory, 1);
@@ -716,17 +714,14 @@
   /* ── Orders ─────────────────────────────────────────────────────────── */
   async function loadOrders () {
     const tb = $('ordersTbody');
-    tb.innerHTML = '<tr><td colspan="10" class="admin-table-empty">Loading…</td></tr>';
+    // Skeleton loader
+    tb.innerHTML = Array(5).fill('<tr>' + Array(10).fill('<td><div class="skel-cell"></div></td>').join('') + '</tr>').join('');
     try {
       const { ok, data } = await apiFetch('/api/admin/orders');
       if (!ok) throw new Error(data.error || 'Failed to load orders');
       // Normalize: orders must always be an array
-      const raw = data.orders;
-      if (!Array.isArray(raw)) {
-        console.warn('[orders] WARNING: data.orders is not an array — typeof=' +
-          typeof raw + ' — falling back to []');
-      }
-      let orders = (Array.isArray(raw) ? raw : []).reverse();
+        const raw = data.orders;
+        let orders = (Array.isArray(raw) ? raw : []).reverse();
       _allOrders = orders;
       applyOrderFilter();
     } catch (err) {
@@ -950,8 +945,11 @@
         <td class="actions-cell">
           <button class="btn-icon" onclick="copyText('${esc(k.key)}')" title="Copy Key">Copy</button>
           ${k.order_id ? `<button class="btn-icon" onclick="openOrderDetail('${esc(k.order_id)}')">View Order</button>` : ''}
+          ${k.customer_email || k.customer ? `<button class="btn-icon" onclick="viewCustomerByEmail('${esc(k.customer_email || k.customer)}')">View Customer</button>` : ''}
+          <button class="btn-icon" onclick="openExtendKey('${esc(k.key)}')">Extend</button>
           <button class="btn-icon" onclick="resetHwidForKey('${esc(k.key)}')">Reset HWID</button>
-          ${k.status !== 'revoked' ? `<button class="btn-icon btn-icon--danger" onclick="revokeKey('${esc(k.key)}')">Revoke</button>` : ''}
+          ${k.status === 'revoked' ? `<button class="btn-icon btn-icon--green" onclick="reactivateKey('${esc(k.key)}')">Reactivate</button>` : `<button class="btn-icon btn-icon--danger" onclick="revokeKey('${esc(k.key)}')">Revoke</button>`}
+          ${k.order_id ? `<button class="btn-icon" onclick="downloadInvoice('${esc(k.order_id)}')">Invoice</button>` : ''}
         </td>
       </tr>
     `).join('');
@@ -998,6 +996,61 @@
     });
   };
 
+  window.reactivateKey = function (key) {
+    confirmAction('Reactivate Key', `Reactivate key ${key}? Status will be changed back to activated.`, async () => {
+      const { ok, data } = await apiFetch(`/api/admin/inventory/${encodeURIComponent(key)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'activated' }),
+      });
+      if (ok) { toast('Key reactivated.', 'success'); loadCustomerLicenses(); }
+      else toast(data.error || 'Reactivate failed.', 'error');
+    });
+  };
+
+  window.viewCustomerByEmail = function (email) {
+    switchTab('customers');
+    const searchEl = $('customerSearch');
+    if (searchEl) { searchEl.value = email; }
+    loadCustomers(email);
+  };
+
+  window.downloadInvoice = async function (orderId) {
+    try {
+      const { ok, data } = await apiFetch(`/api/admin/orders/${encodeURIComponent(orderId)}`);
+      if (!ok) { toast('Could not load order for invoice.', 'error'); return; }
+      const o = data.order || data;
+      const lines = [
+        '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+        '              GHOST — INVOICE',
+        '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+        `Invoice ID  : ${o.order_id}`,
+        `Date        : ${fmtDate(o.created_at)}`,
+        `Customer    : ${o.email || '—'}`,
+        `Discord     : ${o.discord || '—'}`,
+        `Plan        : ${o.plan_label || o.plan || '—'}`,
+        `Amount      : $${parseFloat(o.price_usd || 0).toFixed(2)} ${o.currency || 'USD'}`,
+        `Payment     : ${o.payment_status || '—'}`,
+        `Delivery    : ${o.delivery_status || '—'}`,
+        `License Key : ${o.license_key || 'Not assigned'}`,
+        '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+        'ghost.gg — Thank you for your purchase.',
+        '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      ];
+      const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `ghost-invoice-${o.order_id}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast('Invoice downloaded.', 'success');
+    } catch (_) {
+      toast('Invoice download failed.', 'error');
+    }
+  };
+
   window.deleteKey = function (key) {
     confirmAction('Delete Key', `Permanently delete key ${key}?`, async () => {
       const { ok, data } = await apiFetch(`/api/admin/inventory/${encodeURIComponent(key)}`, { method: 'DELETE' });
@@ -1017,10 +1070,6 @@
       if (!ok) throw new Error(data.error || 'Failed to load customers');
       // Normalize: customers must always be an array
       const rawCust = data.customers;
-      if (!Array.isArray(rawCust)) {
-        console.warn('[customers] WARNING: data.customers is not an array — typeof=' +
-          typeof rawCust + ' — falling back to []');
-      }
       _allCustomers = Array.isArray(rawCust) ? rawCust : [];
       renderCustomers(_allCustomers, 1);
     } catch (err) {
@@ -1130,10 +1179,6 @@
       const hist = $('dlHistory');
       // Normalize: history must be an array before .reverse().map()
       const history = Array.isArray(data.history) ? data.history : [];
-      if (!Array.isArray(data.history) && data.history != null) {
-        console.warn('[downloads] WARNING: data.history is not an array — typeof=' +
-          typeof data.history + ' — falling back to []');
-      }
       if (!history.length) {
         hist.innerHTML = '<p class="admin-table-empty">No previous versions.</p>';
       } else {
@@ -1527,42 +1572,26 @@
 
   /* ── Auto-login check ───────────────────────────────────────────────── */
   async function checkExistingSession () {
-    // ── Initial session gate ──────────────────────────────────────────────
-    // The loading screen (#adminLoading) is visible by default.
-    // This function makes exactly ONE request to /api/admin/session and uses
-    // its result to decide whether to show the dashboard or the login form.
-    //
-    // NOTHING else runs before this resolves — _loggedIn and _sessionVerified
-    // are both false until the response arrives, so apiFetch's 401 handler
-    // cannot trigger an erroneous session-expiry UI transition during this window.
-    console.log('[admin] session_check_started');
     try {
       const res  = await fetch('/api/admin/session', { credentials: 'include' });
       const data = await res.json().catch(() => ({}));
-      console.log('[admin] session_check_status=' + res.status + ' authenticated=' + Boolean(data.authenticated));
 
       if (res.ok && data.authenticated) {
-        // Session is valid — mark state, hide loading screen, show dashboard.
         _loggedIn        = true;
         _sessionVerified = true;
-        console.log('[admin] admin_ui_rendered source=session_check');
         hide('adminLoading');
         hide('adminLogin');
         show('adminShell');
         loadDashboard();
       } else {
-        // No valid session — hide loading screen, show login form.
-        _sessionVerified = true;   // check is complete; 401 handling can now activate
+        _sessionVerified = true;
         hide('adminLoading');
         show('adminLogin');
-        // Focus the API key field for fast entry.
         const keyField = $('adminApiKey');
         if (keyField) keyField.focus();
       }
     } catch (_) {
-      // Network error — hide loading screen, show login form so the user can retry.
       _sessionVerified = true;
-      console.log('[admin] session_check_status=network_error');
       hide('adminLoading');
       show('adminLogin');
     }
@@ -1873,7 +1902,8 @@
   async function loadCoupons () {
     const tb = $('couponsTbody');
     if (!tb) return;
-    tb.innerHTML = '<tr><td colspan="9" class="admin-table-empty">Loading…</td></tr>';
+    // Skeleton loader while fetching
+    tb.innerHTML = Array(3).fill('<tr>' + Array(9).fill('<td><div class="skel-cell"></div></td>').join('') + '</tr>').join('');
     try {
       const { ok, data } = await apiFetch('/api/admin/coupons');
       if (!ok) throw new Error(data.error || 'Failed to load coupons');
@@ -1900,22 +1930,27 @@
       const planLabel = c.applies_to === 'all' ? 'All Plans'
         : c.applies_to === 'pro' ? 'Pro'
         : c.applies_to === 'lifetime' ? 'Lifetime' : esc(c.applies_to);
-      const remaining = c.usage_limit != null ? (c.usage_limit - (c.uses || 0)) : '∞';
+      const uses      = c.uses || 0;
+      const limit     = c.usage_limit != null ? c.usage_limit : null;
+      const remaining = limit != null ? (limit - uses) : '∞';
+      const remColor  = (remaining !== '∞' && remaining <= 0) ? 'var(--red)' : (remaining !== '∞' && remaining <= 5) ? 'var(--yellow)' : '';
       const statusBadgeHtml = c.active
         ? '<span class="badge badge--green">Active</span>'
         : '<span class="badge badge--muted">Disabled</span>';
+      const expiredSoon = c.expiration_date && new Date(c.expiration_date) < new Date(Date.now() + 3*24*60*60*1000);
       return `<tr>
         <td><span class="key-mono copy-cell" onclick="copyText('${esc(c.code)}')" title="Copy">${esc(c.code)}</span></td>
-        <td>${esc(c.discount_type === 'free' ? 'Free' : c.discount_type === 'percentage' ? 'Percent' : 'Fixed')}</td>
-        <td>${esc(discLabel)}</td>
+        <td><span style="font-weight:600;color:${c.discount_type==='free'?'var(--green)':c.discount_type==='percentage'?'var(--cyan)':'var(--gold)'}">${esc(discLabel)}</span></td>
         <td>${planLabel}</td>
-        <td>${c.uses || 0}</td>
-        <td>${c.usage_limit != null ? c.usage_limit : '∞'}</td>
-        <td>${c.expiration_date ? fmtDateShort(c.expiration_date) : '<span style="color:var(--muted)">Never</span>'}</td>
+        <td>${uses}</td>
+        <td style="${remColor?'color:'+remColor:''}">${remaining}</td>
+        <td>${c.expiration_date ? `<span ${expiredSoon?'style="color:var(--red)"':''}>${fmtDateShort(c.expiration_date)}</span>` : '<span style="color:var(--muted)">Never</span>'}</td>
         <td>${statusBadgeHtml}</td>
+        <td>${c.created_at ? fmtDateShort(c.created_at) : '<span style="color:var(--muted)">—</span>'}</td>
         <td class="actions-cell">
-          <button class="btn-icon" onclick="copyText('${esc(c.code)}')">Copy</button>
-          <button class="btn-icon" onclick="openEditCoupon(${JSON.stringify(JSON.stringify(c))})">Edit</button>
+          <button class="btn-icon" onclick="copyText('${esc(c.code)}')" title="Copy">Copy</button>
+          <button class="btn-icon" onclick="openEditCoupon(${JSON.stringify(JSON.stringify(c))})" title="Edit">Edit</button>
+          <button class="btn-icon" onclick="duplicateCoupon(${JSON.stringify(JSON.stringify(c))})" title="Duplicate">Dupe</button>
           ${c.active
             ? `<button class="btn-icon btn-icon--danger" onclick="setCouponActive('${esc(c.code)}',false)">Disable</button>`
             : `<button class="btn-icon" onclick="setCouponActive('${esc(c.code)}',true)">Enable</button>`}
@@ -1924,6 +1959,47 @@
       </tr>`;
     }).join('');
   }
+
+  /* Quick-create coupon with preset discount */
+  async function quickCreateCoupon (pct) {
+    const code = 'GHOST' + pct + 'OFF' + Math.random().toString(36).slice(2,6).toUpperCase();
+    const payload = {
+      code,
+      discount_type:  pct === 100 ? 'free' : 'percentage',
+      discount_value: pct,
+      applies_to:     'all',
+      usage_limit:    null,
+      active:         true,
+      notes:          `Quick-created ${pct}% coupon`,
+    };
+    try {
+      const { ok, data } = await apiFetch('/api/admin/coupons', { method: 'POST', body: JSON.stringify(payload) });
+      if (ok) {
+        toast(`✔ Coupon ${code} created (${pct === 100 ? 'FREE' : pct + '% off'})`, 'success');
+        loadCoupons();
+      } else {
+        toast(data.error || 'Create failed.', 'error');
+      }
+    } catch (_) {
+      toast('Network error.', 'error');
+    }
+  }
+
+  window.duplicateCoupon = function (jsonStr) {
+    const c = JSON.parse(jsonStr);
+    _couponModalClear();
+    $('couponModalTitle').textContent = 'Duplicate Coupon';
+    $('couponCode').value            = c.code + '_COPY';
+    $('couponCode').disabled         = false;
+    $('couponDiscountType').value    = c.discount_type || 'percentage';
+    $('couponDiscountValue').value   = c.discount_type === 'free' ? '' : (c.discount_value || '');
+    $('couponAppliesTo').value       = c.applies_to || 'all';
+    $('couponUsageLimit').value      = c.usage_limit != null ? c.usage_limit : '';
+    $('couponNotes').value           = 'Copy of ' + c.code;
+    $('couponActive').checked        = true;
+    window._couponTypeChange();
+    show('couponModal');
+  };
 
   function _couponModalClear () {
     $('couponEditCode').value        = '';
@@ -2056,7 +2132,93 @@
     $('cancelCouponModal')?.addEventListener('click', () => hide('couponModal'));
     $('saveCouponBtn')?.addEventListener('click', saveCoupon);
     $('couponModal')?.addEventListener('click', e => { if (e.target === $('couponModal')) hide('couponModal'); });
+    // Quick-create preset buttons
+    document.querySelectorAll('[data-quick-coupon]').forEach(btn => {
+      btn.addEventListener('click', () => quickCreateCoupon(parseInt(btn.dataset.quickCoupon, 10)));
+    });
   }
+
+  /* ── Global Search ──────────────────────────────────────────────────── */
+  let _globalSearchTimer = null;
+
+  function wireGlobalSearch () {
+    const input = $('globalSearch');
+    if (!input) return;
+
+    input.addEventListener('input', () => {
+      clearTimeout(_globalSearchTimer);
+      _globalSearchTimer = setTimeout(() => runGlobalSearch(input.value.trim()), 220);
+    });
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { input.value = ''; hideGlobalResults(); }
+    });
+
+    document.addEventListener('click', e => {
+      if (!e.target.closest('.global-search-wrap')) hideGlobalResults();
+    });
+  }
+
+  function hideGlobalResults () {
+    const box = $('globalSearchResults');
+    if (box) box.style.display = 'none';
+  }
+
+  async function runGlobalSearch (q) {
+    const box = $('globalSearchResults');
+    if (!box) return;
+    if (!q || q.length < 2) { hideGlobalResults(); return; }
+
+    box.style.display = '';
+    box.innerHTML = '<div class="gs-loading">Searching…</div>';
+
+    try {
+      // Search local data first, then fetch orders as fallback
+      let orders = _allOrders.length ? _allOrders : [];
+      if (!orders.length) {
+        const { ok, data } = await apiFetch('/api/admin/orders');
+        if (ok) orders = Array.isArray(data.orders) ? data.orders : [];
+      }
+
+      const ql = q.toLowerCase();
+      const matches = orders.filter(o =>
+        (o.order_id    || '').toLowerCase().includes(ql) ||
+        (o.email       || '').toLowerCase().includes(ql) ||
+        (o.discord     || '').toLowerCase().includes(ql) ||
+        (o.license_key || '').toLowerCase().includes(ql)
+      ).slice(0, 8);
+
+      // Also search coupons
+      const couponMatches = _allCoupons.filter(c =>
+        (c.code || '').toLowerCase().includes(ql)
+      ).slice(0, 3);
+
+      if (!matches.length && !couponMatches.length) {
+        box.innerHTML = '<div class="gs-empty">No results for "' + esc(q) + '"</div>';
+        return;
+      }
+
+      const orderHtml = matches.map(o => `
+        <div class="gs-item" onclick="switchTab('orders');openOrderDetail('${esc(o.order_id)}');hideGlobalResults()">
+          <div class="gs-item-main">${esc(o.email || o.discord || '—')}</div>
+          <div class="gs-item-sub">${esc((o.order_id||'').slice(0,20))} · ${planBadge(o.plan)}</div>
+        </div>`).join('');
+
+      const couponHtml = couponMatches.map(c => `
+        <div class="gs-item" onclick="switchTab('coupons');hideGlobalResults()">
+          <div class="gs-item-main">${esc(c.code)}</div>
+          <div class="gs-item-sub">Coupon · ${esc(c.discount_type === 'free' ? '100% off' : (c.discount_value + (c.discount_type==='percentage'?'%':'$')))}</div>
+        </div>`).join('');
+
+      box.innerHTML = (matches.length ? '<div class="gs-section-title">Orders</div>' + orderHtml : '') +
+        (couponMatches.length ? '<div class="gs-section-title">Coupons</div>' + couponHtml : '');
+
+    } catch (_) {
+      box.innerHTML = '<div class="gs-empty">Search error</div>';
+    }
+  }
+
+  window.hideGlobalResults = hideGlobalResults;
 
   function wireAll () {
     // Login
@@ -2074,6 +2236,7 @@
     wireGenerate();
     wireInvStatusTabs();
     wireCoupons();
+    wireGlobalSearch();
 
     // Dashboard
     $('refreshDashboard').addEventListener('click', loadDashboard);

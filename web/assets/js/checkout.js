@@ -455,10 +455,8 @@
     const res  = await fetch('/api/paypal/config');
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.configured) {
-      console.error('[ghost/checkout] /api/paypal/config returned not-configured:', data.error || res.status);
       return null;
     }
-    console.log('[ghost/checkout] PayPal config loaded env=%s', data.environment);
     return data;
   }
 
@@ -471,7 +469,6 @@
 
     _paypalSdkPromise = new Promise((resolve, reject) => {
       if (window.paypal) {
-        console.log('[ghost/checkout] PayPal SDK already present');
         resolve(window.paypal);
         return;
       }
@@ -484,12 +481,8 @@
       url.searchParams.set('components', 'buttons,card-fields');
 
       s.src = url.toString();
-      s.onload  = () => {
-        console.log('[ghost/checkout] PayPal SDK loaded successfully');
-        resolve(window.paypal);
-      };
+      s.onload  = () => { resolve(window.paypal); };
       s.onerror = () => {
-        console.error('[ghost/checkout] PayPal SDK failed to load — check network or CSP');
         _paypalSdkPromise = null;   // allow retry
         reject(new Error('PayPal SDK failed to load.'));
       };
@@ -505,7 +498,6 @@
   ─────────────────────────────────────────────────────────────── */
   async function _createPayPalOrder () {
     const vals = _capturedVals;
-    console.log('[ghost/checkout] creating PayPal order plan=%s', ACTIVE_PLAN.id);
 
     // 18-second client-side timeout (backend has 15s)
     const controller = new AbortController();
@@ -528,7 +520,6 @@
     } catch (err) {
       clearTimeout(timer);
       const isAbort = err.name === 'AbortError';
-      console.error('[ghost/checkout] create-order %s', isAbort ? 'timeout' : 'network-error');
       throw new Error(isAbort
         ? 'PayPal did not respond in time. Please try again.'
         : 'Network error connecting to payment service. Please try again.');
@@ -538,11 +529,9 @@
 
     if (!res.ok || !data.ok) {
       const msg = data.message || 'Could not create PayPal order. Please try again.';
-      console.error('[ghost/checkout] create-order failed stage=%s: %s', data.stage || '', msg);
       throw new Error(msg);
     }
 
-    console.log('[ghost/checkout] order created orderID=%s', data.orderID);
     return data.orderID;
   }
 
@@ -585,7 +574,6 @@
 
   async function _capturePayPalOrder (orderID) {
     const vals = _capturedVals;
-    console.log('[ghost/checkout] capturing order orderID=%s', orderID);
     _advanceStep(1);
     showState('loading');
 
@@ -611,9 +599,6 @@
       result = await res.json().catch(() => ({}));
     } catch (err) {
       clearTimeout(timer);
-      const isAbort = err.name === 'AbortError';
-      console.error('[ghost/checkout] capture fetch %s orderID=%s',
-        isAbort ? 'timeout' : 'network-error', orderID);
       // Payment may have been captured — show the processing screen which will
       // poll the backend and redirect once delivery_status is confirmed.
       _showProcessingScreen(orderID, result && result.paymentStatus === 'COMPLETED', result && result.amount);
@@ -626,18 +611,12 @@
       // Only show "Payment failed" when the PayPal capture itself failed.
       // (delivery failures return ok:true with deliveryStatus:'delivery_pending')
       const msg   = result.message || 'Payment could not be processed. No charge was made.';
-      const stage = result.stage   || '';
-      console.error('[ghost/checkout] capture-order failed orderID=%s stage=%s: %s',
-        orderID, stage, msg);
       showState('failed');
       _setText('failed-reason', msg);
       return;
     }
 
     const orderId = result.orderId || result.captureId || orderID;
-
-    console.log('[ghost/checkout] capture response orderID=%s orderId=%s paymentStatus=%s deliveryStatus=%s',
-      orderID, orderId, result.paymentStatus, result.deliveryStatus);
 
     // ── Payment captured and order exists — redirect immediately.
     //    The success page handles license polling; checkout is done here.
@@ -768,7 +747,6 @@
         try {
           await _capturePayPalOrder(data.orderID);
         } catch (err) {
-          console.error('[ghost/checkout] onApprove capture exception:', err.message);
           showState('failed');
           _setText('failed-reason',
             'A network error occurred after payment. Your payment may have been processed — ' +
@@ -778,21 +756,18 @@
 
       /* Customer closed the PayPal popup without paying */
       onCancel: () => {
-        console.log('[ghost/checkout] PayPal flow cancelled by user');
         showState('cancelled');
       },
 
       /* SDK-level error (not a payment failure) */
-      onError: (err) => {
-        console.error('[ghost/checkout] PayPal SDK error:', err);
+      onError: () => {
         showState('failed');
         _setText('failed-reason',
           'A PayPal error occurred. No charge was made. Please try again or contact support.');
       },
 
     }).render('#paypal-button-container')
-      .then(() => console.log('[ghost/checkout] PayPal Buttons rendered'))
-      .catch(err => console.error('[ghost/checkout] Buttons.render failed:', err));
+      .catch(() => {});
   }
 
   /* ── Render PayPal CardFields ──────────────────────────────────── */
@@ -812,7 +787,6 @@
         try {
           await _capturePayPalOrder(data.orderID);
         } catch (err) {
-          console.error('[ghost/checkout] CardFields onApprove exception:', err.message);
           showState('failed');
           _setText('failed-reason',
             'A network error occurred after card payment. Your payment may have been processed — ' +
@@ -820,31 +794,22 @@
         }
       },
 
-      onError: (err) => {
-        console.error('[ghost/checkout] CardFields SDK error:', err);
+      onError: () => {
         showCardAlert('error', 'A payment error occurred. Please try again or use the PayPal button above.');
         _setSubmitBusy('co-card-submit-btn', false);
       },
     });
 
-    console.log('[ghost/checkout] CardFields isEligible=%s', cf.isEligible());
-
     if (!cf.isEligible()) {
-      // CardFields not supported in this context — show info notice
-      console.log('[ghost/checkout] CardFields not eligible — showing fallback notice');
       _show('co-card-ineligible');
       return;
     }
 
     // Render each field into its container div
-    cf.NameField().render('#card-name-field')
-      .catch(err => console.error('[ghost/checkout] CardFields NameField render error:', err));
-    cf.NumberField().render('#card-number-field')
-      .catch(err => console.error('[ghost/checkout] CardFields NumberField render error:', err));
-    cf.ExpiryField().render('#card-expiry-field')
-      .catch(err => console.error('[ghost/checkout] CardFields ExpiryField render error:', err));
-    cf.CVVField().render('#card-cvv-field')
-      .catch(err => console.error('[ghost/checkout] CardFields CVVField render error:', err));
+    cf.NameField().render('#card-name-field').catch(() => {});
+    cf.NumberField().render('#card-number-field').catch(() => {});
+    cf.ExpiryField().render('#card-expiry-field').catch(() => {});
+    cf.CVVField().render('#card-cvv-field').catch(() => {});
 
     // Show the card form and divider
     _show('co-card-divider');
@@ -862,7 +827,6 @@
           await cf.submit();
           // onApprove above handles the rest
         } catch (err) {
-          console.error('[ghost/checkout] CardFields submit error:', err);
           const msg = (err && err.message) ? err.message : 'Card payment failed. Please check your details and try again.';
           showCardAlert('error', msg);
           _setSubmitBusy('co-card-submit-btn', false);
@@ -884,6 +848,9 @@
     if (_appliedCoupon && _appliedCoupon.isFree) {
       _hide('co-submit-btn-wrap');
       _hide('co-payment-section');
+      _hide('co-payment-unconfigured');
+      _hide('co-secure-notice');
+      _hide('co-card-divider');
       _show('co-free-checkout-section');
       return;
     }
@@ -898,7 +865,6 @@
     try {
       config = await _fetchPayPalConfig();
     } catch (err) {
-      console.error('[ghost/checkout] Failed to fetch /api/paypal/config:', err.message);
       config = null;
     }
 
@@ -917,7 +883,6 @@
     try {
       paypalSdk = await _loadPayPalSDK(config.clientId);
     } catch (err) {
-      console.error('[ghost/checkout] SDK load failed:', err.message);
       showAlert('error', 'Could not load the PayPal payment interface. Please refresh and try again.');
       _hide('co-payment-section');
       _show('co-submit-btn-wrap');
