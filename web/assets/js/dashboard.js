@@ -288,6 +288,7 @@
       if (res.status === 401) throw new Error('auth');
 
       const data = await res.json().catch(() => ({}));
+      console.log("Dashboard JSON:", data);
 
       if (!data.ok) throw new Error('load_failed');
 
@@ -1318,17 +1319,33 @@
       const account = await GhostDashboard.loadAccount();
 
       // Populate all sections
-      renderUserInfo(account);
-      renderStatCards(account);
-      renderKeyCard(account);
-      renderLicenseDetails(account);
-      renderSettings(account);
-      renderActivity(account);
-      renderDownloads(account);
-      renderPurchases(account);
+      try { renderUserInfo(account); }
+        catch (err) { console.error("renderUserInfo failed:", err, "\nData:", account); throw err; }
+
+      try { renderStatCards(account); }
+        catch (err) { console.error("renderStatCards failed:", err, "\nData:", account); throw err; }
+
+      try { renderKeyCard(account); }
+        catch (err) { console.error("renderKeyCard failed:", err, "\nData:", account); throw err; }
+
+      try { renderLicenseDetails(account); }
+        catch (err) { console.error("renderLicenseDetails failed:", err, "\nData:", account); throw err; }
+
+      try { renderSettings(account); }
+        catch (err) { console.error("renderSettings failed:", err, "\nData:", account); throw err; }
+
+      try { renderActivity(account); }
+        catch (err) { console.error("renderActivity failed:", err, "\nData:", account); throw err; }
+
+      try { renderDownloads(account); }
+        catch (err) { console.error("renderDownloads failed:", err, "\nData:", account); throw err; }
+
+      try { renderPurchases(account); }
+        catch (err) { console.error("renderPurchases failed:", err, "\nData:", account); throw err; }
 
       // Wire reset modal after key is loaded
-      initResetModal(account.license.key);
+      try { initResetModal(account.license.key); }
+        catch (err) { console.error("initResetModal failed:", err, "\nKey:", account.license?.key); throw err; }
 
       // Reveal content
       showContent();
@@ -1337,6 +1354,7 @@
       if (err.message === 'auth') {
         window.location.href = 'login.html';
       } else {
+        console.error(err);
         showError();
       }
     }
