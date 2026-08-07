@@ -222,9 +222,15 @@ async function _redisGet (key) {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
-    if (data.result === null || data.result === undefined) return _fileGet(key);
+    // Key not yet stored — return empty array (do NOT fall back to the local
+    // filesystem: Vercel's ephemeral FS is not reliable across invocations).
+    if (data.result === null || data.result === undefined) return [];
+    // Upstash stores values as JSON-serialized strings; parse once.
     return typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
-  } catch (_) { return _fileGet(key); }
+  } catch (err) {
+    console.error('[ghost/redis] get error key=%s: %s', key, err.message);
+    return [];
+  }
 }
 
 async function _redisSet (key, value) {
@@ -233,13 +239,18 @@ async function _redisSet (key, value) {
   const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
   try {
     const { default: fetch } = await import('node-fetch');
+    // Upstash REST /set/:key — body is the value serialized as JSON once.
+    // Previously this was JSON.stringify(JSON.stringify(value)), which double-
+    // serialized the array into a quoted string and caused Upstash to return
+    // a non-2xx response → _redisSet returned false → "Storage write failed".
     const r = await fetch(`${url}/set/${encodeURIComponent(key)}`, {
       method:  'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body:    JSON.stringify(JSON.stringify(value)),
+      body:    JSON.stringify(value),
     });
     if (!r.ok) {
-      console.error('[ghost/redis] set failed status=%d key=%s', r.status, key);
+      const body = await r.text().catch(() => '(unreadable)');
+      console.error('[ghost/redis] set failed status=%d key=%s body=%s', r.status, key, body);
       return false;
     }
     return true;
@@ -486,7 +497,21 @@ app.get('/api/admin/stats', _requireAdminSession, async (req, res) => {
 const _GHOST_KEY_RE = /^[A-Z0-9]{4,}-[A-Z0-9]{4,}-[A-Z0-9]{4,}/i;
 
 app.get('/api/admin/inventory', _requireAdminSession, async (req, res) => {
-  let inventory = await _redisGet('ghost:inventory') || [];
+  const raw = await _redisGet('ghost:inventory');
+
+  // Defensive normalization: Redis may return an object, string, null, or
+  // a nested structure if the value was ever stored in an unexpected format.
+  let inventory = Array.isArray(raw) ? raw : [];
+  if (!Array.isArray(raw)) {
+    console.warn(
+      '[ghost/inventory] GET /api/admin/inventory: raw value is not an array — ' +
+      'typeof=%s isArray=%s topKeys=%s — coercing to []',
+      typeof raw,
+      Array.isArray(raw),
+      raw && typeof raw === 'object' ? Object.keys(raw).slice(0, 10).join(',') : String(raw).slice(0, 80)
+    );
+  }
+
   // Apply optional server-side filters passed as query params
   const { status, plan, search } = req.query;
   if (status) inventory = inventory.filter(k => k.status === status);
@@ -494,16 +519,20 @@ app.get('/api/admin/inventory', _requireAdminSession, async (req, res) => {
   if (search) {
     const q = search.trim().toLowerCase();
     inventory = inventory.filter(k =>
-      k.key.toLowerCase().includes(q) ||
+      (k.key   || '').toLowerCase().includes(q) ||
       (k.customer || '').toLowerCase().includes(q) ||
       (k.notes    || '').toLowerCase().includes(q)
     );
   }
-  return res.json({ ok: true, keys: inventory, total: inventory.length });
+
+  // Stable schema: { ok, items, total }
+  // "items" is always an array — never null, never an object.
+  return res.json({ ok: true, items: inventory, total: inventory.length });
 });
 
 app.get('/api/admin/inventory/stats', _requireAdminSession, async (req, res) => {
-  const inventory = await _redisGet('ghost:inventory') || [];
+  const _raw = await _redisGet('ghost:inventory');
+  const inventory = Array.isArray(_raw) ? _raw : [];
   const counts = { available: 0, reserved: 0, sold: 0, activated: 0, revoked: 0, expired: 0 };
   inventory.forEach(k => { if (counts[k.status] !== undefined) counts[k.status]++; });
   return res.json({ ok: true, ...counts, total: inventory.length });

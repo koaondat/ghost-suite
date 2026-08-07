@@ -328,12 +328,13 @@
   }
 
   function renderRecentOrders (orders) {
+    const safeOrders = Array.isArray(orders) ? orders : [];
     const tb = $('recentOrdersTbody');
-    if (!orders.length) {
+    if (!safeOrders.length) {
       tb.innerHTML = '<tr><td colspan="7" class="admin-table-empty">No orders yet.</td></tr>';
       return;
     }
-    tb.innerHTML = orders.map(o => `
+    tb.innerHTML = safeOrders.map(o => `
       <tr>
         <td><span class="key-mono key-mono--sm copy-cell" onclick="copyText('${esc(o.order_id)}')">${esc((o.order_id||'').slice(0,16))}…</span></td>
         <td>${esc(o.email || o.discord || '—')}</td>
@@ -357,7 +358,23 @@
       if (filter.search) params.set('search', filter.search);
       const { ok, data } = await apiFetch(`/api/admin/inventory?${params}`);
       if (!ok) throw new Error(data.error || 'Failed to load inventory');
-      _allInventory = data.keys || [];
+
+      // Diagnostic: log response shape so malformed data is never silent
+      console.log('[inventory] response shape — typeof:', typeof data,
+        '| Array.isArray(data):', Array.isArray(data),
+        '| top-level keys:', Object.keys(data || {}).join(', '),
+        '| items isArray:', Array.isArray(data.items),
+        '| items length:', Array.isArray(data.items) ? data.items.length : '(not array)');
+
+      // Normalize: always guarantee an array regardless of what the server sent
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!Array.isArray(data.items)) {
+        console.warn('[inventory] WARNING: data.items is not an array — got typeof=' +
+          typeof data.items + ' value=' + JSON.stringify(data.items).slice(0, 120) +
+          ' — falling back to []');
+      }
+
+      _allInventory = items;
       renderInventory(_allInventory, 1);
     } catch (err) {
       tb.innerHTML = `<tr><td colspan="11" class="admin-table-empty" style="color:#f87171">${esc(err.message)}</td></tr>`;
@@ -367,8 +384,10 @@
   function renderInventory (keys, page) {
     _invPage = page;
     const tb    = $('inventoryTbody');
+    // Defensive: keys must be an array before we slice/map
+    const safeKeys = Array.isArray(keys) ? keys : [];
     const start = (page - 1) * PAGE_SIZE;
-    const slice = keys.slice(start, start + PAGE_SIZE);
+    const slice = safeKeys.slice(start, start + PAGE_SIZE);
 
     if (!slice.length) {
       tb.innerHTML = '<tr><td colspan="11" class="admin-table-empty">No keys found.</td></tr>';
@@ -398,7 +417,7 @@
       </tr>
     `).join('');
 
-    renderPagination('invPagination', keys.length, page, p => renderInventory(keys, p));
+    renderPagination('invPagination', safeKeys.length, page, p => renderInventory(safeKeys, p));
     wireSelectAll();
   }
 
@@ -656,7 +675,13 @@
     try {
       const { ok, data } = await apiFetch('/api/admin/orders');
       if (!ok) throw new Error(data.error || 'Failed to load orders');
-      let orders = (data.orders || []).reverse();
+      // Normalize: orders must always be an array
+      const raw = data.orders;
+      if (!Array.isArray(raw)) {
+        console.warn('[orders] WARNING: data.orders is not an array — typeof=' +
+          typeof raw + ' — falling back to []');
+      }
+      let orders = (Array.isArray(raw) ? raw : []).reverse();
       _allOrders = orders;
       applyOrderFilter();
     } catch (err) {
@@ -684,8 +709,10 @@
   function renderOrders (orders, page) {
     _ordPage = page;
     const tb    = $('ordersTbody');
+    // Defensive: orders must be an array before slice/map
+    const safeOrders = Array.isArray(orders) ? orders : [];
     const start = (page - 1) * PAGE_SIZE;
-    const slice = orders.slice(start, start + PAGE_SIZE);
+    const slice = safeOrders.slice(start, start + PAGE_SIZE);
 
     if (!slice.length) {
       tb.innerHTML = '<tr><td colspan="10" class="admin-table-empty">No orders found.</td></tr>';
@@ -712,7 +739,7 @@
       </tr>
     `).join('');
 
-    renderPagination('orderPagination', orders.length, page, p => renderOrders(orders, p));
+    renderPagination('orderPagination', safeOrders.length, page, p => renderOrders(safeOrders, p));
   }
 
   /* ── Order detail modal ─────────────────────────────────────────────── */
@@ -794,7 +821,13 @@
       if (search) params.set('search', search);
       const { ok, data } = await apiFetch(`/api/admin/customers?${params}`);
       if (!ok) throw new Error(data.error || 'Failed to load customers');
-      _allCustomers = data.customers || [];
+      // Normalize: customers must always be an array
+      const rawCust = data.customers;
+      if (!Array.isArray(rawCust)) {
+        console.warn('[customers] WARNING: data.customers is not an array — typeof=' +
+          typeof rawCust + ' — falling back to []');
+      }
+      _allCustomers = Array.isArray(rawCust) ? rawCust : [];
       renderCustomers(_allCustomers, 1);
     } catch (err) {
       tb.innerHTML = `<tr><td colspan="8" class="admin-table-empty" style="color:#f87171">${esc(err.message)}</td></tr>`;
@@ -804,8 +837,10 @@
   function renderCustomers (customers, page) {
     _custPage = page;
     const tb    = $('customersTbody');
+    // Defensive: customers must be an array before slice/map
+    const safeCust = Array.isArray(customers) ? customers : [];
     const start = (page - 1) * PAGE_SIZE;
-    const slice = customers.slice(start, start + PAGE_SIZE);
+    const slice = safeCust.slice(start, start + PAGE_SIZE);
 
     if (!slice.length) {
       tb.innerHTML = '<tr><td colspan="8" class="admin-table-empty">No customers found.</td></tr>';
@@ -830,7 +865,7 @@
       </tr>
     `).join('');
 
-    renderPagination('customerPagination', customers.length, page, p => renderCustomers(customers, p));
+    renderPagination('customerPagination', safeCust.length, page, p => renderCustomers(safeCust, p));
   }
 
   window.openCustomerDetail = function (jsonStr) {
@@ -898,11 +933,16 @@
 
       // History
       const hist = $('dlHistory');
-      const history = data.history || [];
+      // Normalize: history must be an array before .reverse().map()
+      const history = Array.isArray(data.history) ? data.history : [];
+      if (!Array.isArray(data.history) && data.history != null) {
+        console.warn('[downloads] WARNING: data.history is not an array — typeof=' +
+          typeof data.history + ' — falling back to []');
+      }
       if (!history.length) {
         hist.innerHTML = '<p class="admin-table-empty">No previous versions.</p>';
       } else {
-        hist.innerHTML = history.reverse().map(h => `
+        hist.innerHTML = history.slice().reverse().map(h => `
           <div class="dl-hist-item">
             <div class="dl-hist-ver">${esc(h.version)}</div>
             <div class="dl-hist-date">${fmtDateShort(h.release_date || h.archived_at)}</div>
