@@ -251,12 +251,13 @@ async function _redisGet (key) {
   try {
     const redis  = _getRedisClient();
     const result = await _withTimeout(redis.get(key));
-    if (result === null || result === undefined) return [];
-    // SDK auto-parses JSON strings stored by set(); guard for unexpected types.
-    return Array.isArray(result) ? result : [];
+    if (result === null || result === undefined) return null;
+    // SDK auto-parses JSON strings stored by set().
+    // Return the value as-is — callers that expect arrays guard with Array.isArray.
+    return result;
   } catch (err) {
     console.error('[ghost/redis] get error key=%s name=%s message=%s', key, err.name, err.message);
-    return [];
+    return null;
   }
 }
 
@@ -1044,13 +1045,18 @@ app.post('/api/admin/customers/:email/reset-hwid', _requireAdminSession, async (
 // ── Downloads endpoints ───────────────────────────────────────────────────────
 app.get('/api/admin/downloads', _requireAdminSession, async (req, res) => {
   const dl = await _redisGet('ghost:downloads') || {
-    version: '—', filename: '—', url: '', changelog: '', release_date: '', download_count: 0, history: [],
+    version: '—', filename: 'GhostConfig.exe', url: '/dl/GhostConfig.exe',
+    changelog: '', release_date: '', download_count: 0, history: [],
   };
-  return res.json({ ok: true, ...dl });
+  // current_version is an alias for version (admin.js reads current_version)
+  return res.json({ ok: true, ...dl, current_version: dl.version || '—' });
 });
 
 app.post('/api/admin/downloads', _requireAdminSession, async (req, res) => {
-  const { version, filename, url, changelog, release_date } = req.body || {};
+  // admin.js sends current_version; also accept version for backwards compat
+  const body    = req.body || {};
+  const version = (body.current_version || body.version || '').trim();
+  const { filename, url, changelog, release_date } = body;
   if (!version || !url) return res.status(400).json({ ok: false, error: 'version and url required.' });
   const prev = await _redisGet('ghost:downloads') || { history: [], download_count: 0 };
   const history = prev.history || [];
@@ -1059,11 +1065,12 @@ app.post('/api/admin/downloads', _requireAdminSession, async (req, res) => {
       changelog: prev.changelog, release_date: prev.release_date,
       replaced_at: new Date().toISOString() });
   }
-  const updated = { version, filename: filename || version, url, changelog: changelog || '',
+  const updated = { version, filename: filename || 'GhostConfig.exe', url: url || '/dl/GhostConfig.exe',
+    changelog: changelog || '',
     release_date: release_date || new Date().toISOString().slice(0, 10),
     download_count: prev.download_count || 0, history };
   await _redisSet('ghost:downloads', updated);
-  return res.json({ ok: true, ...updated });
+  return res.json({ ok: true, ...updated, current_version: updated.version });
 });
 
 app.post('/api/admin/downloads/increment', _requireAdminSession, async (req, res) => {
@@ -1177,8 +1184,194 @@ app.get('/checkout', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'checkout.h
   if (err) res.status(500).send('Internal server error');
 }));
 
+// ═════════════════════════════════════════════════════════════════════════════
+// USER REGISTRATION & LOGIN — handled natively, stored in Upstash Redis
+// Redis key: "ghost:users"  →  Array of user objects
+// Each user: { id, username, email, passwordHash, passwordSalt, tier,
+//              createdAt, licenseKey? }
+//
+// Password hashing: Node built-in crypto.scrypt  (64-byte key, 32-byte salt)
+// No plaintext passwords are ever stored or logged.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Derive a strong hash from password+salt using scrypt. */
+function _hashPassword (password, salt) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, { N: 16384, r: 8, p: 1 }, (err, derived) => {
+      if (err) reject(err);
+      else     resolve(derived.toString('hex'));
+    });
+  });
+}
+
+/** Constant-time comparison of two hex strings. */
+function _safeCompare (a, b) {
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+  } catch (_) {
+    return false;
+  }
+}
+
+// ── POST /api/auth/register ────────────────────────────────────────────────────
+// Body: { username, email, password, license_key? }
+// Stores user in Upstash Redis (ghost:users array).
+// Returns { ok: true } on success or { ok: false, error, field? } on failure.
+app.post('/api/auth/register', async (req, res) => {
+  console.log('[ghost/register] registration_received');
+
+  const { username, email, password, license_key } = req.body || {};
+
+  // ── Validation ────────────────────────────────────────────────────────────
+  if (!username || typeof username !== 'string' || username.trim().length < 3) {
+    return res.status(400).json({ ok: false, field: 'username', error: 'Username must be at least 3 characters.' });
+  }
+  if (!/^[a-zA-Z0-9_\-]+$/.test(username.trim())) {
+    return res.status(400).json({ ok: false, field: 'username', error: 'Username may only contain letters, numbers, underscores, and hyphens.' });
+  }
+  if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ ok: false, field: 'email', error: 'A valid email address is required.' });
+  }
+  if (!password || typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ ok: false, field: 'password', error: 'Password must be at least 8 characters.' });
+  }
+
+  const cleanUsername = username.trim().toLowerCase();
+  const cleanEmail    = email.trim().toLowerCase();
+
+  console.log('[ghost/register] validation_passed username=%s', cleanUsername);
+
+  try {
+    // ── Load existing users ────────────────────────────────────────────────
+    const raw   = await _redisGet('ghost:users');
+    const users = Array.isArray(raw) ? raw : [];
+
+    // ── Duplicate check ────────────────────────────────────────────────────
+    if (users.some(u => u.email === cleanEmail)) {
+      return res.status(409).json({ ok: false, field: 'email', error: 'An account with that email already exists.' });
+    }
+    if (users.some(u => u.username === cleanUsername)) {
+      return res.status(409).json({ ok: false, field: 'username', error: 'That username is already taken.' });
+    }
+
+    // ── Hash password ──────────────────────────────────────────────────────
+    const salt         = crypto.randomBytes(32).toString('hex');
+    const passwordHash = await _hashPassword(password, salt);
+
+    // ── Build user record ──────────────────────────────────────────────────
+    const user = {
+      id:           crypto.randomUUID(),
+      username:     cleanUsername,
+      email:        cleanEmail,
+      passwordHash,
+      passwordSalt: salt,
+      tier:         'free',
+      createdAt:    new Date().toISOString(),
+      licenseKey:   license_key ? license_key.trim().toUpperCase() : null,
+    };
+
+    users.push(user);
+    const saved = await _redisSet('ghost:users', users);
+
+    if (!saved) {
+      console.error('[ghost/register] user_save_failed username=%s', cleanUsername);
+      return res.status(500).json({ ok: false, error: 'Account could not be saved. Please try again.' });
+    }
+
+    console.log('[ghost/register] user_saved id=%s username=%s email=%s', user.id, user.username, user.email);
+    console.log('[ghost/register] registration_complete username=%s', user.username);
+
+    return res.status(201).json({ ok: true });
+
+  } catch (err) {
+    console.error('[ghost/register] error name=%s message=%s', err.name, err.message);
+    return res.status(500).json({ ok: false, error: 'Registration failed. Please try again.' });
+  }
+});
+
+// ── POST /api/auth/login ──────────────────────────────────────────────────────
+// Body: { identity, password }  (identity = username OR email)
+// Returns { ok: true, token, username, tier } on success.
+app.post('/api/auth/login', async (req, res) => {
+  const { identity, password } = req.body || {};
+
+  if (!identity || typeof identity !== 'string' || !identity.trim()) {
+    return res.status(400).json({ ok: false, field: 'identity', error: 'Username or email is required.' });
+  }
+  if (!password || typeof password !== 'string') {
+    return res.status(400).json({ ok: false, field: 'password', error: 'Password is required.' });
+  }
+
+  const cleanIdentity = identity.trim().toLowerCase();
+
+  try {
+    const raw   = await _redisGet('ghost:users');
+    const users = Array.isArray(raw) ? raw : [];
+
+    const user = users.find(u =>
+      u.username === cleanIdentity || u.email === cleanIdentity
+    );
+
+    if (!user) {
+      return res.status(401).json({ ok: false, error: 'Invalid username or password.' });
+    }
+
+    const hash = await _hashPassword(password, user.passwordSalt);
+    if (!_safeCompare(hash, user.passwordHash)) {
+      return res.status(401).json({ ok: false, error: 'Invalid username or password.' });
+    }
+
+    // Issue a simple signed token for the customer session
+    const sessionSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
+    const iat     = Math.floor(Date.now() / 1000);
+    const payload = Buffer.from(JSON.stringify({ sub: user.id, username: user.username, tier: user.tier, iat })).toString('base64url');
+    const sig     = sessionSecret
+      ? crypto.createHmac('sha256', sessionSecret).update(payload).digest('base64url')
+      : 'nosig';
+    const token   = `${payload}.${sig}`;
+
+    return res.json({ ok: true, token, username: user.username, tier: user.tier });
+
+  } catch (err) {
+    console.error('[ghost/login] error name=%s message=%s', err.name, err.message);
+    return res.status(500).json({ ok: false, error: 'Login failed. Please try again.' });
+  }
+});
+
+// ── GET /api/download/current — public download redirect ─────────────────────
+// Returns the current production download URL from Redis settings, or falls
+// back to the bundled /dl/GhostConfig.exe if not configured in admin.
+app.get('/api/download/current', async (_req, res) => {
+  try {
+    const dl = await _redisGet('ghost:downloads');
+    const url = dl && dl.url ? dl.url : null;
+    return res.json({ ok: true, url: url || '/dl/GhostConfig.exe', filename: (dl && dl.filename) || 'GhostConfig.exe' });
+  } catch (_) {
+    return res.json({ ok: true, url: '/dl/GhostConfig.exe', filename: 'GhostConfig.exe' });
+  }
+});
+
+// ── GET /dl/GhostConfig.exe — production binary download ─────────────────────
+// Serves the bundled GhostConfig.exe with a forced-download Content-Disposition.
+// The admin can configure an external URL via the Downloads admin panel instead;
+// this route is the self-hosted fallback when no external URL is set.
+app.get('/dl/GhostConfig.exe', (req, res) => {
+  const filePath = path.join(WEB_ROOT, 'downloads', 'GhostConfig.exe');
+  res.setHeader('Content-Disposition', 'attachment; filename="GhostConfig.exe"');
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.sendFile(filePath, err => {
+    if (err) {
+      console.error('[ghost/download] GhostConfig.exe not found at', filePath);
+      res.status(404).json({ ok: false, error: 'Download file not found. Please contact support.' });
+    }
+  });
+});
+
 // ── Ghost shared Python API proxy routes ──────────────────────────────────────
 // Auth + customer-facing routes only — admin routes are handled natively above.
+// NOTE: /api/auth/register and /api/auth/login are handled natively above;
+//       remaining /api/auth/* routes (logout, etc.) still proxy to Python backend
+//       if GHOST_API_URL is set.
 app.all('/api/auth/*',     (req, res) => _proxyToApi(req, res));
 app.all('/api/license/*',  (req, res) => _proxyToApi(req, res));
 app.all('/api/purchases',  (req, res) => _proxyToApi(req, res));

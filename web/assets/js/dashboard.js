@@ -768,23 +768,30 @@
    * never exposed to the frontend.
    */
   async function _requestDownload (token, licenseKey) {
-    const authToken = localStorage.getItem('ghost_token');
-    const res = await fetch('/api/downloads/request', {
-      method:      'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': authToken ? `Bearer ${authToken}` : '',
-      },
-      body: JSON.stringify({ token, licenseKey }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!data.ok) {
-      throw new Error(data.error || 'download_failed');
+    // Fetch the current production download URL from server config.
+    // Falls back to /dl/GhostConfig.exe if not configured.
+    try {
+      const cfgRes  = await fetch('/api/download/current');
+      const cfg     = await cfgRes.json().catch(() => ({}));
+      const dlUrl   = (cfg.ok && cfg.url) ? cfg.url : '/dl/GhostConfig.exe';
+      const dlName  = (cfg.ok && cfg.filename) ? cfg.filename : 'GhostConfig.exe';
+
+      const a   = document.createElement('a');
+      a.href    = dlUrl;
+      a.download = dlName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('Download started — GhostConfig.exe', 'success');
+    } catch (_) {
+      // Fallback: direct link
+      const a   = document.createElement('a');
+      a.href    = '/dl/GhostConfig.exe';
+      a.download = 'GhostConfig.exe';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     }
-    // The server returns an opaque ref token; redirect once a real CDN URL
-    // endpoint is wired in. For now confirm the request was accepted.
-    toast('Download request accepted. Your file will start shortly.', 'success');
   }
 
   function renderDownloads (account) {

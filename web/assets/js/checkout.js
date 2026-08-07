@@ -286,26 +286,31 @@
     _show('co-download-section');
 
     const dlBtn = document.getElementById('success-download-btn');
-    if (dlBtn && orderId) {
+    if (dlBtn) {
       dlBtn.disabled = false;
       dlBtn.onclick = async function () {
-        dlBtn.disabled  = true;
+        dlBtn.disabled    = true;
         dlBtn.textContent = 'Preparing download\u2026';
         try {
-          const r    = await fetch(`/api/order/${encodeURIComponent(orderId)}/download`);
-          const data = await r.json().catch(() => ({}));
-          if (r.ok && data.ok && data.downloadPath) {
-            const a = document.createElement('a');
-            a.href     = data.downloadPath;
-            a.download = '';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-          } else {
-            alert(data.error || 'Download is not available yet. Please contact support.');
-          }
+          // Ask server for the current configured download URL
+          const cfgRes = await fetch('/api/download/current');
+          const cfg    = await cfgRes.json().catch(() => ({}));
+          const dlUrl  = (cfg.ok && cfg.url)      ? cfg.url      : '/dl/GhostConfig.exe';
+          const dlName = (cfg.ok && cfg.filename) ? cfg.filename : 'GhostConfig.exe';
+          const a   = document.createElement('a');
+          a.href     = dlUrl;
+          a.download = dlName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
         } catch (err) {
-          alert('Could not start the download. Please try again or contact support.');
+          // Hard fallback
+          const a   = document.createElement('a');
+          a.href     = '/dl/GhostConfig.exe';
+          a.download = 'GhostConfig.exe';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
         } finally {
           dlBtn.disabled = false;
           dlBtn.innerHTML =

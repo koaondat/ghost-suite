@@ -189,10 +189,9 @@
     // POST to /api/admin/logout so the server can clear the HttpOnly cookie.
     // JS cannot delete an HttpOnly cookie directly.
     await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
-    hide('adminShell');
-    hide('adminLoading');
-    show('adminLogin');
-    $('adminApiKey').value = '';
+    // Redirect to homepage — ghost.js will re-check /api/admin/session (401)
+    // and immediately hide the Admin Panel nav button for the current visitor.
+    window.location.href = '/';
   }
 
   /* ── Tab navigation ─────────────────────────────────────────────────── */
@@ -931,11 +930,12 @@
         toast(data.error || 'Failed to load downloads info.', 'error');
         return;
       }
-      const v = data.current_version || '';
+      const v = data.current_version || data.version || '';
       setText('dlVersion',     v || 'Not set');
       setText('dlReleaseDate', data.release_date || '—');
-      setText('dlFilename',    data.filename     || '—');
-      setText('dlUrl',         data.download_url || '—');
+      setText('dlFilename',    data.filename     || 'GhostConfig.exe');
+      setText('dlPlatform',    data.platform     || 'Windows x64');
+      setText('dlUrl',         data.url || data.download_url || '/dl/GhostConfig.exe');
       setText('dlCount',       data.download_count ?? 0);
       $('dlChangelog').value = data.changelog || '';
       $('dlVersionBadge').textContent = v || 'None';
@@ -980,8 +980,8 @@
     const payload = {
       current_version: $('dlNewVersion').value.trim(),
       release_date:    $('dlNewReleaseDate').value,
-      download_url:    $('dlNewUrl').value.trim(),
-      filename:        $('dlNewFilename').value.trim(),
+      url:             ($('dlNewUrl').value.trim()) || '/dl/GhostConfig.exe',
+      filename:        ($('dlNewFilename').value.trim()) || 'GhostConfig.exe',
       changelog:       $('dlNewChangelog').value.trim(),
     };
     if (!payload.current_version) {
