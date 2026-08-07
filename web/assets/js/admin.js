@@ -571,30 +571,44 @@
         method: 'POST',
         body: JSON.stringify({ keys, plan, notes }),
       });
+
+      const importedCount  = data.imported_count  ?? data.added   ?? 0;
+      const duplicateCount = data.duplicate_count ?? data.skipped ?? 0;
+      const invalidCount   = data.invalid_count   ?? data.invalid ?? 0;
+
       if (ok) {
         const rb = $('importResultBox');
         rb.style.display = '';
         rb.innerHTML = `
           <div class="import-stat import-stat--green">
-            <span class="import-stat-num">${data.added}</span>
+            <span class="import-stat-num">${importedCount}</span>
             <span class="import-stat-label">Imported</span>
           </div>
           <div class="import-stat import-stat--yellow">
-            <span class="import-stat-num">${data.skipped}</span>
+            <span class="import-stat-num">${duplicateCount}</span>
             <span class="import-stat-label">Duplicates</span>
           </div>
           <div class="import-stat import-stat--red">
-            <span class="import-stat-num">${data.invalid ?? 0}</span>
+            <span class="import-stat-num">${invalidCount}</span>
             <span class="import-stat-label">Invalid</span>
           </div>
         `;
-        if (data.added > 0) {
-          toast(`✓ Imported ${data.added} key(s) successfully.`, 'success');
-          loadInventory(currentInvFilter());
-        } else if ((data.invalid ?? 0) > 0 && data.added === 0) {
-          showAlert('importAlert', 'error', `No valid keys found. ${data.invalid} invalid format(s).`);
+
+        if (importedCount > 0) {
+          toast(`✓ Imported ${importedCount} key(s) successfully.`, 'success');
+          // Clear filters so the newly-imported 'available' keys are always visible
+          const statusEl = $('invFilterStatus');
+          const planEl   = $('invFilterPlan');
+          const searchEl = $('invSearch');
+          if (statusEl) statusEl.value = '';
+          if (planEl)   planEl.value   = '';
+          if (searchEl) searchEl.value = '';
+          // Always re-fetch from the server — never rely on stale cached data
+          await loadInventory({});
+        } else if (invalidCount > 0 && importedCount === 0) {
+          showAlert('importAlert', 'error', `No valid keys found. ${invalidCount} invalid format(s).`);
         } else {
-          showAlert('importAlert', 'warning', `No new keys added. ${data.skipped} duplicate(s) skipped.`);
+          showAlert('importAlert', 'warning', `No new keys added. ${duplicateCount} duplicate(s) skipped.`);
         }
       } else {
         showAlert('importAlert', 'error', data.error || 'Import failed.');

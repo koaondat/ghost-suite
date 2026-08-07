@@ -173,43 +173,86 @@ async function _proxyToApi (req, res, pathOverride) {
   }
 }
 
-// ── Upstash Redis helper ──────────────────────────────────────────────────────
-// Used by inline admin data endpoints to read/write production storage.
-// Falls back to empty/stub responses when Upstash is not configured (dev mode).
+// ── Upstash Redis helpers + local-file fallback ───────────────────────────────
+// When Upstash env vars are set, all inventory reads/writes go to Redis.
+// When they are absent (dev / plain-VPS deployments), reads/writes fall back to
+// key_inventory.json on disk (same file that inventory.py uses), so both the
+// Python API and this Node server share the same storage.
+//
+// The Redis key "ghost:inventory" maps 1-to-1 with the JSON array in that file.
+const fs   = require('fs');
+const _INV_FILE = path.resolve(__dirname, '..', 'key_inventory.json');
+
+function _fileGet (storeKey) {
+  if (storeKey !== 'ghost:inventory') return null;
+  try {
+    const raw = fs.readFileSync(_INV_FILE, 'utf8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch (_) { return []; }
+}
+
+function _fileSet (storeKey, value) {
+  if (storeKey !== 'ghost:inventory') return false;
+  try {
+    const tmp = _INV_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+    fs.renameSync(tmp, _INV_FILE);
+    return true;
+  } catch (err) {
+    console.error('[ghost/inventory] file write error:', err.message);
+    return false;
+  }
+}
+
+function _redisConfigured () {
+  return !!(
+    (process.env.UPSTASH_REDIS_REST_URL   || '').trim() &&
+    (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim()
+  );
+}
+
 async function _redisGet (key) {
+  if (!_redisConfigured()) return _fileGet(key);
   const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
   const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
-  if (!url || !token) return null;
   try {
     const { default: fetch } = await import('node-fetch');
     const res  = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
-    if (data.result === null || data.result === undefined) return null;
+    if (data.result === null || data.result === undefined) return _fileGet(key);
     return typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
-  } catch (_) { return null; }
+  } catch (_) { return _fileGet(key); }
 }
 
 async function _redisSet (key, value) {
+  if (!_redisConfigured()) return _fileSet(key, value);
   const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
   const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
-  if (!url || !token) return false;
   try {
     const { default: fetch } = await import('node-fetch');
-    await fetch(`${url}/set/${encodeURIComponent(key)}`, {
+    const r = await fetch(`${url}/set/${encodeURIComponent(key)}`, {
       method:  'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body:    JSON.stringify(JSON.stringify(value)),
     });
+    if (!r.ok) {
+      console.error('[ghost/redis] set failed status=%d key=%s', r.status, key);
+      return false;
+    }
     return true;
-  } catch (_) { return false; }
+  } catch (err) {
+    console.error('[ghost/redis] set error key=%s: %s', key, err.message);
+    return false;
+  }
 }
 
 async function _redisDel (key) {
+  if (!_redisConfigured()) return false;
   const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
   const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
-  if (!url || !token) return false;
   try {
     const { default: fetch } = await import('node-fetch');
     await fetch(`${url}/del/${encodeURIComponent(key)}`, {
@@ -439,8 +482,23 @@ app.get('/api/admin/stats', _requireAdminSession, async (req, res) => {
 });
 
 // ── Inventory endpoints ───────────────────────────────────────────────────────
+// Ghost key format: at least 3 dash-separated alphanumeric segments (e.g. GHOST-XXXXX-XXXXX)
+const _GHOST_KEY_RE = /^[A-Z0-9]{4,}-[A-Z0-9]{4,}-[A-Z0-9]{4,}/i;
+
 app.get('/api/admin/inventory', _requireAdminSession, async (req, res) => {
-  const inventory = await _redisGet('ghost:inventory') || [];
+  let inventory = await _redisGet('ghost:inventory') || [];
+  // Apply optional server-side filters passed as query params
+  const { status, plan, search } = req.query;
+  if (status) inventory = inventory.filter(k => k.status === status);
+  if (plan)   inventory = inventory.filter(k => k.plan   === plan);
+  if (search) {
+    const q = search.trim().toLowerCase();
+    inventory = inventory.filter(k =>
+      k.key.toLowerCase().includes(q) ||
+      (k.customer || '').toLowerCase().includes(q) ||
+      (k.notes    || '').toLowerCase().includes(q)
+    );
+  }
   return res.json({ ok: true, keys: inventory, total: inventory.length });
 });
 
@@ -456,20 +514,80 @@ app.post('/api/admin/inventory/import', _requireAdminSession, async (req, res) =
   if (!Array.isArray(keys) || !keys.length) {
     return res.status(400).json({ ok: false, error: 'keys array required.' });
   }
-  const inventory = await _redisGet('ghost:inventory') || [];
-  const existing  = new Set(inventory.map(k => k.key));
-  const added = [];
+
+  const inventory      = await _redisGet('ghost:inventory') || [];
+  const existing       = new Set(inventory.map(k => k.key));
+  const added          = [];
+  const duplicateKeys  = [];
+  const invalidKeys    = [];
+  const now            = new Date().toISOString();
+
   for (const raw of keys) {
     const k = String(raw).trim().toUpperCase();
-    if (!k || existing.has(k)) continue;
-    const entry = { key: k, plan, status: 'available', notes, created_at: new Date().toISOString(),
-      customer: null, hwid: null, purchase_date: null, expiration: null };
-    inventory.push(entry);
+    if (!k) continue;
+    if (!_GHOST_KEY_RE.test(k)) { invalidKeys.push(k); continue; }
+    if (existing.has(k))        { duplicateKeys.push(k); continue; }
+    inventory.push({
+      key:           k,
+      plan:          (plan || 'pro').toLowerCase(),
+      status:        'available',
+      notes:         notes || '',
+      created_date:  now,
+      added_at:      now,
+      customer:      '',
+      hwid:          '',
+      purchase_date: '',
+      expiration:    '',
+      order_id:      '',
+      customer_email:'',
+      assigned_user: '',
+    });
     existing.add(k);
     added.push(k);
   }
-  await _redisSet('ghost:inventory', inventory);
-  return res.json({ ok: true, added: added.length, skipped: keys.length - added.length });
+
+  const imported_count  = added.length;
+  const duplicate_count = duplicateKeys.length;
+  const invalid_count   = invalidKeys.length;
+
+  // Only persist — and only report success — when something was actually saved.
+  if (imported_count > 0) {
+    const saved = await _redisSet('ghost:inventory', inventory);
+    if (!saved) {
+      console.error('[ghost/inventory] import: _redisSet returned false — keys NOT persisted. imported_count=%d', imported_count);
+      return res.status(500).json({
+        ok:    false,
+        error: 'Storage write failed. Keys were not saved.',
+        imported_count:  0,
+        saved_count:     0,
+        duplicate_count,
+        invalid_count,
+        inventory_count_after_import: (await _redisGet('ghost:inventory') || []).length,
+      });
+    }
+  }
+
+  const inventory_count_after_import = inventory.length;
+
+  console.log(
+    '[ghost/inventory] import: imported_count=%d saved_count=%d duplicate_count=%d invalid_count=%d inventory_count_after_import=%d',
+    imported_count, imported_count, duplicate_count, invalid_count, inventory_count_after_import
+  );
+
+  return res.json({
+    ok:                          imported_count > 0 || duplicate_count > 0,
+    imported_count,
+    saved_count:                 imported_count,
+    duplicate_count,
+    invalid_count,
+    inventory_count_after_import,
+    // Keep legacy field names so the existing frontend stats boxes still work
+    added:   imported_count,
+    skipped: duplicate_count,
+    invalid: invalid_count,
+    // Return the actually-saved keys so the frontend can verify
+    imported_keys: added,
+  });
 });
 
 app.post('/api/admin/inventory/bulk-delete', _requireAdminSession, async (req, res) => {
