@@ -45,18 +45,20 @@ const PORT = process.env.PORT || 3000;
 // NEVER store the plain-text password — only the digest.
 const ADMIN_PANEL_PASSWORD_HASH = (process.env.ADMIN_PANEL_PASSWORD_HASH || '').trim().toLowerCase();
 
-// JWT secret for signing admin panel session cookies.
-// Falls back to a derived value so a missing env var doesn't hard-crash, but
-// sessions will not survive a server restart / re-deployment with a different
-// ADMIN_JWT_SECRET.  Set this explicitly in production.
-const ADMIN_JWT_SECRET = (
-  process.env.ADMIN_JWT_SECRET ||
-  // Derive a fallback from the password hash so it is at least deterministic
-  // when ADMIN_PANEL_PASSWORD_HASH is set (no cross-invocation state needed).
-  (ADMIN_PANEL_PASSWORD_HASH
-    ? crypto.createHash('sha256').update('ghost-panel-jwt-' + ADMIN_PANEL_PASSWORD_HASH).digest('hex')
-    : crypto.randomBytes(32).toString('hex'))   // truly random — sessions die on restart
-);
+// Secret used to sign the stateless admin session cookie.
+// MUST be set as ADMIN_SESSION_SECRET in Vercel environment variables.
+// On Vercel, each function invocation may run on a different instance;
+// an in-memory or randomly-generated secret makes every session invalid
+// on the next request → the 401 session-expired loop.
+// A stable env-var secret survives across all instances and redeployments.
+const ADMIN_SESSION_SECRET = (process.env.ADMIN_SESSION_SECRET || '').trim();
+if (!ADMIN_SESSION_SECRET) {
+  console.error(
+    '[ghost/admin] CRITICAL: ADMIN_SESSION_SECRET is not set. ' +
+    'Admin sessions will be invalid on every request. ' +
+    'Set ADMIN_SESSION_SECRET in Vercel environment variables and redeploy.',
+  );
+}
 
 // Server-side admin API key for bot / CI integrations.
 // Accepted via: Authorization: Bearer <GHOST_ADMIN_API_KEY>
@@ -64,45 +66,72 @@ const ADMIN_JWT_SECRET = (
 const GHOST_ADMIN_API_KEY = (process.env.GHOST_ADMIN_API_KEY || '').trim();
 
 const ADMIN_SESSION_TTL_SECS = 4 * 60 * 60; // 4 hours
-const ADMIN_COOKIE_NAME      = 'ghost_admin_session';
+// __Host- prefix enforces: Secure, Path=/, no Domain attribute.
+// This is the strongest cookie security available in modern browsers.
+const ADMIN_COOKIE_NAME = '__Host-ghost_admin_session';
 
-// ── JWT helpers ───────────────────────────────────────────────────────────────
-function _issueAdminJwt () {
-  const header  = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+// ── Stateless signed session cookie helpers ───────────────────────────────────
+// The session token is a compact HMAC-signed structure:
+//   base64url(payload_json) + "." + base64url(hmac_sha256)
+// No in-memory state, no database — the signature proves authenticity and the
+// expiry claim proves freshness. Any Vercel instance can verify any token as
+// long as ADMIN_SESSION_SECRET is the same env var value across all instances.
+
+function _issueAdminSession () {
+  if (!ADMIN_SESSION_SECRET) return null;
   const payload = Buffer.from(JSON.stringify({
     sub: 'admin',
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + ADMIN_SESSION_TTL_SECS,
   })).toString('base64url');
   const sig = crypto
-    .createHmac('sha256', ADMIN_JWT_SECRET)
-    .update(`${header}.${payload}`)
+    .createHmac('sha256', ADMIN_SESSION_SECRET)
+    .update(payload)
     .digest('base64url');
-  return `${header}.${payload}.${sig}`;
+  return `${payload}.${sig}`;
 }
 
-function _verifyAdminJwt (token) {
-  if (!token || typeof token !== 'string') return false;
-  const parts = token.split('.');
-  if (parts.length !== 3) return false;
-  const [header, payload, sig] = parts;
+function _verifyAdminSession (token) {
+  if (!ADMIN_SESSION_SECRET) {
+    console.error('[ghost/admin] ADMIN_SESSION_SECRET not set — cannot verify session cookie');
+    return false;
+  }
+  if (!token || typeof token !== 'string') {
+    console.log('[ghost/admin] cookie_missing');
+    return false;
+  }
+  const dot = token.lastIndexOf('.');
+  if (dot < 1) {
+    console.log('[ghost/admin] signature_invalid reason=malformed');
+    return false;
+  }
+  const payload = token.slice(0, dot);
+  const sig     = token.slice(dot + 1);
   const expected = crypto
-    .createHmac('sha256', ADMIN_JWT_SECRET)
-    .update(`${header}.${payload}`)
+    .createHmac('sha256', ADMIN_SESSION_SECRET)
+    .update(payload)
     .digest('base64url');
+  let sigOk = false;
   try {
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
+    sigOk = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
   } catch (_) {
-    return false;  // length mismatch
+    // Buffer length mismatch — signature is wrong
+  }
+  if (!sigOk) {
+    console.log('[ghost/admin] signature_invalid reason=hmac_mismatch');
+    return false;
   }
   try {
     const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (claims.exp && Math.floor(Date.now() / 1000) > claims.exp) {
-      console.log('[ghost/admin] session expired sub=%s', claims.sub);
+    const now    = Math.floor(Date.now() / 1000);
+    if (claims.exp && now > claims.exp) {
+      console.log('[ghost/admin] session_expired sub=%s exp=%d now=%d', claims.sub, claims.exp, now);
       return false;
     }
+    console.log('[ghost/admin] session_verified sub=%s', claims.sub);
     return true;
   } catch (_) {
+    console.log('[ghost/admin] signature_invalid reason=payload_parse_error');
     return false;
   }
 }
@@ -112,8 +141,7 @@ function _requireAdminSession (req, res, next) {
   // Path 1: cookie-based session (human admin panel)
   const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
   if (cookieToken) {
-    if (_verifyAdminJwt(cookieToken)) return next();
-    console.log('[ghost/admin] invalid/expired session cookie ip=%s path=%s', req.ip, req.path);
+    if (_verifyAdminSession(cookieToken)) return next();
     return res.status(401).json({ ok: false, error: 'Admin session expired. Please log in again.' });
   }
 
@@ -122,7 +150,7 @@ function _requireAdminSession (req, res, next) {
   if (authHeader.startsWith('Bearer ')) {
     const providedKey = authHeader.slice(7).trim();
     if (!GHOST_ADMIN_API_KEY) {
-      console.warn('[ghost/admin] Bearer token presented but GHOST_ADMIN_API_KEY is not configured');
+      console.warn('[ghost/admin] bearer_presented but GHOST_ADMIN_API_KEY is not configured ip=%s', req.ip);
       return res.status(401).json({ ok: false, error: 'Admin API key not configured on this server.' });
     }
     let match = false;
@@ -135,14 +163,14 @@ function _requireAdminSession (req, res, next) {
       // length mismatch → not equal
     }
     if (!match) {
-      console.warn('[ghost/admin] invalid Bearer API key ip=%s path=%s', req.ip, req.path);
+      console.warn('[ghost/admin] bearer_invalid ip=%s path=%s', req.ip, req.path);
       return res.status(401).json({ ok: false, error: 'Invalid admin API key.' });
     }
     return next();
   }
 
   // Fallback: no credentials at all
-  console.log('[ghost/admin] missing session ip=%s path=%s', req.ip, req.path);
+  console.log('[ghost/admin] cookie_missing ip=%s path=%s', req.ip, req.path);
   return res.status(401).json({ ok: false, error: 'Admin session required. Please log in.' });
 }
 
@@ -285,7 +313,7 @@ app.get('/api/config/audit', (req, res) => {
     'GHOST_DELIVERY_URL',
     'BASE_URL',
     'ADMIN_PANEL_PASSWORD_HASH',
-    'ADMIN_JWT_SECRET',
+    'ADMIN_SESSION_SECRET',
     'GHOST_ADMIN_API_KEY',
   ];
 
@@ -306,12 +334,17 @@ app.get('/api/config/audit', (req, res) => {
 
 // ── Admin panel auth ──────────────────────────────────────────────────────────
 // POST /api/admin/panel/auth  { password }
-// Issues a signed HttpOnly session cookie valid for ADMIN_SESSION_TTL_SECS.
+// Issues a signed stateless HttpOnly session cookie valid for ADMIN_SESSION_TTL_SECS.
+// The cookie uses the __Host- prefix which enforces Secure, Path=/, no Domain.
 // Never returns the token in the JSON body — the browser reads it from the cookie.
 app.post('/api/admin/panel/auth', (req, res) => {
   if (!ADMIN_PANEL_PASSWORD_HASH) {
-    console.error('[ghost/admin] Login attempt but ADMIN_PANEL_PASSWORD_HASH is not set');
+    console.error('[ghost/admin] login_fail reason=ADMIN_PANEL_PASSWORD_HASH_not_set ip=%s', req.ip);
     return res.status(503).json({ ok: false, error: 'Admin panel not configured. Set ADMIN_PANEL_PASSWORD_HASH.' });
+  }
+  if (!ADMIN_SESSION_SECRET) {
+    console.error('[ghost/admin] login_fail reason=ADMIN_SESSION_SECRET_not_set ip=%s', req.ip);
+    return res.status(503).json({ ok: false, error: 'Admin session secret not configured. Set ADMIN_SESSION_SECRET.' });
   }
 
   const { password } = req.body || {};
@@ -331,34 +364,60 @@ app.post('/api/admin/panel/auth', (req, res) => {
   }
 
   if (!match) {
-    console.warn('[ghost/admin] login_fail ip=%s reason=wrong_password', req.ip);
+    console.warn('[ghost/admin] login_rejected ip=%s reason=wrong_password', req.ip);
     return res.status(401).json({ ok: false, error: 'Invalid password.' });
   }
 
-  const token = _issueAdminJwt();
+  const token = _issueAdminSession();
 
-  // Set a server-side HttpOnly cookie — the browser cannot read or tamper with it.
+  // __Host- cookie attributes: Secure (required), HttpOnly, SameSite=Lax,
+  // Path=/ (required), no Domain attribute (required for __Host-).
   res.cookie(ADMIN_COOKIE_NAME, token, {
     httpOnly: true,
-    secure:   process.env.NODE_ENV !== 'development',   // Secure in production
+    secure:   true,   // required for __Host- prefix
     sameSite: 'lax',
     path:     '/',
     maxAge:   ADMIN_SESSION_TTL_SECS * 1000,
+    // No domain attribute — __Host- requires host-only binding
   });
 
-  console.log('[ghost/admin] login_success ip=%s', req.ip);
+  console.log('[ghost/admin] login_accepted ip=%s cookie_issued=true ttl_secs=%d', req.ip, ADMIN_SESSION_TTL_SECS);
   // Return ok:true — the session is in the cookie, not the body.
   return res.json({ ok: true });
 });
 
-// GET /api/admin/panel/verify  — lightweight session check (called on page load)
+// GET /api/admin/session  — canonical session validity check (called on page load)
+// Returns 200 + { authenticated: true } when session cookie is valid,
+// 401 + { authenticated: false } otherwise.
+// The frontend calls this once on load — it must not produce alerts on 401.
+app.get('/api/admin/session', (req, res) => {
+  const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
+  if (!cookieToken) {
+    console.log('[ghost/admin] session_check cookie_missing ip=%s', req.ip);
+    return res.status(401).json({ ok: false, authenticated: false });
+  }
+  if (_verifyAdminSession(cookieToken)) {
+    return res.status(200).json({ ok: true, authenticated: true });
+  }
+  return res.status(401).json({ ok: false, authenticated: false });
+});
+
+// GET /api/admin/panel/verify  — legacy session check (kept for compatibility)
 app.get('/api/admin/panel/verify', _requireAdminSession, (_req, res) => {
   res.json({ ok: true });
 });
 
 // POST /api/admin/panel/logout — clear the session cookie
 app.post('/api/admin/panel/logout', (_req, res) => {
-  res.clearCookie(ADMIN_COOKIE_NAME, { path: '/' });
+  // Must match the exact attributes used when setting the cookie:
+  // __Host- requires Secure=true and Path=/ — mismatching these prevents clearing.
+  res.clearCookie(ADMIN_COOKIE_NAME, {
+    path:     '/',
+    secure:   true,
+    httpOnly: true,
+    sameSite: 'lax',
+  });
+  console.log('[ghost/admin] logout ip=%s', _req.ip);
   res.json({ ok: true });
 });
 
@@ -527,6 +586,9 @@ app.use((err, _req, res, _next) => {
 // ── Startup ───────────────────────────────────────────────────────────────────
 if (!ADMIN_PANEL_PASSWORD_HASH) {
   console.warn('[ghost/server] WARNING: ADMIN_PANEL_PASSWORD_HASH not set — /admin panel login will return 503');
+}
+if (!ADMIN_SESSION_SECRET) {
+  console.error('[ghost/server] CRITICAL: ADMIN_SESSION_SECRET not set — admin sessions will fail on EVERY request. Set this env var in Vercel and redeploy.');
 }
 if (!GHOST_ADMIN_API_KEY) {
   console.warn('[ghost/server] WARNING: GHOST_ADMIN_API_KEY not set — Bearer API key auth will be unavailable');

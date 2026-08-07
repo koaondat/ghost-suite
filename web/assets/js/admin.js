@@ -65,20 +65,32 @@
   // credentials: "include" ensures the HttpOnly session cookie is sent with
   // every same-origin request.  The browser manages the cookie automatically;
   // we never read or set it from JavaScript.
+  //
+  // 401 deduplication: only the FIRST 401 received while _loggedIn=true
+  // triggers a UI transition + toast.  Subsequent concurrent 401 responses
+  // (from multiple in-flight requests) are silently ignored.
+  let _handlingSessionExpiry = false;
+
   async function apiFetch (path, opts = {}, retries = 2) {
     const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const res  = await fetch(path, { ...opts, headers, credentials: 'include' });
         // If the server returns 401, the session cookie is missing or expired.
-        // Clear client-side state and redirect to login once — do not retry.
+        // Do NOT retry 401 responses — retrying would just produce more alerts.
         if (res.status === 401) {
           const data = await res.json().catch(() => ({}));
-          if (_loggedIn) {
+          // Only transition to login screen once, even if multiple requests
+          // return 401 simultaneously (e.g. dashboard + inventory in parallel).
+          if (_loggedIn && !_handlingSessionExpiry) {
+            _handlingSessionExpiry = true;
             _loggedIn = false;
             hide('adminShell');
             show('adminLogin');
             toast('Session expired. Please log in again.', 'error');
+            // Reset the guard after the toast duration so a fresh login
+            // can trigger it again if needed.
+            setTimeout(() => { _handlingSessionExpiry = false; }, 4000);
           }
           return { ok: false, status: 401, data };
         }
@@ -1157,19 +1169,26 @@
 
   /* ── Auto-login check ───────────────────────────────────────────────── */
   async function checkExistingSession () {
-    // Ask the server to validate the HttpOnly session cookie.
-    // If it is valid the server returns 200; otherwise 401.
-    // We never inspect the cookie itself from JavaScript.
+    // Use /api/admin/session — a dedicated endpoint that returns
+    // { authenticated: true } on 200 or { authenticated: false } on 401.
+    // We call this BEFORE setting _loggedIn=true so a 401 here does NOT
+    // trigger the "session expired" toast — it is expected on a fresh page load.
+    // We do NOT use apiFetch here because apiFetch triggers the expiry toast
+    // when _loggedIn is true; on initial load _loggedIn is false, so it is safe,
+    // but using a plain fetch with credentials is clearer and avoids any race.
     try {
-      const { ok } = await apiFetch('/api/admin/panel/verify');
-      if (ok) {
+      const res  = await fetch('/api/admin/session', { credentials: 'include' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.authenticated) {
         _loggedIn = true;
         hide('adminLogin');
         show('adminShell');
         loadDashboard();
       }
-      // If not ok the login screen is already visible — do nothing.
-    } catch (_) {}
+      // 401 here means no active session — show login screen (already visible by default).
+    } catch (_) {
+      // Network error — login screen stays visible.
+    }
   }
 
   /* ── Wire events ─────────────────────────────────────────────────────── */
