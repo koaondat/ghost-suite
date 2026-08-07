@@ -146,9 +146,6 @@ app.get('/api/config/audit', (req, res) => {
     'GHOST_API_URL',
     'GHOST_DELIVERY_URL',
     'BASE_URL',
-    'RESEND_API_KEY',
-    'RECEIPT_FROM_EMAIL',
-    'SUPPORT_EMAIL',
   ];
 
   const report = {};
@@ -203,11 +200,6 @@ app.get('/api/order/:orderId', (req, res) =>
 // Protected download — verifies payment on the delivery backend before returning a signed ref
 app.get('/api/order/:orderId/download', (req, res) =>
   _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}/download`),
-);
-
-// PATCH /api/order/:orderId/receipt — receipt status update from paypal.js (internal)
-app.patch('/api/order/:orderId/receipt', (req, res) =>
-  _proxyToDelivery(req, res, `/api/order/${encodeURIComponent(req.params.orderId)}/receipt`),
 );
 
 // ── Serve checkout.html ───────────────────────────────────────────────────────

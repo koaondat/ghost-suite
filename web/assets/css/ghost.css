@@ -3095,6 +3095,66 @@ section { padding: 100px 0; }
 }
 .co-key-warning svg { flex-shrink: 0; margin-top: 2px; }
 
+/* Section heading used inside the success panel */
+.co-section-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin: 28px 0 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+
+/* Large license key box variant */
+.co-key-delivery-box--large {
+  padding: 14px 16px;
+}
+.co-key-delivery-mono--large {
+  font-size: 1.1rem;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+}
+
+/* Clipboard copy confirmation */
+.co-key-copy-confirm {
+  font-size: 0.8rem;
+  color: #4ade80;
+  font-weight: 600;
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+
+/* Download Ghost section */
+.co-download-ghost-btn {
+  width: 100%;
+  justify-content: center;
+  font-size: 1rem;
+  padding: 14px 20px;
+}
+.co-download-note {
+  font-size: 0.77rem;
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+/* Important Information section */
+.co-important-info {
+  margin-top: 0;
+}
+.co-info-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+.co-info-list li {
+  font-size: 0.875rem;
+  color: var(--muted);
+  line-height: 1.65;
+  padding: 2px 0;
+}
+
 
 /* ============================================================
    HOMEPAGE REDESIGN — hero mockup, product preview, feature
@@ -3802,4 +3862,257 @@ section { padding: 100px 0; }
   .download-actions { flex-direction: column; align-items: stretch; }
   .download-actions .btn { justify-content: center; }
   .btn-lg { padding: 13px 24px; font-size: 0.95rem; }
+}
+
+
+/* ============================================================
+   CHECKOUT RESULT STATES — v2
+   .co-processing-card  — compact loading card
+   .co-confirm-dashboard — full-width success dashboard
+   .co-pending-note    — delivery_pending info banner
+   ============================================================ */
+
+/* ── Processing card (loading state) ─────────────────────── */
+.co-state--loading {
+  display: flex;
+  justify-content: center;
+  padding: 60px 0;
+}
+.co-processing-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 48px 40px;
+  max-width: 380px;
+  width: 100%;
+  text-align: center;
+}
+.co-proc-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(168,85,247,0.1);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 24px;
+  animation: spin 1.2s linear infinite;
+}
+.co-proc-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.co-proc-sub {
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin-bottom: 28px;
+}
+
+/* ── Confirmation dashboard (success state) ──────────────── */
+.co-state--success {
+  display: flex;
+  justify-content: center;
+  padding: 20px 0 80px;
+}
+.co-confirm-dashboard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 700px;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* Coloured top accent bar */
+.co-confirm-dashboard::before {
+  content: '';
+  display: block;
+  height: 3px;
+  background: linear-gradient(90deg, #22c55e, #22d3ee);
+}
+
+.co-confirm-header {
+  text-align: center;
+  padding: 40px 40px 32px;
+  border-bottom: 1px solid var(--border);
+}
+.co-confirm-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: rgba(34,197,94,0.1);
+  border: 2px solid rgba(34,197,94,0.25);
+  color: #22c55e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 20px;
+}
+.co-confirm-title {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+.co-confirm-sub {
+  font-size: 0.9rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* Sections inside dashboard */
+.co-confirm-section {
+  padding: 24px 36px;
+  border-bottom: 1px solid var(--border);
+}
+.co-confirm-section:last-of-type {
+  border-bottom: none;
+}
+.co-confirm-section-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+/* Download card inside section */
+.co-dl-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px 20px;
+  flex-wrap: wrap;
+}
+.co-dl-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.co-dl-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: rgba(168,85,247,0.12);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.co-dl-name {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.co-dl-meta {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.co-dl-card .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Setup steps — numbered list */
+.co-setup-steps-new {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+}
+.co-setup-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  font-size: 0.875rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.co-setup-step-num {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(168,85,247,0.12);
+  border: 1px solid rgba(168,85,247,0.25);
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.co-setup-step strong { color: var(--text); display: block; margin-bottom: 2px; }
+
+/* Action buttons row inside dashboard */
+.co-confirm-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 24px 36px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.co-confirm-actions .btn {
+  flex: 1;
+  min-width: 130px;
+  justify-content: center;
+}
+
+/* ── Delivery-pending state ───────────────────────────────── */
+.co-state--delivery-pending {
+  display: flex;
+  justify-content: center;
+  padding: 20px 0 60px;
+}
+.co-feedback-card--pending {
+  border-color: rgba(245,158,11,0.3);
+}
+.co-pending-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(34,211,238,0.07);
+  border: 1px solid rgba(34,211,238,0.18);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  font-size: 0.875rem;
+  color: var(--muted);
+  line-height: 1.6;
+  text-align: left;
+}
+.co-pending-note svg { flex-shrink: 0; color: var(--cyan); margin-top: 2px; }
+.co-pending-note strong { color: var(--text); }
+
+/* ── auth-alert--info variant (missing from base) ────────── */
+.auth-alert--info {
+  background: rgba(34,211,238,0.08);
+  border-color: rgba(34,211,238,0.25);
+  color: var(--cyan);
+}
+
+/* ── Responsive ───────────────────────────────────────────── */
+@media (max-width: 760px) {
+  .co-confirm-header    { padding: 28px 20px 22px; }
+  .co-confirm-section   { padding: 20px 20px; }
+  .co-confirm-actions   { padding: 18px 20px; flex-direction: column; }
+  .co-confirm-actions .btn { width: 100%; min-width: unset; }
+  .co-dl-card           { flex-direction: column; align-items: flex-start; }
+  .co-dl-card .btn      { width: 100%; justify-content: center; }
+  .co-processing-card   { padding: 36px 22px; }
 }

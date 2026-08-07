@@ -17,9 +17,6 @@
  *   PAYPAL_WEBHOOK_ID       — webhook ID from PayPal dashboard (for signature verification)
  *   GHOST_DELIVERY_URL      — URL of the Python license_delivery server
  *   BASE_URL                — public URL of this web server
- *   RESEND_API_KEY          — Resend API key for receipt emails
- *   RECEIPT_FROM_EMAIL      — From address e.g. Ghost <receipts@yourdomain.com>
- *   SUPPORT_EMAIL           — shown in receipt and error messages
  */
 
 'use strict';
@@ -34,9 +31,6 @@ const PAYPAL_API_BASE = PAYPAL_ENV === 'live'
   : 'https://api-m.sandbox.paypal.com';
 
 const DELIVERY_BACKEND_URL = (process.env.GHOST_DELIVERY_URL || '').replace(/\/$/, '');
-const RESEND_API_KEY       = process.env.RESEND_API_KEY       || '';
-const RECEIPT_FROM_EMAIL   = process.env.RECEIPT_FROM_EMAIL   || 'Ghost <noreply@example.com>';
-const SUPPORT_EMAIL        = process.env.SUPPORT_EMAIL        || '';
 
 if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
   console.error(
@@ -49,9 +43,6 @@ if (!DELIVERY_BACKEND_URL) {
     '[ghost/paypal] FATAL: GHOST_DELIVERY_URL is not set. ' +
     'License delivery will fail until this is configured.',
   );
-}
-if (!RESEND_API_KEY) {
-  console.warn('[ghost/paypal] WARNING: RESEND_API_KEY is not set — receipt emails will be skipped.');
 }
 
 
@@ -180,153 +171,6 @@ async function _deliveryFetch (path, init = {}, timeoutMs = 25_000) {
 ─────────────────────────────────────────────────────────────────────────── */
 const _captureInFlight = new Map();
 
-
-/* ── Resend receipt email ────────────────────────────────────────────────── */
-async function _sendReceiptEmail ({
-  toEmail, plan, planLabel, amount, currency,
-  purchaseDate, paypalOrderId, captureId, licenseKey,
-}) {
-  if (!RESEND_API_KEY) {
-    console.warn('[ghost/paypal] Receipt email skipped — RESEND_API_KEY not configured');
-    return { ok: false, reason: 'no_api_key' };
-  }
-
-  const { default: fetch } = await import('node-fetch');
-
-  const formattedDate = new Date(purchaseDate).toLocaleString('en-US', {
-    year: 'numeric', month: 'long', day: 'numeric',
-    hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
-  });
-
-  const supportLine = SUPPORT_EMAIL
-    ? `<p style="margin:0 0 8px">Support email: <a href="mailto:${SUPPORT_EMAIL}" style="color:#a855f7">${SUPPORT_EMAIL}</a></p>`
-    : '<p style="margin:0 0 8px">Get help on our Discord server.</p>';
-
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ghost Purchase Receipt</title></head>
-<body style="background:#0f1117;margin:0;padding:0;font-family:-apple-system,'Segoe UI',system-ui,sans-serif;">
-<div style="max-width:560px;margin:40px auto;background:#1a1d2e;border-radius:12px;overflow:hidden;border:1px solid #2d2f45;">
-  <div style="background:linear-gradient(135deg,#a855f7 0%,#7c3aed 100%);padding:32px 32px 24px;text-align:center;">
-    <div style="display:inline-block;background:rgba(255,255,255,0.15);border-radius:10px;padding:8px 16px;margin-bottom:12px;">
-      <span style="color:#fff;font-size:20px;font-weight:700;letter-spacing:.5px;">👻 Ghost</span>
-    </div>
-    <h1 style="color:#fff;margin:0;font-size:24px;font-weight:700;">Payment Completed</h1>
-    <p style="color:rgba(255,255,255,0.8);margin:8px 0 0;font-size:14px;">Thank you for your purchase.</p>
-  </div>
-  <div style="padding:32px;">
-    <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
-      <tr style="border-bottom:1px solid #2d2f45;">
-        <td style="padding:10px 0;color:#888;font-size:13px;">Plan</td>
-        <td style="padding:10px 0;color:#e0e0e0;font-size:13px;text-align:right;font-weight:600;">${planLabel}</td>
-      </tr>
-      <tr style="border-bottom:1px solid #2d2f45;">
-        <td style="padding:10px 0;color:#888;font-size:13px;">Amount</td>
-        <td style="padding:10px 0;color:#e0e0e0;font-size:13px;text-align:right;font-weight:600;">${currency} ${amount}</td>
-      </tr>
-      <tr style="border-bottom:1px solid #2d2f45;">
-        <td style="padding:10px 0;color:#888;font-size:13px;">Date</td>
-        <td style="padding:10px 0;color:#e0e0e0;font-size:13px;text-align:right;">${formattedDate}</td>
-      </tr>
-      <tr style="border-bottom:1px solid #2d2f45;">
-        <td style="padding:10px 0;color:#888;font-size:13px;">PayPal Order ID</td>
-        <td style="padding:10px 0;color:#e0e0e0;font-size:13px;text-align:right;font-family:monospace;font-size:12px;">${paypalOrderId}</td>
-      </tr>
-      <tr>
-        <td style="padding:10px 0;color:#888;font-size:13px;">Capture ID</td>
-        <td style="padding:10px 0;color:#e0e0e0;font-size:13px;text-align:right;font-family:monospace;font-size:12px;">${captureId}</td>
-      </tr>
-    </table>
-
-    <div style="background:#0f1117;border:1px solid #a855f7;border-radius:8px;padding:20px;margin-bottom:24px;text-align:center;">
-      <p style="color:#888;font-size:12px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.5px;">Your License Key</p>
-      <code style="color:#a855f7;font-size:16px;font-family:monospace;font-weight:600;letter-spacing:1px;word-break:break-all;">${licenseKey}</code>
-    </div>
-
-    <div style="background:#1e2035;border-radius:8px;padding:20px;margin-bottom:24px;">
-      <h3 style="color:#e0e0e0;margin:0 0 12px;font-size:14px;font-weight:600;">Setup Instructions</h3>
-      <ol style="color:#aaa;font-size:13px;margin:0;padding-left:20px;line-height:1.8;">
-        <li>Download the application using the button below.</li>
-        <li>Extract the ZIP archive if required.</li>
-        <li>Launch the installer or application.</li>
-        <li>Enter the license key above when prompted.</li>
-        <li>Contact support if activation fails.</li>
-      </ol>
-    </div>
-
-    <div style="background:#2d1a1a;border:1px solid #7f1d1d;border-radius:8px;padding:14px 16px;margin-bottom:24px;">
-      <p style="color:#fca5a5;font-size:13px;margin:0;font-weight:600;">⚠️ Do not share your license key. It is tied to your account and sharing it may result in deactivation.</p>
-    </div>
-
-    <div style="text-align:center;margin-bottom:24px;">
-      <p style="color:#888;font-size:13px;margin-bottom:12px;">Need help?</p>
-      ${supportLine}
-    </div>
-  </div>
-  <div style="background:#0f1117;padding:16px 32px;text-align:center;border-top:1px solid #2d2f45;">
-    <p style="color:#555;font-size:12px;margin:0;">© ${new Date().getFullYear()} Ghost. All rights reserved.</p>
-  </div>
-</div>
-</body></html>`;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
-
-  try {
-    const emailRes = await fetch('https://api.resend.com/emails', {
-      method:  'POST',
-      headers: {
-        Authorization:  `Bearer ${RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from:    RECEIPT_FROM_EMAIL,
-        to:      [toEmail],
-        subject: `Your Ghost ${planLabel} receipt — ${captureId}`,
-        html,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-
-    const emailData = await emailRes.json().catch(() => ({}));
-
-    if (!emailRes.ok) {
-      console.error('[ghost/paypal] Resend email failed status=%d', emailRes.status);
-      return { ok: false, reason: 'send_failed', status: emailRes.status };
-    }
-
-    console.log('[ghost/paypal] Receipt email sent id=%s to=[redacted] captureId=%s',
-      emailData.id, captureId);
-    return { ok: true, messageId: emailData.id };
-
-  } catch (err) {
-    clearTimeout(timer);
-    const reason = err.name === 'AbortError' ? 'timeout' : 'network_error';
-    console.error('[ghost/paypal] Receipt email exception reason=%s', reason);
-    return { ok: false, reason };
-  }
-}
-
-
-/* ── Mark receipt status on the delivery backend ────────────────────────── */
-async function _markReceiptStatus (captureId, receiptResult) {
-  try {
-    await _deliveryFetch(`/api/order/${encodeURIComponent(captureId)}/receipt`, {
-      method:  'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        receipt_sent:       receiptResult.ok === true,
-        receipt_message_id: receiptResult.messageId || null,
-        receipt_status:     receiptResult.ok ? 'sent' : 'receipt_pending',
-      }),
-    }, 8_000);
-  } catch (_) {
-    // Non-fatal — order record may not have this endpoint yet; just log
-    console.warn('[ghost/paypal] Could not update receipt status for captureId=%s', captureId);
-  }
-}
 
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -541,6 +385,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
 
   // ── Step 6: Call the delivery backend ────────────────────────────────────
   let data;
+  let deliveryFailed = false;
   try {
     const deliveryRes = await _deliveryFetch('/api/payment/confirm', {
       method:  'POST',
@@ -562,28 +407,37 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     const isTimeout = err.name === 'AbortError';
     console.error('[ghost/paypal] delivery %s orderID=%s captureId=%s: %s',
       isTimeout ? 'timeout' : 'exception', orderID, captureId, err.message);
-    return {
-      ok:      false,
-      message: 'License delivery service unavailable. Your payment was received — ' +
-               'contact support with Capture ID: ' + captureId,
-      stage:   'delivery',
-      orderId: orderID,
-      captureId,
-      _status: 502,
-    };
+    // IMPORTANT: payment was captured — do NOT return ok:false (which shows "Payment failed").
+    // Instead return ok:true with delivery_pending so the frontend shows the correct state.
+    deliveryFailed = true;
+    data = { ok: false, error: isTimeout ? 'delivery_timeout' : 'delivery_unavailable' };
   }
 
   if (!data.ok) {
-    console.error('[ghost/paypal] delivery failed orderID=%s captureId=%s error=%s',
-      orderID, captureId, data.error);
+    console.error('[ghost/paypal] delivery failed orderID=%s captureId=%s error=%s stage=%s',
+      orderID, captureId, data.error, deliveryFailed ? 'exception' : 'delivery');
+    // Payment was captured successfully — show delivery_pending, not payment failure.
+    const purchaseDatePending = new Date().toISOString();
     return {
-      ok:      false,
-      message: 'Your payment was received but license delivery failed. ' +
-               'Please contact support with Capture ID: ' + captureId,
-      stage:   'delivery',
-      orderId: orderID,
+      ok:             true,
+      paymentStatus:  'COMPLETED',
+      deliveryStatus: 'delivery_pending',
+      orderId:        captureId,
       captureId,
-      _status: 500,
+      paypalOrderId:  orderID,
+      plan:           planId,
+      planLabel:      plan.label,
+      amount:         capturedAmount,
+      currency:       capturedCurrency,
+      email:          resolvedEmail,
+      discord:        resolvedDiscord,
+      licenseKey:     null,
+      licenseStatus:  'pending',
+      purchaseDate:   purchaseDatePending,
+      downloadUrl:    null,
+      tier:           plan.tier,
+      instructions:   null,
+      _status:        200,
     };
   }
 
@@ -591,30 +445,6 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     orderID, captureId, planId);
 
   const purchaseDate = data.created_at || new Date().toISOString();
-
-  // ── Step 7: Send receipt email (non-blocking — never blocks fulfillment) ──
-  if (RESEND_API_KEY && resolvedEmail) {
-    _sendReceiptEmail({
-      toEmail:      resolvedEmail,
-      plan:         planId,
-      planLabel:    plan.label,
-      amount:       capturedAmount,
-      currency:     capturedCurrency,
-      purchaseDate,
-      paypalOrderId: orderID,
-      captureId,
-      licenseKey:   data.key,
-    }).then(receiptResult => {
-      if (!receiptResult.ok) {
-        console.warn('[ghost/paypal] Receipt email not sent captureId=%s reason=%s',
-          captureId, receiptResult.reason);
-      }
-      // Update receipt status on delivery backend asynchronously
-      _markReceiptStatus(captureId, receiptResult).catch(() => {});
-    }).catch(err => {
-      console.error('[ghost/paypal] Receipt email unhandled error captureId=%s', captureId);
-    });
-  }
 
   return {
     ok:             true,
@@ -635,11 +465,11 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
     downloadUrl:    `/api/order/${encodeURIComponent(captureId)}/download`,
     tier:           data.tier,
     instructions: [
-      'Download the application using the Download App button below.',
-      'Extract the ZIP archive if required.',
-      'Launch the installer or application.',
-      'Sign in or enter the provided license key when prompted.',
-      'Contact Discord support if activation fails.',
+      'Download Ghost.',
+      'Extract the ZIP if required.',
+      'Launch Ghost.',
+      'Log in or paste your license key.',
+      'Click Activate.',
     ],
   };
 }
@@ -783,22 +613,6 @@ async function handleWebhook (req, res) {
 
     if (data.ok) {
       console.log('[ghost/paypal/webhook] Delivery confirmed captureId=%s plan=%s', captureId, plan);
-      // Send receipt if not already sent (delivery returns existing key on duplicate)
-      if (RESEND_API_KEY && email && data.key) {
-        _sendReceiptEmail({
-          toEmail:      email,
-          plan,
-          planLabel:    planMeta.label,
-          amount,
-          currency,
-          purchaseDate: data.created_at || new Date().toISOString(),
-          paypalOrderId: orderId,
-          captureId,
-          licenseKey:   data.key,
-        }).then(r => {
-          _markReceiptStatus(captureId, r).catch(() => {});
-        }).catch(() => {});
-      }
     } else {
       console.error('[ghost/paypal/webhook] Delivery failed captureId=%s error=%s',
         captureId, data.error);

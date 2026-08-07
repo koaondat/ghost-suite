@@ -94,7 +94,7 @@
   /* ── State machine ──────────────────────────────────────────
      All state panel IDs.  Only one is visible at a time.
   ──────────────────────────────────────────────────────────── */
-  const STATES = ['idle', 'loading', 'success', 'cancelled', 'failed'];
+  const STATES = ['idle', 'loading', 'success', 'delivery_pending', 'cancelled', 'failed'];
 
   function showState (name) {
     STATES.forEach(s => {
@@ -256,42 +256,45 @@
   /* ── _showDeliveredKey — populate and show the full success panel ─── */
   function _showDeliveredKey (result) {
     const {
-      licenseKey, licenseStatus, orderId, paypalOrderId, plan, planLabel,
-      amount, currency, email, purchaseDate, downloadUrl, instructions, tier,
+      licenseKey, orderId, instructions,
     } = result;
 
-    // License key code box
-    _show('co-key-delivery');
-    _setText('success-license-key', licenseKey || '—');
+    // ── License section ──────────────────────────────────────────────
+    _show('co-license-section');
 
-    const inlineCopyBtn = document.getElementById('success-copy-btn');
-    if (inlineCopyBtn && licenseKey) {
-      inlineCopyBtn.onclick = () => _copyKey(licenseKey, [inlineCopyBtn]);
+    if (licenseKey) {
+      // Populate and reveal the large key box
+      _setText('success-license-key', licenseKey);
+      _show('co-key-delivery');
+
+      const inlineCopyBtn = document.getElementById('success-copy-btn');
+      if (inlineCopyBtn) {
+        inlineCopyBtn.onclick = () => _copyKey(licenseKey, [inlineCopyBtn]);
+      }
+
+      // "Copy License" action button
+      const copyBtn = document.getElementById('success-copy-key-btn');
+      if (copyBtn) {
+        copyBtn.hidden = false;
+        copyBtn.onclick = () => _copyKey(licenseKey, [copyBtn, inlineCopyBtn].filter(Boolean));
+      }
+
+      _show('co-key-warning');
     }
 
-    // "Copy License Key" action button
-    const copyBtn = document.getElementById('success-copy-key-btn');
-    if (copyBtn && licenseKey) {
-      copyBtn.hidden = false;
-      copyBtn.onclick = () => _copyKey(licenseKey, [copyBtn, inlineCopyBtn].filter(Boolean));
-    }
+    // ── Download section (revealed only after verified payment) ──────
+    _show('co-download-section');
 
-    // "View Dashboard" button
-    const dashBtn = document.getElementById('success-dashboard-btn');
-    if (dashBtn) dashBtn.hidden = false;
-
-    // "Download App" button — calls the protected download endpoint
     const dlBtn = document.getElementById('success-download-btn');
     if (dlBtn && orderId) {
-      dlBtn.hidden = false;
+      dlBtn.disabled = false;
       dlBtn.onclick = async function () {
-        dlBtn.disabled = true;
-        dlBtn.textContent = 'Preparing download…';
+        dlBtn.disabled  = true;
+        dlBtn.textContent = 'Preparing download\u2026';
         try {
           const r    = await fetch(`/api/order/${encodeURIComponent(orderId)}/download`);
           const data = await r.json().catch(() => ({}));
           if (r.ok && data.ok && data.downloadPath) {
-            // Trigger browser download using the server-validated path
             const a = document.createElement('a');
             a.href     = data.downloadPath;
             a.download = '';
@@ -304,26 +307,29 @@
         } catch (err) {
           alert('Could not start the download. Please try again or contact support.');
         } finally {
-          dlBtn.disabled    = false;
-          dlBtn.innerHTML   = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download App';
+          dlBtn.disabled = false;
+          dlBtn.innerHTML =
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download Ghost';
         }
       };
     }
 
-    // Setup guide from server-supplied instructions
+    // ── Setup guide ──────────────────────────────────────────────────
+    _show('co-setup-guide');
+    // If backend returned custom steps, replace the static fallback
     if (Array.isArray(instructions) && instructions.length) {
-      const guideEl = document.getElementById('co-setup-guide');
       const stepsEl = document.getElementById('co-setup-steps');
       if (stepsEl) {
-        stepsEl.innerHTML = instructions
-          .map(step => `<li>${_escHtml(step)}</li>`)
-          .join('');
+        stepsEl.innerHTML = instructions.map((step, i) => `
+          <li class="co-setup-step">
+            <span class="co-setup-step-num">${i + 1}</span>
+            <div><span>${_escHtml(step)}</span></div>
+          </li>`).join('');
       }
-      if (guideEl) guideEl.hidden = false;
     }
 
-    // License key sharing warning
-    if (licenseKey) _show('co-key-warning');
+    // ── Dashboard button ─────────────────────────────────────────────
+    _show('success-dashboard-btn');
   }
 
   function _copyKey (text, btns) {
@@ -341,6 +347,12 @@
           btn.classList.remove('copied');
         }, 2000);
       });
+      // Show inline copy confirmation
+      const confirm = document.getElementById('co-key-copy-confirm');
+      if (confirm) {
+        confirm.hidden = false;
+        setTimeout(() => { confirm.hidden = true; }, 2500);
+      }
     }).catch(() => {
       alert('Could not copy automatically — please select and copy the key manually.');
     });
@@ -385,36 +397,35 @@
     if (card && ACTIVE_PLAN.color === 'cyan') card.classList.add('co-summary-card--cyan');
   }
 
-  /* ── Retry Status — retrieves existing order without re-charging ── */
-  function _showRetryStatus (lookupId) {
-    if (!lookupId) return;
-    const btn = document.getElementById('failed-retry-status-btn');
-    if (!btn) return;
-    btn.hidden = false;
-    btn.dataset.orderId = lookupId;
-  }
-
-  async function _retryStatus (orderId) {
+  /* ── _retryDelivery — polls GET /api/order/:id for an already-paid order
+     and transitions to success if the key is now available.
+     Never charges again — only checks the stored delivery state.
+  ─────────────────────────────────────────────────────────────────────── */
+  async function _retryDelivery (orderId) {
     if (!orderId) return;
-    const btn = document.getElementById('failed-retry-status-btn');
+    const btn = document.getElementById('pending-retry-delivery-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Checking\u2026'; }
 
-    console.log('[ghost/checkout] retry status lookup orderId=%s', orderId);
+    console.log('[ghost/checkout] retry delivery lookup orderId=%s', orderId);
     try {
       const res  = await fetch('/api/order/' + encodeURIComponent(orderId));
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok || !data.ok) {
-        console.warn('[ghost/checkout] retry status: order not found orderId=%s', orderId);
-        if (btn) { btn.disabled = false; btn.textContent = 'Retry Status'; }
-        _setText('failed-reason',
-          'Order not found yet. Wait 60 seconds and try again, or contact support with Order ID: ' + orderId);
+        console.warn('[ghost/checkout] retry delivery: order not found orderId=%s', orderId);
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML =
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg> Retry license delivery';
+        }
+        const noteEl = document.querySelector('#state-delivery_pending .co-pending-note span');
+        if (noteEl) noteEl.textContent = 'Order not found yet. Wait a moment and try again, or contact Discord support with Order ID: ' + orderId;
         return;
       }
 
-      const status = data.payment_status || '';
+      const status = (data.payment_status || '').toLowerCase();
       if (status === 'verified' && data.license_key) {
-        console.log('[ghost/checkout] retry status: order verified, showing success');
+        console.log('[ghost/checkout] retry delivery: key now available, showing success');
 
         const planDisplay = PLANS[(data.plan || '').toLowerCase()];
         const planName    = data.plan_label || (planDisplay ? planDisplay.name : data.plan) || '\u2014';
@@ -423,7 +434,6 @@
           : '\u2014';
 
         _setText('success-email',          data.email   || '\u2014');
-        _setText('success-email-meta',     data.email   || '\u2014');
         _setText('success-plan',           planName);
         _setText('success-order-id',       data.order_id || orderId || '\u2014');
         _setText('success-amount',         amountStr);
@@ -432,44 +442,34 @@
 
         showState('success');
         _hide('co-payment-section');
-        _hide('co-key-pending');
 
         _showDeliveredKey({
-          licenseKey:    data.license_key,
-          licenseStatus: data.license_status,
-          orderId:       data.order_id || orderId,
-          paypalOrderId: data.paypal_order_id || '',
-          plan:          data.plan,
-          planLabel:     planName,
-          amount:        data.price_usd,
-          currency:      data.currency || 'USD',
-          email:         data.email,
-          purchaseDate:  data.created_at,
-          downloadUrl:   '/api/order/' + encodeURIComponent(data.order_id || orderId) + '/download',
-          instructions: [
-            'Download the application using the Download App button below.',
-            'Extract the ZIP archive if required.',
-            'Launch the installer or application.',
-            'Enter the license key when prompted.',
-            'Contact Discord support if activation fails.',
-          ],
-          tier: data.tier,
+          licenseKey:   data.license_key,
+          orderId:      data.order_id || orderId,
+          instructions: null,
         });
       } else {
-        if (btn) { btn.disabled = false; btn.textContent = 'Retry Status'; }
-        _setText('failed-reason',
-          'Payment status: ' + (status || 'unknown') + '. ' +
-          (status === 'verified'
-            ? 'Payment verified but key not yet generated — contact support with Order ID: ' + orderId
-            : 'Payment not yet verified. Wait and try again, or contact support with Order ID: ' + orderId));
+        // Still pending — restore the button
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML =
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg> Retry license delivery';
+        }
+        const noteEl = document.querySelector('#state-delivery_pending .co-pending-note span');
+        if (noteEl) noteEl.textContent = 'License is still being prepared. Please wait a moment and try again, or contact Discord support with Order ID: ' + orderId;
       }
     } catch (err) {
-      console.error('[ghost/checkout] retry status error:', err.message);
-      if (btn) { btn.disabled = false; btn.textContent = 'Retry Status'; }
+      console.error('[ghost/checkout] retry delivery error:', err.message);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML =
+          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/></svg> Retry license delivery';
+      }
     }
   }
 
   function wireRetryButtons () {
+    // "Try again" on failed / cancelled — resets to checkout form
     ['failed-retry-btn', 'cancelled-retry-btn'].forEach(id => {
       document.getElementById(id)?.addEventListener('click', () => {
         showState('idle');
@@ -483,9 +483,9 @@
       });
     });
 
-    // Retry Status — retrieves existing order without re-charging
-    document.getElementById('failed-retry-status-btn')?.addEventListener('click', function () {
-      _retryStatus(this.dataset.orderId || '');
+    // "Retry license delivery" on delivery_pending — polls the order record
+    document.getElementById('pending-retry-delivery-btn')?.addEventListener('click', function () {
+      _retryDelivery(this.dataset.orderId || '');
     });
   }
 
@@ -645,30 +645,32 @@
       const isAbort = err.name === 'AbortError';
       console.error('[ghost/checkout] capture fetch %s orderID=%s',
         isAbort ? 'timeout' : 'network-error', orderID);
-      showState('failed');
-      _setText('failed-reason',
-        isAbort
-          ? 'The request timed out. Your card may have been charged — use Retry Status below or contact support with Order ID: ' + orderID
-          : 'A network error occurred. Your payment may have been processed — use Retry Status below or contact support with Order ID: ' + orderID);
-      _showRetryStatus(orderID);
+      // The request timed out or dropped — we cannot confirm whether the payment
+      // went through, so show delivery_pending so the user can retry without repaying.
+      _setText('pending-order-id', orderID);
+      const retryBtn = document.getElementById('pending-retry-delivery-btn');
+      if (retryBtn) retryBtn.dataset.orderId = orderID;
+      showState('delivery_pending');
+      _hide('co-payment-section');
       return;
     } finally {
       clearTimeout(timer);
     }
 
     if (!res.ok || !result.ok) {
-      const msg   = result.message || 'Payment capture failed. Please contact support.';
+      // Only show "Payment failed" when the PayPal capture itself failed.
+      // (delivery failures return ok:true with deliveryStatus:'delivery_pending')
+      const msg   = result.message || 'Payment could not be processed. No charge was made.';
       const stage = result.stage   || '';
       console.error('[ghost/checkout] capture-order failed orderID=%s stage=%s: %s',
         orderID, stage, msg);
       showState('failed');
-      _setText('failed-reason', msg + (result.captureId ? ' (Capture ID: ' + result.captureId + ')' : ''));
-      _showRetryStatus(result.captureId || result.orderId || orderID);
+      _setText('failed-reason', msg);
       return;
     }
 
-    console.log('[ghost/checkout] capture confirmed orderID=%s plan=%s amount=%s',
-      orderID, result.plan, result.amount);
+    console.log('[ghost/checkout] capture confirmed orderID=%s plan=%s amount=%s deliveryStatus=%s',
+      orderID, result.plan, result.amount, result.deliveryStatus);
 
     // ── Resolve display plan name ─────────────────────────────────────
     const planDisplay = PLANS[(result.plan || '').toLowerCase()];
@@ -677,50 +679,44 @@
       ? (result.currency || 'USD') + ' ' + Number(result.amount).toFixed(2)
       : '—';
 
-    // ── Populate the order summary table ─────────────────────────────
+    // ── delivery_pending: payment captured but key not yet generated ──
+    if (result.deliveryStatus === 'delivery_pending') {
+      console.warn('[ghost/checkout] delivery_pending for orderId=%s', result.orderId);
+      const pendingOrderId = result.orderId || result.captureId || orderID;
+      _setText('pending-order-id', pendingOrderId);
+      const retryBtn = document.getElementById('pending-retry-delivery-btn');
+      if (retryBtn) retryBtn.dataset.orderId = pendingOrderId;
+      showState('delivery_pending');
+      _hide('co-payment-section');
+      return;
+    }
+
+    // ── Populate the order summary table then transition to success ───
     _setText('success-email',          result.email   || vals.email || '—');
-    _setText('success-email-meta',     result.email   || vals.email || '—');
     _setText('success-plan',           planName);
-    _setText('success-order-id',       result.orderId || result.paypalOrderId || orderID || '—');
+    _setText('success-order-id',       result.orderId || result.captureId || orderID || '—');
     _setText('success-amount',         amountStr);
     _setText('success-date',           _formatDate(result.purchaseDate));
-    _setText('success-license-status', result.licenseStatus ? result.licenseStatus.charAt(0).toUpperCase() + result.licenseStatus.slice(1) : '—');
+    _setText('success-license-status', (result.licenseStatus || 'active').replace(/^\w/, c => c.toUpperCase()));
 
     showState('success');
-    _hide('co-payment-section');   // hide checkout form + payment fields
-    _hide('co-key-pending');
+    _hide('co-payment-section');
 
     if (result.licenseKey || result.key) {
       console.log('[ghost/checkout] license key delivered orderID=%s', orderID);
       _showDeliveredKey({
-        licenseKey:    result.licenseKey || result.key,
-        licenseStatus: result.licenseStatus,
-        orderId:       result.orderId,
-        paypalOrderId: result.paypalOrderId || orderID,
-        plan:          result.plan,
-        planLabel:     planName,
-        amount:        result.amount,
-        currency:      result.currency,
-        email:         result.email || vals.email,
-        purchaseDate:  result.purchaseDate,
-        downloadUrl:   result.downloadUrl,
-        instructions:  result.instructions,
-        tier:          result.tier,
+        licenseKey:   result.licenseKey || result.key,
+        orderId:      result.orderId || result.captureId || orderID,
+        instructions: result.instructions,
       });
-    } else if (result.deliveryStatus === 'delivery_pending') {
-      // Payment succeeded but key not yet generated — show retry guidance
-      console.warn('[ghost/checkout] delivery_pending for orderID=%s', orderID);
-      _setText('co-key-error-msg',
-        'Your payment was received but license generation is pending. ' +
-        'Your Order ID is ' + (result.orderId || orderID) + '. ' +
-        'Contact support and we will deliver your key without charging you again.');
-      _show('co-key-error');
     } else {
-      console.error('[ghost/checkout] capture succeeded but no key returned orderID=%s', orderID);
-      _setText('co-key-error-msg',
-        'Your payment was received but license delivery failed. ' +
-        'Contact support with Order ID: ' + (result.orderId || orderID));
-      _show('co-key-error');
+      // Fallback: success response but no key — treat as delivery_pending
+      console.warn('[ghost/checkout] success but no key in response orderID=%s — treating as delivery_pending', orderID);
+      const pendingOrderId = result.orderId || result.captureId || orderID;
+      _setText('pending-order-id', pendingOrderId);
+      const retryBtn = document.getElementById('pending-retry-delivery-btn');
+      if (retryBtn) retryBtn.dataset.orderId = pendingOrderId;
+      showState('delivery_pending');
     }
   }
 
