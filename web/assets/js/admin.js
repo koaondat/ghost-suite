@@ -79,11 +79,18 @@
   // check may still be in-flight.
   let _handlingSessionExpiry = false;
 
+  // Front-end request timeout — prevents the button from spinning forever if
+  // the server hangs.  Import can be slow (Redis write), so we allow 15 s.
+  const _FETCH_TIMEOUT_MS = 15000;
+
   async function apiFetch (path, opts = {}, retries = 2) {
     const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
     for (let attempt = 0; attempt <= retries; attempt++) {
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), _FETCH_TIMEOUT_MS);
       try {
-        const res  = await fetch(path, { ...opts, headers, credentials: 'include' });
+        const res  = await fetch(path, { ...opts, headers, credentials: 'include', signal: ctrl.signal });
+        clearTimeout(timer);
         // If the server returns 401, the session cookie is missing or expired.
         // Do NOT retry 401 responses — retrying would just produce more alerts.
         if (res.status === 401) {
@@ -111,6 +118,7 @@
         const data = await res.json().catch(() => ({}));
         return { ok: res.ok, status: res.status, data };
       } catch (networkErr) {
+        clearTimeout(timer);
         if (attempt < retries) {
           await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
         } else {

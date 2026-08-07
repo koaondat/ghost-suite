@@ -212,14 +212,19 @@ function _redisConfigured () {
   );
 }
 
+const _REDIS_TIMEOUT_MS = 8000; // 8 s — if Upstash doesn't respond, fail fast
+
 async function _redisGet (key) {
   if (!_redisConfigured()) return _fileGet(key);
   const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
   const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), _REDIS_TIMEOUT_MS);
   try {
     const { default: fetch } = await import('node-fetch');
     const res  = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
       headers: { Authorization: `Bearer ${token}` },
+      signal:  ctrl.signal,
     });
     const data = await res.json();
     // Key not yet stored — return empty array (do NOT fall back to the local
@@ -230,6 +235,8 @@ async function _redisGet (key) {
   } catch (err) {
     console.error('[ghost/redis] get error key=%s: %s', key, err.message);
     return [];
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -237,6 +244,8 @@ async function _redisSet (key, value) {
   if (!_redisConfigured()) return _fileSet(key, value);
   const url   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
   const token = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), _REDIS_TIMEOUT_MS);
   try {
     const { default: fetch } = await import('node-fetch');
     // Upstash REST /set/:key — body is the value serialized as JSON once.
@@ -247,6 +256,7 @@ async function _redisSet (key, value) {
       method:  'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body:    JSON.stringify(value),
+      signal:  ctrl.signal,
     });
     if (!r.ok) {
       const body = await r.text().catch(() => '(unreadable)');
@@ -257,6 +267,8 @@ async function _redisSet (key, value) {
   } catch (err) {
     console.error('[ghost/redis] set error key=%s: %s', key, err.message);
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -539,12 +551,25 @@ app.get('/api/admin/inventory/stats', _requireAdminSession, async (req, res) => 
 });
 
 app.post('/api/admin/inventory/import', _requireAdminSession, async (req, res) => {
+  console.log('[ghost/inventory] import_request_received keys=%d plan=%s',
+    Array.isArray((req.body || {}).keys) ? (req.body || {}).keys.length : 0,
+    (req.body || {}).plan || 'pro');
+
   const { keys, plan = 'pro', notes = '' } = req.body || {};
   if (!Array.isArray(keys) || !keys.length) {
     return res.status(400).json({ ok: false, error: 'keys array required.' });
   }
 
-  const inventory      = await _redisGet('ghost:inventory') || [];
+  console.log('[ghost/inventory] redis_config_present=%s', _redisConfigured());
+
+  let inventory;
+  try {
+    inventory = await _redisGet('ghost:inventory') || [];
+  } catch (err) {
+    console.error('[ghost/inventory] redis_get_error: %s', err.message);
+    inventory = [];
+  }
+
   const existing       = new Set(inventory.map(k => k.key));
   const added          = [];
   const duplicateKeys  = [];
@@ -575,47 +600,45 @@ app.post('/api/admin/inventory/import', _requireAdminSession, async (req, res) =
     added.push(k);
   }
 
-  const imported_count  = added.length;
-  const duplicate_count = duplicateKeys.length;
-  const invalid_count   = invalidKeys.length;
+  const imported  = added.length;
+  const duplicates = duplicateKeys.length;
+  const invalid    = invalidKeys.length;
 
-  // Only persist — and only report success — when something was actually saved.
-  if (imported_count > 0) {
-    const saved = await _redisSet('ghost:inventory', inventory);
+  // Only persist — and only report success — when something was actually added.
+  if (imported > 0) {
+    console.log('[ghost/inventory] redis_write_started imported=%d', imported);
+    let saved = false;
+    try {
+      saved = await _redisSet('ghost:inventory', inventory);
+    } catch (err) {
+      console.error('[ghost/inventory] redis_write_error: %s', err.message);
+      saved = false;
+    }
+    console.log('[ghost/inventory] redis_write_finished saved=%s', saved);
+
     if (!saved) {
-      console.error('[ghost/inventory] import: _redisSet returned false — keys NOT persisted. imported_count=%d', imported_count);
-      return res.status(500).json({
-        ok:    false,
-        error: 'Storage write failed. Keys were not saved.',
-        imported_count:  0,
-        saved_count:     0,
-        duplicate_count,
-        invalid_count,
-        inventory_count_after_import: (await _redisGet('ghost:inventory') || []).length,
-      });
+      console.error('[ghost/inventory] import storage_write_failed imported=%d', imported);
+      console.log('[ghost/inventory] response_sent status=500 error=storage_write_failed');
+      return res.status(500).json({ ok: false, error: 'storage_write_failed' });
     }
   }
 
-  const inventory_count_after_import = inventory.length;
-
-  console.log(
-    '[ghost/inventory] import: imported_count=%d saved_count=%d duplicate_count=%d invalid_count=%d inventory_count_after_import=%d',
-    imported_count, imported_count, duplicate_count, invalid_count, inventory_count_after_import
-  );
+  console.log('[ghost/inventory] inventory_reload_started');
+  // inventory array is already up-to-date in memory — no second Redis call needed.
+  console.log('[ghost/inventory] response_sent status=200 imported=%d duplicates=%d invalid=%d',
+    imported, duplicates, invalid);
 
   return res.json({
-    ok:                          imported_count > 0 || duplicate_count > 0,
-    imported_count,
-    saved_count:                 imported_count,
-    duplicate_count,
-    invalid_count,
-    inventory_count_after_import,
-    // Keep legacy field names so the existing frontend stats boxes still work
-    added:   imported_count,
-    skipped: duplicate_count,
-    invalid: invalid_count,
-    // Return the actually-saved keys so the frontend can verify
-    imported_keys: added,
+    ok:         true,
+    imported,
+    duplicates,
+    invalid,
+    // Legacy aliases kept for other callers that may read these fields
+    imported_count:  imported,
+    duplicate_count: duplicates,
+    invalid_count:   invalid,
+    added:           imported,
+    skipped:         duplicates,
   });
 });
 
