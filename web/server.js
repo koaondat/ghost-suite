@@ -165,9 +165,12 @@ app.get('/api/config/audit', (req, res) => {
 });
 
 // ── PayPal Checkout API routes (handled by Node) ─────────────────────────────
-app.post('/api/paypal/create-order',  paypal.createOrder);
-app.post('/api/paypal/capture-order', paypal.captureOrder);
-app.post('/api/paypal/webhook',       paypal.handleWebhook);
+app.post('/api/paypal/create-order',       paypal.createOrder);
+app.post('/api/paypal/capture-order',      paypal.captureOrder);
+app.post('/api/paypal/webhook',            paypal.handleWebhook);
+// Retry license delivery for a captured-but-undelivered PayPal order.
+// Does NOT re-charge. Uses the PayPal capture ID as the idempotency key.
+app.post('/api/paypal/retry-fulfillment',  paypal.retryFulfillment);
 
 // ── Order lookup + download (proxy to delivery backend) ──────────────────────
 async function _proxyToDelivery (req, res, deliveryPath) {

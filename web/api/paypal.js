@@ -493,6 +493,107 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
 
 
 /* ─────────────────────────────────────────────────────────────────────────
+   POST /api/paypal/retry-fulfillment
+   ─────────────────────────────────────────────────────────────────────────
+   Retry license delivery for a PayPal order whose payment was captured
+   successfully but whose license delivery failed (delivery_pending).
+
+   Body:   { captureId: string }
+   OK:     { ok, paymentStatus, deliveryStatus, orderId, licenseKey, downloadUrl, ... }
+   Error:  { ok: false, message: string }
+
+   This endpoint NEVER re-captures or re-charges the customer.
+   It calls POST /api/order/:captureId/fulfill on the delivery backend,
+   which is idempotent — if the order already has a license it is returned
+   immediately without running keygen again.
+  ──────────────────────────────────────────────────────────────────────────*/
+async function retryFulfillment (req, res) {
+  const { captureId } = req.body || {};
+
+  if (!captureId || typeof captureId !== 'string' || !captureId.trim()) {
+    return res.status(400).json({
+      ok: false,
+      message: 'captureId is required.',
+      stage: 'retry-fulfillment',
+    });
+  }
+
+  const id = captureId.trim();
+
+  if (!DELIVERY_BACKEND_URL) {
+    return res.status(503).json({
+      ok:      false,
+      message: 'License delivery service is not configured (GHOST_DELIVERY_URL not set).',
+      stage:   'retry-fulfillment',
+    });
+  }
+
+  try {
+    const deliveryRes = await _deliveryFetch(`/api/order/${encodeURIComponent(id)}/fulfill`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({}),
+    }, 25_000);
+
+    const data = await deliveryRes.json().catch(() => ({}));
+
+    if (deliveryRes.status === 404) {
+      console.warn('[ghost/paypal] retry-fulfillment: order not found captureId=%s storage_backend=%s',
+        id, data.storage_backend || 'unknown');
+      return res.status(404).json({
+        ok:      false,
+        message: data.error || 'Order not found. The payment capture may not have been saved to persistent storage.',
+        hint:    data.hint  || 'Ensure UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are set on the delivery server.',
+        stage:   'retry-fulfillment',
+      });
+    }
+
+    if (!data.ok) {
+      console.error('[ghost/paypal] retry-fulfillment failed captureId=%s error=%s',
+        id, data.error || data.message);
+      return res.status(deliveryRes.status || 500).json({
+        ok:      false,
+        message: data.error || data.message || 'Fulfillment retry failed.',
+        stage:   'retry-fulfillment',
+      });
+    }
+
+    console.log('[ghost/paypal] retry-fulfillment success captureId=%s deliveryStatus=%s',
+      id, data.deliveryStatus || data.delivery_status);
+
+    // Normalise to the same shape as a successful capture-order response
+    return res.json({
+      ok:             true,
+      paymentStatus:  data.paymentStatus  || 'COMPLETED',
+      deliveryStatus: data.deliveryStatus || data.delivery_status || 'delivered',
+      orderId:        data.orderId        || data.order_id        || id,
+      plan:           data.plan,
+      planLabel:      data.planLabel      || data.plan_label,
+      amount:         String(data.amount  || data.price_usd || ''),
+      currency:       data.currency       || 'USD',
+      purchaseDate:   data.purchaseDate   || data.created_at,
+      licenseKey:     data.licenseKey     || data.license_key  || data.key || null,
+      licenseStatus:  data.licenseStatus  || data.license_status || (data.licenseKey ? 'active' : null),
+      downloadUrl:    data.downloadUrl    || data.download_url  || (data.orderId ? `/api/order/${encodeURIComponent(data.orderId || id)}/download` : null),
+      tier:           data.tier,
+    });
+
+  } catch (err) {
+    const isTimeout = err.name === 'AbortError';
+    console.error('[ghost/paypal] retry-fulfillment %s captureId=%s: %s',
+      isTimeout ? 'timeout' : 'error', id, err.message);
+    return res.status(502).json({
+      ok:      false,
+      message: isTimeout
+        ? 'License delivery service did not respond. Please try again in a moment.'
+        : 'License delivery service unavailable.',
+      stage: 'retry-fulfillment',
+    });
+  }
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────
    POST /api/paypal/webhook
    ─────────────────────────────────────────────────────────────────────────
    PayPal delivers PAYMENT.CAPTURE.COMPLETED events here.
@@ -646,4 +747,4 @@ async function handleWebhook (req, res) {
 }
 
 
-module.exports = { createOrder, captureOrder, handleWebhook, PLAN_CATALOGUE };
+module.exports = { createOrder, captureOrder, handleWebhook, retryFulfillment, PLAN_CATALOGUE };

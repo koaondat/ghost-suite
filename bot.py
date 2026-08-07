@@ -18,7 +18,24 @@ from dotenv import load_dotenv
 
 import api_client as api
 
-load_dotenv()
+_ENV_PATH = Path(__file__).with_name(".env")
+
+# Unset any inherited OS-level value so it cannot shadow the .env file.
+os.environ.pop("DISCORD_TOKEN", None)
+
+load_dotenv(dotenv_path=_ENV_PATH, override=True)
+
+# ── .env startup guard ────────────────────────────────────────────────────────
+if not _ENV_PATH.exists():
+    raise SystemExit(
+        f"[ghostkey] .env file not found at {_ENV_PATH}\n"
+        "Create it from .env.example before starting the bot."
+    )
+if not os.getenv("DISCORD_TOKEN", "").strip():
+    raise SystemExit(
+        f"[ghostkey] DISCORD_TOKEN is not set in {_ENV_PATH}\n"
+        "Add your bot token and restart."
+    )
 
 BASE_DIR = Path(__file__).resolve().parent
 AUDIT_LOG = BASE_DIR / "discord_audit_log.json"

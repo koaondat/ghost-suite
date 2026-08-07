@@ -11,7 +11,8 @@ POST /api/payment/confirm
 
     Idempotent: if the same order_id has already been processed the
     existing key is returned without generating a new one.  Duplicate
-    prevention uses the Stripe Checkout Session ID as the order_id.
+    prevention uses the PayPal capture ID (or Stripe session ID) as the
+    order_id.
 
 GET  /api/order/<order_id>
     Returns the stored order record for the dashboard / success page.
@@ -25,21 +26,31 @@ PATCH /api/order/<order_id>/status
     Called by stripe_webhook.js to mark an order as expired, refunded,
     payment_failed, or cancelled without re-delivering a key.
 
+Storage
+-------
+Orders are stored in Upstash Redis when UPSTASH_REDIS_REST_URL and
+UPSTASH_REDIS_REST_TOKEN are set (required for Vercel deployments — the
+local filesystem is ephemeral and not shared between invocations).
+Falls back to orders.json on disk for local development only.
+
+Set these env vars on Railway/Render/Fly.io as well so that the standalone
+Flask process uses the same Redis instance as Vercel, giving a single
+shared order store regardless of which service handles a request.
+
 Security notes
 --------------
 • The HMAC secret and key-generation logic live entirely in keygen.py.
   Nothing sensitive is sent to the browser.
-• payment_token must start with "stripe:" (set by the webhook handler)
-  or be the literal "FREE_TRIAL" for trial plan activations.  Any other
-  token is rejected.  This ensures keys are only issued for real Stripe
-  events — the webhook signature was already verified by the Node layer.
-• Orders are file-locked before every write; concurrent webhook replays
-  are handled safely.
+• payment_token must start with "paypal:" (set by captureOrder after
+  PayPal capture verification) or "stripe:" / "FREE_TRIAL".  Any other
+  token is rejected.
+• Orders are locked before every write; concurrent webhook replays are
+  handled safely.
 • Download tokens are HMAC-SHA256 signed with GHOST_CDN_SECRET and expire
   after 1 hour.  The actual binary path is read from GHOST_DOWNLOAD_PATH
   and never interpolated from user input.
 
-Requirements: Flask, python-dotenv  (pip install flask python-dotenv)
+Requirements: Flask, python-dotenv, requests  (pip install flask python-dotenv requests)
 Run standalone:  python web/api/license_delivery.py
 """
 
@@ -55,6 +66,8 @@ import sys
 import threading
 import time
 import traceback
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -67,9 +80,135 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import keygen  # type: ignore  # noqa: E402
 
-# ── Data files ───────────────────────────────────────────────────────────────
+# ── Data files (used by the file-based fallback storage only) ─────────────────
 ORDERS_DB    = _PROJECT_ROOT / "orders.json"
 DELIVERY_LOG = _PROJECT_ROOT / "delivery_log.json"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Persistent storage layer
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Production (Vercel / Railway / Render / Fly.io):
+#   Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.
+#   Each order is stored as a JSON string at key  ghost:order:<order_id>.
+#   A sorted-set  ghost:orders:index  tracks all order IDs for list queries.
+#   Upstash Redis is an HTTP-based Redis — no persistent TCP connection
+#   required, works correctly in serverless environments.
+#
+# Local development:
+#   Leave UPSTASH_REDIS_REST_URL unset.  Orders are stored in orders.json
+#   next to this file exactly as before.
+#
+# IMPORTANT: Do NOT use the local filesystem as the order store in production.
+#   Vercel serverless functions have a read-only filesystem (except /tmp) and
+#   each invocation gets a fresh environment — orders written in one invocation
+#   are invisible to the next.
+
+_REDIS_URL   = (os.environ.get("UPSTASH_REDIS_REST_URL")   or "").rstrip("/")
+_REDIS_TOKEN = (os.environ.get("UPSTASH_REDIS_REST_TOKEN") or "")
+_USE_REDIS   = bool(_REDIS_URL and _REDIS_TOKEN)
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+)
+log = logging.getLogger("ghost.delivery")
+
+if _USE_REDIS:
+    log.info("Storage backend: Upstash Redis (%s)", _REDIS_URL.split("/")[2] if "/" in _REDIS_URL else _REDIS_URL)
+else:
+    log.warning(
+        "Storage backend: local file (%s).  "
+        "Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN for production.",
+        ORDERS_DB,
+    )
+
+
+def _redis_request(command: list) -> Any:
+    """
+    Execute a single Redis command via the Upstash REST API.
+    Raises RuntimeError on HTTP failure.
+    """
+    url     = f"{_REDIS_URL}/{'/'.join(str(c) for c in command)}"
+    req     = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {_REDIS_TOKEN}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode())
+    except Exception as exc:
+        raise RuntimeError(f"Redis request failed: {exc}") from exc
+    if "error" in body:
+        raise RuntimeError(f"Redis error: {body['error']}")
+    return body.get("result")
+
+
+def _redis_set_order(order_id: str, record: dict) -> None:
+    """Store a single order record in Redis."""
+    key   = f"ghost:order:{order_id}"
+    value = json.dumps(record, default=str)
+    # Use the pipeline-style POST endpoint for SET + ZADD in one round trip
+    # POST /pipeline body: [[cmd], [cmd], ...]
+    payload = json.dumps([
+        ["SET", key, value],
+        ["ZADD", "ghost:orders:index", str(int(time.time())), order_id],
+    ]).encode()
+    req = urllib.request.Request(
+        f"{_REDIS_URL}/pipeline",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {_REDIS_TOKEN}",
+            "Content-Type":  "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+    except Exception as exc:
+        raise RuntimeError(f"Redis SET failed for order {order_id}: {exc}") from exc
+    # result is a list of [{result:...}, ...]; check for errors
+    for item in (result if isinstance(result, list) else []):
+        if isinstance(item, dict) and "error" in item:
+            raise RuntimeError(f"Redis pipeline error for order {order_id}: {item['error']}")
+
+
+def _redis_get_order(order_id: str) -> dict | None:
+    """Retrieve a single order record from Redis, or None if not found."""
+    key = f"ghost:order:{order_id}"
+    try:
+        raw = _redis_request(["GET", urllib.parse.quote(key, safe="")])
+    except Exception as exc:
+        log.error("Redis GET for order %s failed: %s", order_id, exc)
+        return None
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _redis_get_all_orders() -> list[dict]:
+    """Return all order records from Redis (used by _load_orders fallback)."""
+    try:
+        order_ids = _redis_request(["ZRANGE", "ghost:orders:index", "0", "-1"])
+    except Exception as exc:
+        log.error("Redis ZRANGE failed: %s", exc)
+        return []
+    if not order_ids:
+        return []
+    records = []
+    for oid in order_ids:
+        rec = _redis_get_order(oid)
+        if rec:
+            records.append(rec)
+    return records
+
 
 # ── Plan catalogue ────────────────────────────────────────────────────────────
 #   Mirrors PLAN_CATALOGUE in api/checkout.js — kept in sync manually.
@@ -96,19 +235,15 @@ _ALLOWED_TOKEN_LITERALS = {"FREE_TRIAL"}
 # ── Thread lock ───────────────────────────────────────────────────────────────
 _orders_lock = threading.Lock()
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-)
-log = logging.getLogger("ghost.delivery")
-
 
 # ────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ────────────────────────────────────────────────────────────────────────────
 
 def _load_orders() -> list[dict]:
+    """Load all orders from the configured storage backend."""
+    if _USE_REDIS:
+        return _redis_get_all_orders()
     if ORDERS_DB.exists():
         try:
             return json.loads(ORDERS_DB.read_text(encoding="utf-8"))
@@ -118,12 +253,40 @@ def _load_orders() -> list[dict]:
 
 
 def _save_orders(records: list[dict]) -> None:
-    """Atomic write via temp file to prevent partial reads on concurrent access."""
+    """
+    Persist orders to the configured storage backend.
+
+    For Redis: each record is stored individually by order_id — the
+    `records` list is iterated and each record is written.  This is
+    called after a new record is appended to the in-memory list, so
+    only the last record in the list needs to be written; however for
+    correctness (e.g. status updates) all records are synced.
+
+    For file: atomic write via temp file.
+    """
+    if _USE_REDIS:
+        for record in records:
+            oid = record.get("order_id", "")
+            if oid:
+                _redis_set_order(oid, record)
+        return
     tmp = ORDERS_DB.with_suffix(ORDERS_DB.suffix + ".tmp")
     tmp.write_text(
         json.dumps(records, indent=2, default=str), encoding="utf-8"
     )
     tmp.replace(ORDERS_DB)
+
+
+def _load_single_order(order_id: str) -> dict | None:
+    """
+    Retrieve a single order record directly by order_id.
+
+    For Redis this is O(1) and avoids loading the full order list.
+    For file storage it delegates to _load_orders + linear scan.
+    """
+    if _USE_REDIS:
+        return _redis_get_order(order_id)
+    return _find_order(order_id, _load_orders())
 
 
 def _log_delivery_failure(order_id: str, reason: str, detail: str = "") -> None:
@@ -240,10 +403,15 @@ def confirm_payment_and_deliver(
     paypal_capture_id  = (payment_token or "").removeprefix("paypal:") if payment_token.startswith("paypal:") else None
 
     with _orders_lock:
-        records = _load_orders()
+        # For Redis use O(1) single-record lookup; for file load all records once.
+        if _USE_REDIS:
+            existing  = _redis_get_order(order_id)
+            records   = None   # lazy — only loaded if needed for full dup scan
+        else:
+            records   = _load_orders()
+            existing  = _find_order(order_id, records)
 
         # ── Idempotency: already delivered? ──────────────────────────────
-        existing = _find_order(order_id, records)
         if existing and existing.get("payment_verified") and existing.get("license_key"):
             log.info("Duplicate confirm call for order %s — returning existing key", order_id)
             return {
@@ -263,13 +431,20 @@ def confirm_payment_and_deliver(
             }
 
         # ── Duplicate detection by PayPal capture ID ─────────────────────
-        # Also check every record's stored paypal_capture_id to guard
-        # against the same capture being submitted under a different order_id.
+        # For Redis the capture ID IS the order_id (set in _doCaptureOrder as
+        # order_id=captureId), so the idempotency check above already covers it.
+        # For file storage we do a linear scan over all records.
         if paypal_capture_id:
-            dup = next(
-                (r for r in records if r.get("paypal_capture_id") == paypal_capture_id),
-                None,
-            )
+            if _USE_REDIS:
+                # order_id == captureId for PayPal orders; already checked above.
+                dup = None
+            else:
+                if records is None:
+                    records = _load_orders()
+                dup = next(
+                    (r for r in records if r.get("paypal_capture_id") == paypal_capture_id),
+                    None,
+                )
             if dup and dup.get("license_key"):
                 log.warning(
                     "Duplicate PayPal capture ID %s — returning existing key for order %s",
@@ -332,11 +507,17 @@ def confirm_payment_and_deliver(
             "key_created":        str(key_meta.get("created")),
         }
 
-        # ── Persist to orders.json ────────────────────────────────────────
+        # ── Persist to storage ────────────────────────────────────────────
         try:
-            records = [r for r in records if r.get("order_id", "") != order_id]
-            records.append(order_record)
-            _save_orders(records)
+            if _USE_REDIS:
+                # Write a single record directly — no need to load all orders
+                _redis_set_order(order_id, order_record)
+            else:
+                if records is None:
+                    records = _load_orders()
+                records = [r for r in records if r.get("order_id", "") != order_id]
+                records.append(order_record)
+                _save_orders(records)
         except Exception as exc:
             log.error("Failed to save order record for %s: %s", order_id, exc)
             _log_delivery_failure(order_id, "order_save_failed", traceback.format_exc())
@@ -379,9 +560,13 @@ def confirm_payment_and_deliver(
 
 
 def get_order(order_id: str) -> dict | None:
-    """Return the stored order record for a given order_id, or None if not found."""
-    records = _load_orders()
-    return _find_order(order_id, records)
+    """
+    Return the stored order record for a given order_id, or None if not found.
+
+    Uses _load_single_order for O(1) Redis lookup when Redis is configured,
+    avoiding the cost of loading all orders just to find one record.
+    """
+    return _load_single_order(order_id)
 
 
 def update_order_status(order_id: str, status: str, extra: dict | None = None) -> bool:
@@ -391,21 +576,39 @@ def update_order_status(order_id: str, status: str, extra: dict | None = None) -
     Returns True if the record was found and updated, False otherwise.
     """
     with _orders_lock:
-        records = _load_orders()
-        record  = _find_order(order_id, records)
-        if not record:
-            log.warning("update_order_status: order %s not found — status '%s' not applied", order_id, status)
-            return False
-        record["payment_status"] = status
-        if extra:
-            record.update(extra)
-        try:
-            _save_orders(records)
-            log.info("Order %s status updated to '%s'", order_id, status)
-            return True
-        except Exception as exc:
-            log.error("Failed to save status update for order %s: %s", order_id, exc)
-            return False
+        # For Redis: load the single record directly, update, write back.
+        # For file: load all, find, update, write all back.
+        if _USE_REDIS:
+            record = _redis_get_order(order_id)
+            if not record:
+                log.warning("update_order_status: order %s not found — status '%s' not applied", order_id, status)
+                return False
+            record["payment_status"] = status
+            if extra:
+                record.update(extra)
+            try:
+                _redis_set_order(order_id, record)
+                log.info("Order %s status updated to '%s'", order_id, status)
+                return True
+            except Exception as exc:
+                log.error("Failed to save status update for order %s: %s", order_id, exc)
+                return False
+        else:
+            records = _load_orders()
+            record  = _find_order(order_id, records)
+            if not record:
+                log.warning("update_order_status: order %s not found — status '%s' not applied", order_id, status)
+                return False
+            record["payment_status"] = status
+            if extra:
+                record.update(extra)
+            try:
+                _save_orders(records)
+                log.info("Order %s status updated to '%s'", order_id, status)
+                return True
+            except Exception as exc:
+                log.error("Failed to save status update for order %s: %s", order_id, exc)
+                return False
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -436,6 +639,7 @@ if _flask_available:
     @app.route("/api/payment/confirm",              methods=["OPTIONS"])
     @app.route("/api/order/<order_id>",             methods=["OPTIONS"])
     @app.route("/api/order/<order_id>/status",      methods=["OPTIONS"])
+    @app.route("/api/order/<order_id>/fulfill",     methods=["OPTIONS"])
     def _preflight(order_id=""):
         r = Response()
         r.headers["Access-Control-Allow-Origin"]  = "*"
@@ -621,6 +825,184 @@ if _flask_available:
             # so Stripe does not keep retrying for orders that pre-date this system.
             log.warning("PATCH /status: order %s not found — acknowledged anyway", order_id)
             return jsonify({"ok": True, "order_id": order_id, "status": "not_found"}), 200
+
+
+    # ── POST /api/order/<order_id>/fulfill ────────────────────────────────
+    @app.route("/api/order/<order_id>/fulfill", methods=["POST"])
+    def route_fulfill_order(order_id: str):
+        """
+        POST /api/order/<order_id>/fulfill
+        ------------------------------------
+        Retry fulfillment for an order whose payment was captured by PayPal
+        but whose license delivery failed (delivery_status=delivery_pending).
+
+        This endpoint NEVER re-captures or re-charges — it only generates
+        a license for an order that already has a verified payment.
+
+        The idempotency guarantee is the same as /api/payment/confirm:
+        if the order already has a license_key it is returned immediately
+        without running keygen again.
+
+        Returns 200 JSON matching the shape of a successful capture-order
+        response:
+          { ok, paymentStatus, deliveryStatus, orderId, plan, amount,
+            purchaseDate, licenseKey, licenseStatus, downloadUrl }
+
+        Returns 404 if the order does not exist in storage.
+        Returns 409 if the order's payment_status is not "verified"
+          (i.e. it was never fully saved — the payment may still be
+          in transit; wait and retry).
+        Returns 200 with the existing key if already delivered.
+        """
+        # Load the order — it must already exist from the capture step
+        record = get_order(order_id)
+        if not record:
+            log.warning(
+                "POST /api/order/%s/fulfill — order not found in storage. "
+                "Storage backend: %s. If UPSTASH_REDIS_REST_URL is not set "
+                "this is the expected 503 cause.",
+                order_id, "redis" if _USE_REDIS else "file",
+            )
+            return jsonify({
+                "ok":    False,
+                "error": "Order not found. The payment may not yet be saved to persistent storage.",
+                "storage_backend": "redis" if _USE_REDIS else "local_file",
+                "hint": (
+                    "Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN so orders "
+                    "persist across Vercel invocations." if not _USE_REDIS else
+                    "Order was not saved during capture. Check delivery logs."
+                ),
+            }), 404
+
+        # Already delivered — return the existing key (idempotent)
+        if record.get("license_key") and record.get("delivery_status") == "delivered":
+            log.info("POST /api/order/%s/fulfill — already delivered, returning existing key", order_id)
+            safe = {k: v for k, v in record.items() if k not in ("payment_verified",)}
+            safe["ok"] = True
+            if not safe.get("download_url"):
+                safe["download_url"] = f"/api/order/{order_id}/download"
+            return jsonify(safe), 200
+
+        # Payment must be verified before we can generate a license
+        if record.get("payment_status") != "verified":
+            log.warning(
+                "POST /api/order/%s/fulfill — payment_status=%s, not 'verified'. "
+                "Cannot generate license without confirmed payment.",
+                order_id, record.get("payment_status"),
+            )
+            return jsonify({
+                "ok":             False,
+                "error":          "Payment is not yet verified for this order.",
+                "payment_status": record.get("payment_status"),
+                "delivery_status": record.get("delivery_status"),
+            }), 409
+
+        # Generate a new license (uses the same keygen logic as confirm_payment_and_deliver)
+        plan = record.get("plan", "")
+        tier_info = PLAN_TIER_MAP.get(plan)
+        if not tier_info:
+            log.error("POST /api/order/%s/fulfill — unknown plan '%s'", order_id, plan)
+            return jsonify({"ok": False, "error": f"Unknown plan '{plan}' on stored order"}), 500
+
+        tier, expires_days = tier_info
+
+        try:
+            new_key = keygen.generate_key(expires_days=expires_days, tier=tier)
+        except Exception as exc:
+            log.error("keygen.generate_key failed during fulfill for order %s: %s", order_id, exc)
+            _log_delivery_failure(order_id, "fulfill_keygen_error", traceback.format_exc())
+            return jsonify({"ok": False, "error": "License key generation failed"}), 500
+
+        key_meta = keygen.validate_key(new_key)
+        if not key_meta.get("valid"):
+            err = key_meta.get("error", "unknown")
+            log.error("Generated key failed self-validation during fulfill for order %s: %s", order_id, err)
+            _log_delivery_failure(order_id, "fulfill_keygen_validation_failed", err)
+            return jsonify({"ok": False, "error": "Generated key failed validation"}), 500
+
+        # Update the order record with the new key
+        with _orders_lock:
+            # Re-load to pick up any concurrent writes (file backend)
+            if not _USE_REDIS:
+                records = _load_orders()
+                rec2 = _find_order(order_id, records)
+                # Double-check idempotency under lock
+                if rec2 and rec2.get("license_key") and rec2.get("delivery_status") == "delivered":
+                    safe = {k: v for k, v in rec2.items() if k not in ("payment_verified",)}
+                    safe["ok"] = True
+                    if not safe.get("download_url"):
+                        safe["download_url"] = f"/api/order/{order_id}/download"
+                    return jsonify(safe), 200
+                if rec2:
+                    rec2["license_key"]      = new_key
+                    rec2["license_status"]   = "active"
+                    rec2["delivery_status"]  = "delivered"
+                    rec2["key_expires"]      = str(key_meta.get("expiry") or "never")
+                    rec2["key_created"]      = str(key_meta.get("created"))
+                    rec2["fulfilled_at"]     = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                try:
+                    _save_orders(records)
+                except Exception as exc:
+                    log.error("Failed to save fulfill update for order %s: %s", order_id, exc)
+                    _log_delivery_failure(order_id, "fulfill_save_failed", traceback.format_exc())
+                    return jsonify({"ok": False, "error": "Order update could not be saved"}), 500
+            else:
+                # Redis path: load single, check idempotency, update, write back
+                rec2 = _redis_get_order(order_id)
+                if rec2 and rec2.get("license_key") and rec2.get("delivery_status") == "delivered":
+                    safe = {k: v for k, v in rec2.items() if k not in ("payment_verified",)}
+                    safe["ok"] = True
+                    if not safe.get("download_url"):
+                        safe["download_url"] = f"/api/order/{order_id}/download"
+                    return jsonify(safe), 200
+                if rec2:
+                    rec2["license_key"]      = new_key
+                    rec2["license_status"]   = "active"
+                    rec2["delivery_status"]  = "delivered"
+                    rec2["key_expires"]      = str(key_meta.get("expiry") or "never")
+                    rec2["key_created"]      = str(key_meta.get("created"))
+                    rec2["fulfilled_at"]     = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    try:
+                        _redis_set_order(order_id, rec2)
+                    except Exception as exc:
+                        log.error("Redis fulfill write failed for order %s: %s", order_id, exc)
+                        _log_delivery_failure(order_id, "fulfill_redis_write_failed", traceback.format_exc())
+                        return jsonify({"ok": False, "error": "Order update could not be saved to Redis"}), 500
+
+        # Persist to issued_keys.json (non-fatal)
+        try:
+            keygen.save_key_record(new_key, {
+                "tier":    tier,
+                "created": key_meta.get("created"),
+                "expiry":  key_meta.get("expiry"),
+                "note":    f"order:{order_id} plan:{plan} (fulfill-retry)",
+            })
+        except Exception as exc:
+            log.warning("save_key_record warning during fulfill for order %s: %s", order_id, exc)
+
+        log.info(
+            "License fulfilled (retry) — order=%s plan=%s tier=%s key=%s",
+            order_id, plan, tier, new_key,
+        )
+
+        updated = rec2 or record
+        return jsonify({
+            "ok":             True,
+            "paymentStatus":  "COMPLETED",
+            "deliveryStatus": "delivered",
+            "orderId":        order_id,
+            "plan":           updated.get("plan"),
+            "planLabel":      updated.get("plan_label"),
+            "amount":         str(updated.get("price_usd", "")),
+            "currency":       updated.get("currency", "USD"),
+            "purchaseDate":   updated.get("created_at"),
+            "licenseKey":     new_key,
+            "licenseStatus":  "active",
+            "downloadUrl":    f"/api/order/{order_id}/download",
+            "tier":           tier,
+            "email":          updated.get("email"),
+            "discord":        updated.get("discord"),
+        }), 200
 
 
 if __name__ == "__main__":
