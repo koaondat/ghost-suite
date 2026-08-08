@@ -100,7 +100,7 @@
           </a></li>
           <li><a href="#" class="admin-nav-link" data-tab="releases">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Releases
+            Release Manager
           </a></li>
           <li><a href="#" class="admin-nav-link" data-tab="settings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -987,38 +987,53 @@
       <section id="tab-releases" class="admin-tab" style="display:none">
         <div class="admin-page-header">
           <div>
-            <h1 class="admin-page-title">Releases</h1>
-            <p class="admin-page-sub">Manage auto-update releases for the GhostConfig desktop app</p>
+            <h1 class="admin-page-title">Release Manager</h1>
+            <p class="admin-page-sub">Manage auto-update releases · Upload EXE · Control channels · Track downloads</p>
           </div>
-          <button class="btn btn-primary btn--sm" id="openPublishReleaseBtn">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Publish Release
-          </button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-ghost btn--sm" id="refreshReleasesBtn">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              Refresh
+            </button>
+            <button class="btn btn-primary btn--sm" id="openPublishReleaseBtn">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Publish Release
+            </button>
+          </div>
         </div>
 
         <div id="releasesAlert" class="admin-alert" style="display:none; margin-bottom:14px"></div>
 
-        <!-- Live channel indicators -->
+        <!-- ── Channel stat cards ── -->
         <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-          <div class="admin-stat-card" style="flex:1;min-width:200px">
+          <div class="admin-stat-card" style="flex:1;min-width:180px">
             <div class="stat-icon" style="color:var(--green)">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
             </div>
             <div>
-              <span class="admin-stat-label">Stable Channel</span>
+              <span class="admin-stat-label">Stable</span>
               <span class="admin-stat-value" id="relStableVer" style="font-size:1.1rem">—</span>
             </div>
           </div>
-          <div class="admin-stat-card" style="flex:1;min-width:200px">
+          <div class="admin-stat-card" style="flex:1;min-width:180px">
             <div class="stat-icon" style="color:var(--cyan)">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
             </div>
             <div>
-              <span class="admin-stat-label">Beta Channel</span>
+              <span class="admin-stat-label">Beta</span>
               <span class="admin-stat-value" id="relBetaVer" style="font-size:1.1rem">—</span>
             </div>
           </div>
-          <div class="admin-stat-card" style="flex:1;min-width:200px">
+          <div class="admin-stat-card" style="flex:1;min-width:180px">
+            <div class="stat-icon" style="color:var(--purple)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </div>
+            <div>
+              <span class="admin-stat-label">Development</span>
+              <span class="admin-stat-value" id="relDevVer" style="font-size:1.1rem">—</span>
+            </div>
+          </div>
+          <div class="admin-stat-card" style="flex:1;min-width:180px">
             <div class="stat-icon" style="color:var(--gold)">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             </div>
@@ -1029,11 +1044,135 @@
           </div>
         </div>
 
+        <!-- ── Current Release info card ── -->
+        <div class="admin-card" style="margin-bottom:20px" id="relCurrentCard">
+          <div class="admin-card-header">
+            <h2 class="admin-card-title">Current Release</h2>
+            <span id="relCurrentChannel" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:4px;background:var(--surface-2);color:var(--green)">Stable</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;padding:4px 0">
+            <div><span style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">Version</span><br><span id="relCurVersion" style="font-size:1.15rem;font-weight:700;color:var(--accent)">—</span></div>
+            <div><span style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">Published</span><br><span id="relCurPublished" style="font-size:0.92rem">—</span></div>
+            <div><span style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">Downloads</span><br><span id="relCurDownloads" style="font-size:0.92rem">—</span></div>
+            <div><span style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">File Size</span><br><span id="relCurSize" style="font-size:0.92rem">—</span></div>
+            <div><span style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">Min Version</span><br><span id="relCurMinVer" style="font-size:0.92rem">—</span></div>
+            <div><span style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">SHA-256</span><br><span id="relCurSha" style="font-size:9px;font-family:monospace;color:var(--muted);word-break:break-all">—</span></div>
+          </div>
+          <div style="margin-top:12px" id="relCurNotesWrap">
+            <span style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:700">Release Notes</span>
+            <ul id="relCurNotes" style="margin:6px 0 0 18px;padding:0;color:var(--text-2);font-size:0.88rem;line-height:1.7"></ul>
+          </div>
+        </div>
+
+        <!-- ── Upload New Release ── -->
+        <div class="admin-card" style="margin-bottom:20px">
+          <div class="admin-card-header">
+            <h2 class="admin-card-title">Upload New Release</h2>
+            <span style="font-size:11px;color:var(--muted)">Upload GhostConfig.exe · SHA-256 auto-computed</span>
+          </div>
+          <div id="relUploadAlert" class="admin-alert" style="display:none;margin-bottom:12px"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="form-group" style="grid-column:1/-1">
+              <label class="form-label">GhostConfig.exe <span style="color:var(--red)">*</span></label>
+              <div id="relDropZone" style="border:2px dashed var(--border-2);border-radius:8px;padding:28px 20px;text-align:center;cursor:pointer;transition:border-color .15s;background:var(--surface-2)" onclick="document.getElementById('relFileInput').click()">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="1.5" style="margin-bottom:8px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <p style="margin:0;color:var(--muted);font-size:13px" id="relDropLabel">Drop GhostConfig.exe here or click to browse</p>
+              </div>
+              <input type="file" id="relFileInput" accept=".exe" style="display:none" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Version <span style="color:var(--red)">*</span></label>
+              <input type="text" id="relUploadVersion" class="form-input" placeholder="e.g. 2.5.0" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Channel</label>
+              <select id="relUploadChannel" class="admin-select" style="width:100%">
+                <option value="stable">Stable</option>
+                <option value="beta">Beta</option>
+                <option value="development">Development</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Minimum Version <span style="color:var(--muted);font-weight:400">(optional — force upgrade from older versions)</span></label>
+              <input type="text" id="relUploadMinVer" class="form-input" placeholder="e.g. 2.3.0" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">SHA-256 Hash <span style="color:var(--muted);font-weight:400">(auto-filled after upload)</span></label>
+              <input type="text" id="relUploadSha256" class="form-input" placeholder="Auto-computed on upload" style="font-family:monospace;font-size:11px" readonly />
+            </div>
+            <div class="form-group" style="grid-column:1/-1">
+              <label class="form-label">Release Notes <span style="color:var(--muted);font-weight:400">(one bullet per line)</span></label>
+              <textarea id="relUploadNotes" class="admin-textarea" rows="5" placeholder="• Faster startup&#10;• Fixed dashboard&#10;• Added plugin support&#10;• Improved updater"></textarea>
+            </div>
+            <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" id="relUploadMandatory" style="width:16px;height:16px;accent-color:var(--red)" />
+                <span class="form-label" style="margin:0;color:var(--red)">Mandatory Update (no "Later" button)</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" id="relUploadSetCurrent" checked style="width:16px;height:16px;accent-color:var(--accent)" />
+                <span class="form-label" style="margin:0">Set as Current (live to clients)</span>
+              </label>
+            </div>
+          </div>
+          <!-- Upload progress -->
+          <div id="relUploadProgress" style="display:none;margin-top:14px">
+            <p id="relUploadProgressLabel" style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Uploading…</p>
+            <div style="height:6px;background:var(--surface-3);border-radius:3px;overflow:hidden">
+              <div id="relUploadProgressBar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
+            </div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:8px">
+            <button class="btn btn-primary" id="relUploadPublishBtn">
+              <span class="btn-text">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-right:4px"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+                Publish Update
+              </span>
+              <span class="btn-spinner" style="display:none"></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- ── Silent Updates option ── -->
+        <div class="admin-card" style="margin-bottom:20px">
+          <div class="admin-card-header">
+            <h2 class="admin-card-title">Update Behavior</h2>
+          </div>
+          <label style="display:flex;align-items:flex-start;gap:12px;cursor:pointer">
+            <input type="checkbox" id="relSilentUpdates" style="width:18px;height:18px;accent-color:var(--accent);margin-top:2px;flex-shrink:0" />
+            <div>
+              <span class="form-label" style="margin:0;font-size:14px">Silent Updates</span>
+              <p style="margin:4px 0 0;font-size:12px;color:var(--muted)">
+                When enabled: clients download and install updates in the background with no prompts.
+                Ghost restarts automatically after the install completes.
+              </p>
+            </div>
+          </label>
+          <div style="margin-top:12px">
+            <button class="btn btn-ghost btn--sm" id="saveSilentUpdatesBtn">Save Setting</button>
+          </div>
+        </div>
+
+        <!-- ── Version Distribution ── -->
+        <div class="admin-card" style="margin-bottom:20px">
+          <div class="admin-card-header">
+            <h2 class="admin-card-title">Version Distribution</h2>
+            <span style="font-size:11px;color:var(--muted)">% of total downloads per version</span>
+          </div>
+          <div id="relDistribution" style="padding:4px 0"></div>
+        </div>
+
+        <!-- ── Release History table ── -->
+        <div class="admin-card-header" style="padding:0 0 10px 0">
+          <h2 class="admin-card-title" style="margin:0">Release History</h2>
+        </div>
+
         <!-- Channel filter tabs -->
         <div style="display:flex;gap:8px;margin-bottom:14px">
           <button class="btn btn-primary btn--sm" id="relFilterAll" onclick="window._relFilter('all')">All</button>
           <button class="btn btn-ghost btn--sm" id="relFilterStable" onclick="window._relFilter('stable')">Stable</button>
           <button class="btn btn-ghost btn--sm" id="relFilterBeta" onclick="window._relFilter('beta')">Beta</button>
+          <button class="btn btn-ghost btn--sm" id="relFilterDev" onclick="window._relFilter('development')">Development</button>
         </div>
 
         <div class="admin-card">
@@ -1045,13 +1184,14 @@
                   <th>Channel</th>
                   <th>Released</th>
                   <th>Downloads</th>
+                  <th>Size</th>
                   <th>Mandatory</th>
                   <th>Status</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="releasesTbody">
-                <tr><td colspan="7" class="admin-table-empty">Loading…</td></tr>
+                <tr><td colspan="8" class="admin-table-empty">Loading…</td></tr>
               </tbody>
             </table>
           </div>
@@ -1444,6 +1584,7 @@
             <select id="relChannel" class="admin-select" style="width:100%">
               <option value="stable">Stable</option>
               <option value="beta">Beta</option>
+              <option value="development">Development</option>
             </select>
           </div>
           <div class="form-group" style="grid-column:1/-1">
@@ -1457,6 +1598,10 @@
           <div class="form-group">
             <label class="form-label">SHA-256 Hash <span style="color:var(--muted);font-weight:400">(recommended)</span></label>
             <input type="text" id="relSha256" class="form-input" placeholder="64-char hex" maxlength="64" style="font-family:monospace;font-size:11px" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Minimum Version <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+            <input type="text" id="relMinVersion" class="form-input" placeholder="e.g. 2.3.0" />
           </div>
         </div>
         <div class="form-group" style="margin-top:12px">

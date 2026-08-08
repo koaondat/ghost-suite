@@ -75,7 +75,7 @@
       <div class="hero-copy">
         <div class="hero-badge animate-up">
           <span class="hero-badge-dot"></span>
-          v2.4.1 — Latest Release
+          <span id="hero-version-badge">Latest Release</span>
         </div>
 
         <h1 class="animate-up delay-1">
@@ -629,9 +629,9 @@
           </ul>
           <div class="sysreq-version">
             <span>Latest:</span>
-            <span class="sysreq-ver-tag">v2.4.1</span>
+            <span class="sysreq-ver-tag" id="sysreq-version">—</span>
             <span>·</span>
-            <a href="#" style="color:var(--accent);font-size:0.8rem">Release notes</a>
+            <a href="/changelog" style="color:var(--accent);font-size:0.8rem">Release notes</a>
           </div>
         </div>
       </div>
@@ -742,7 +742,7 @@
           Ghost
         </a>
         <p>Premium Windows configuration utility. Fast, offline, and built for users who need full control.</p>
-        <div class="footer-version">v2.4.1</div>
+        <div class="footer-version" id="footer-version"></div>
       </div>
 
       <div class="footer-col">
@@ -751,6 +751,7 @@
           <li><a href="#features">Features</a></li>
           <li><a href="pricing.html">Pricing</a></li>
           <li><a href="#download">Download</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
         </ul>
       </div>
 
@@ -787,5 +788,26 @@
 </footer>
 
 <script src="/assets/js/ghost.js" defer></script>
+<script>
+/* ── Populate dynamic version badge from /api/releases/latest ─── */
+(function () {
+  fetch('/api/releases/latest')
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || !data.version) return;
+      const v = 'v' + data.version.replace(/^v/, '');
+      const heroEl   = document.getElementById('hero-version-badge');
+      const sysreqEl = document.getElementById('sysreq-version');
+      const footerEl = document.getElementById('footer-version');
+      if (heroEl)   heroEl.textContent   = v + ' \u2014 Latest Release';
+      if (sysreqEl) sysreqEl.textContent = v;
+      if (footerEl) footerEl.textContent = v;
+    })
+    .catch(() => {
+      const heroEl = document.getElementById('hero-version-badge');
+      if (heroEl) heroEl.textContent = 'Latest Release';
+    });
+})();
+</script>
 </body>
 </html>

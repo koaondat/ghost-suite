@@ -14,6 +14,7 @@
           "checkout.html",
           "order-success.html",
           "admin.html",
+          "changelog.html",
           "assets/**",
           "public/**",
           "downloads/**",
@@ -27,6 +28,10 @@
   "routes": [
     {
       "src": "/api/(.*)",
+      "dest": "server.js"
+    },
+    {
+      "src": "/changelog",
       "dest": "server.js"
     },
     {

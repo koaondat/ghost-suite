@@ -1716,6 +1716,110 @@ app.get('/admin.html', (_req, res) => {
   });
 });
 
+// ── Public release endpoints — proxied to the Python API backend ──────────────
+// GET  /api/releases           — public list of all published releases (no auth)
+// GET  /api/releases/latest    — desktop app auto-update check (no auth)
+// POST /api/releases/downloaded — download counter ping (no auth)
+// GET  /api/client/settings    — client settings: silent_updates etc. (no auth)
+// GET  /download/latest        — redirect to current EXE (no auth)
+// GET  /download/:ver/:file    — serve uploaded EXE directly from Python backend
+
+// GET /api/releases — public changelog endpoint
+// Returns all published (non-disabled) releases ordered newest-first.
+// Proxied from Python backend; falls back to Redis ghost:downloads history.
+app.get('/api/releases', async (req, res) => {
+  // Try proxying to the Python API first (authoritative release store).
+  if (GHOST_API_URL) {
+    try {
+      const { default: fetch } = await import('node-fetch');
+      const upstream = await fetch(`${GHOST_API_URL}/api/releases`, {
+        method: 'GET',
+        headers: { 'x-admin-key': GHOST_ADMIN_API_KEY || '' },
+      });
+      if (upstream.ok) {
+        const data = await upstream.json().catch(() => null);
+        if (data) return res.json(data);
+      }
+    } catch (_) { /* fall through to Redis fallback */ }
+  }
+
+  // Fallback: build changelog from ghost:downloads history in Redis.
+  try {
+    const dl = await _redisGet('ghost:downloads');
+    if (!dl) return res.json({ ok: true, releases: [] });
+    const current = dl.version ? [{
+      version:      dl.version,
+      channel:      'stable',
+      published_at: dl.release_date || null,
+      release_notes: dl.changelog ? dl.changelog.split('\n').map(l => l.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean) : [],
+      download_count: dl.download_count || 0,
+      sha256:        '',
+      file_size:     0,
+      required:      false,
+    }] : [];
+    const history = Array.isArray(dl.history) ? dl.history.map(h => ({
+      version:      h.version,
+      channel:      'stable',
+      published_at: h.release_date || h.replaced_at || null,
+      release_notes: h.changelog ? h.changelog.split('\n').map(l => l.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean) : [],
+      download_count: 0,
+      sha256:        '',
+      file_size:     0,
+      required:      false,
+    })) : [];
+    return res.json({ ok: true, releases: [...current, ...history] });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Failed to load releases.', releases: [] });
+  }
+});
+
+app.get('/api/releases/latest', (req, res) => _proxyToApi(req, res));
+app.post('/api/releases/downloaded', (req, res) => _proxyToApi(req, res));
+app.get('/api/client/settings', (req, res) => _proxyToApi(req, res));
+
+// /download/latest and /download/:ver/:file are proxied to the Python API
+// which stores binary files on disk under release_files/.
+// For Vercel (serverless) deployments only the metadata endpoints work;
+// large binary serving must be handled by an external CDN / storage bucket.
+app.get('/download/latest', (req, res) => _proxyToApi(req, res));
+app.get('/download/*', (req, res) => _proxyToApi(req, res));
+
+// ── Admin releases — forwarded to Python backend with admin key ───────────────
+// All /api/admin/releases/* routes are handled inline by the Python API via
+// GHOST_API_URL.  We only need to forward them; _proxyToApi injects X-Admin-Key.
+app.get('/api/admin/releases',                       _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.get('/api/admin/releases/stats',                 _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/releases',                      _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/releases/upload',               _requireAdminSession, async (req, res) => {
+  // Multipart upload must be forwarded as raw — content-type boundary must pass through.
+  // For Vercel deployments, large file uploads should target the Python backend directly
+  // via GHOST_API_URL since Vercel has a 4.5 MB body limit.
+  if (!GHOST_API_URL) return res.status(503).json({ ok: false, error: 'API service unavailable.' });
+  const { default: fetch } = await import('node-fetch');
+  const targetUrl = `${GHOST_API_URL}/api/admin/releases/upload`;
+  try {
+    const upstream = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        ...req.headers,
+        host: undefined,
+        'x-admin-key': GHOST_ADMIN_API_KEY || '',
+      },
+      body: req,
+      redirect: 'follow',
+    });
+    const data = await upstream.json().catch(() => ({}));
+    return res.status(upstream.status).json(data);
+  } catch (err) {
+    return res.status(502).json({ ok: false, error: 'Upload proxy failed: ' + err.message });
+  }
+});
+app.get('/api/admin/releases/:id',                   _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.patch('/api/admin/releases/:id',                 _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/releases/:id/set-current',      _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/releases/:id/disable',          _requireAdminSession, (req, res) => _proxyToApi(req, res));
+app.post('/api/admin/releases/rollback',             _requireAdminSession, (req, res) => _proxyToApi(req, res));
+
 // ── PayPal Checkout API routes ────────────────────────────────────────────────
 app.post('/api/paypal/create-order',      paypal.createOrder);
 app.post('/api/paypal/capture-order',     paypal.captureOrder);
@@ -2382,7 +2486,7 @@ app.all('/api/downloads*', (req, res) => _proxyToApi(req, res));
 // ── Serve static frontend ─────────────────────────────────────────────────────
 app.get('/', (_req, res) => res.sendFile(path.join(WEB_ROOT, 'index.html')));
 
-app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
+app.get('/:page(login|register|dashboard|pricing|checkout|changelog)', (req, res) =>
   res.sendFile(path.join(WEB_ROOT, `${req.params.page}.html`), err => {
     if (err) res.status(404).sendFile(path.join(WEB_ROOT, 'index.html'));
   }),

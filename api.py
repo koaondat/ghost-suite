@@ -61,6 +61,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -1474,7 +1475,8 @@ def route_admin_downloads_rollback():
 # Storage: releases.json   — list of release records, newest first
 # ─────────────────────────────────────────────────────────────────────────────
 
-RELEASES_DB  = _HERE / "releases.json"
+RELEASES_DB   = _HERE / "releases.json"
+RELEASES_DIR  = _HERE / "release_files"   # stores uploaded EXE binaries
 _releases_lock = threading.Lock()
 
 
@@ -1528,7 +1530,7 @@ def route_releases_latest():
     ]
 
     if not candidates:
-        # Fall back to stable if beta channel has no current release
+        # Fall back to stable if beta/development channel has no current release
         if channel != "stable":
             candidates = [
                 r for r in releases
@@ -1547,14 +1549,44 @@ def route_releases_latest():
         "downloadUrl":  best.get("downloadUrl", ""),
         "filename":     best.get("filename", "GhostConfig.exe"),
         "sha256":       best.get("sha256", ""),
+        "fileSize":     best.get("fileSize"),
+        "minVersion":   best.get("minVersion", ""),
         "mandatory":    bool(best.get("mandatory", False)),
         "releaseNotes": best.get("releaseNotes", []),
         "releasedAt":   best.get("released_at", ""),
         "channel":      best.get("channel", "stable"),
+        "size":         best.get("fileSize"),              # alias
+        "required":     bool(best.get("mandatory", False)), # alias
+        "release_notes": best.get("releaseNotes", []),     # alias
     })
 
 
 # ── Admin: list releases ──────────────────────────────────────────────────────
+
+@app.route("/api/releases", methods=["GET"])
+def route_public_list_releases():
+    """GET /api/releases — public changelog feed: all enabled releases, newest first."""
+    releases = _load_releases()
+    # Strip fields that should stay admin-only
+    public = []
+    for r in releases:
+        if r.get("disabled"):
+            continue
+        public.append({
+            "id":           r.get("id"),
+            "version":      r.get("version"),
+            "channel":      r.get("channel", "stable"),
+            "published_at": r.get("published_at") or r.get("created_at"),
+            "release_notes": r.get("release_notes") or r.get("releaseNotes") or [],
+            "required":     r.get("required", False) or r.get("mandatory", False),
+            "file_size":    r.get("fileSize") or r.get("file_size") or 0,
+            "sha256":       r.get("sha256", ""),
+            "min_version":  r.get("minVersion") or r.get("min_version") or "",
+            "download_count": r.get("download_count", 0),
+            "is_current":   r.get("is_current", False),
+        })
+    return jsonify({"ok": True, "releases": public, "total": len(public)})
+
 
 @app.route("/api/admin/releases", methods=["GET"])
 @require_admin
@@ -1586,16 +1618,18 @@ def route_admin_publish_release():
     fname   = (data.get("filename") or "GhostConfig.exe").strip()
     sha256  = (data.get("sha256") or "").strip().lower()
     notes   = data.get("releaseNotes") or []
-    mandatory  = bool(data.get("mandatory", False))
-    channel    = (data.get("channel") or "stable").lower().strip()
-    set_current = bool(data.get("set_current", True))
+    mandatory    = bool(data.get("mandatory", False))
+    channel      = (data.get("channel") or "stable").lower().strip()
+    set_current  = bool(data.get("set_current", True))
+    min_version  = (data.get("minVersion") or "").strip()
+    file_size    = data.get("fileSize")             # bytes, optional
 
     if not version:
         return jsonify({"ok": False, "error": "'version' is required"}), 400
     if not url:
         return jsonify({"ok": False, "error": "'downloadUrl' is required"}), 400
-    if channel not in ("stable", "beta"):
-        return jsonify({"ok": False, "error": "channel must be 'stable' or 'beta'"}), 400
+    if channel not in ("stable", "beta", "development"):
+        return jsonify({"ok": False, "error": "channel must be 'stable', 'beta', or 'development'"}), 400
     if not isinstance(notes, list):
         notes = [str(notes)]
 
@@ -1619,6 +1653,8 @@ def route_admin_publish_release():
         "downloadUrl":  url,
         "filename":     fname,
         "sha256":       sha256,
+        "fileSize":     file_size,
+        "minVersion":   min_version,
         "releaseNotes": notes,
         "mandatory":    mandatory,
         "channel":      channel,
@@ -1640,6 +1676,66 @@ def route_admin_publish_release():
     _audit("release_publish", g.actor, version,
            f"channel={channel} mandatory={mandatory} url={url[:60]}")
     return jsonify({"ok": True, "release": record}), 201
+
+
+# ── Admin: upload EXE ─────────────────────────────────────────────────────────
+
+@app.route("/api/admin/releases/upload", methods=["POST"])
+@require_admin
+@limiter.limit("10 per minute")
+def route_admin_release_upload():
+    """
+    POST /api/admin/releases/upload  (multipart/form-data)
+    Upload a GhostConfig.exe and receive its URL + SHA-256.
+    Fields:
+      file      — the binary (required)
+      version   — version string (optional, for naming)
+
+    The file is saved under release_files/<version>/<filename> and served
+    at /download/<version>/<filename>.  Also updates the /download/latest
+    redirect to point at the new file when version is provided.
+    """
+    from flask import request as _req
+    f = _req.files.get("file")
+    if not f:
+        return jsonify({"ok": False, "error": "No file uploaded"}), 400
+
+    safe_name = Path(f.filename).name if f.filename else "GhostConfig.exe"
+    if not safe_name.lower().endswith(".exe") or "/" in safe_name or "\\" in safe_name:
+        return jsonify({"ok": False, "error": "Only .exe uploads accepted"}), 400
+
+    version = (_req.form.get("version") or "").strip()
+    subdir  = version if version else str(int(time.time()))
+
+    target_dir = RELEASES_DIR / subdir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / safe_name
+
+    # Stream to disk
+    h = hashlib.sha256()
+    size = 0
+    with open(target_path, "wb") as fh:
+        while True:
+            chunk = f.stream.read(65536)
+            if not chunk:
+                break
+            fh.write(chunk)
+            h.update(chunk)
+            size += len(chunk)
+
+    sha256   = h.hexdigest()
+    dl_url   = f"/download/{subdir}/{safe_name}"
+
+    _audit("release_upload", g.actor, version or safe_name,
+           f"file={safe_name} size={size} sha256={sha256[:16]}…")
+    return jsonify({
+        "ok":          True,
+        "filename":    safe_name,
+        "downloadUrl": dl_url,
+        "sha256":      sha256,
+        "fileSize":    size,
+        "version":     subdir,
+    }), 201
 
 
 # ── Admin: get / patch / delete a single release ─────────────────────────────
@@ -1769,6 +1865,104 @@ def route_release_downloaded():
     return jsonify({"ok": True})
 
 
+# ── Public: GET /download/latest — redirect to current stable exe ─────────────
+
+@app.route("/download/latest", methods=["GET"])
+@limiter.limit("120 per minute")
+def route_download_latest():
+    """
+    GET /download/latest?channel=stable
+    Redirect to the current EXE download URL.
+    Used by all download buttons on the website so no version filename is ever
+    hardcoded — just link to /download/latest.
+    """
+    channel  = (request.args.get("channel") or "stable").lower().strip()
+    releases = _load_releases()
+    candidates = [
+        r for r in releases
+        if r.get("current") and not r.get("disabled")
+        and r.get("channel", "stable").lower() == channel
+    ]
+    if not candidates and channel != "stable":
+        candidates = [
+            r for r in releases
+            if r.get("current") and not r.get("disabled")
+            and r.get("channel", "stable").lower() == "stable"
+        ]
+    if not candidates:
+        return jsonify({"ok": False, "error": "No release available"}), 404
+
+    from flask import redirect as _redirect
+    best = max(candidates, key=lambda r: r.get("released_at", ""))
+    url  = best.get("downloadUrl", "")
+    if not url:
+        return jsonify({"ok": False, "error": "No download URL configured"}), 404
+    return _redirect(url, 302)
+
+
+# ── Public: serve uploaded EXE files ─────────────────────────────────────────
+
+@app.route("/download/<path:subpath>", methods=["GET"])
+@limiter.limit("120 per minute")
+def route_serve_release_file(subpath: str):
+    """
+    GET /download/<version>/<filename>
+    Serves files stored under RELEASES_DIR.  Only .exe files are served.
+    """
+    from flask import send_from_directory as _sfd
+    # Normalise + security-check the path
+    safe = Path(subpath).parts
+    if not safe or ".." in safe:
+        return jsonify({"ok": False, "error": "Invalid path"}), 400
+    if not safe[-1].lower().endswith(".exe"):
+        return jsonify({"ok": False, "error": "Only .exe files served here"}), 400
+    file_path = RELEASES_DIR.joinpath(*safe)
+    if not file_path.exists():
+        return jsonify({"ok": False, "error": "File not found"}), 404
+    return _sfd(str(file_path.parent), file_path.name, as_attachment=True)
+
+
+# ── Admin: release statistics ─────────────────────────────────────────────────
+
+@app.route("/api/admin/releases/stats", methods=["GET"])
+@require_admin
+def route_admin_release_stats():
+    """
+    GET /api/admin/releases/stats
+    Returns aggregate download statistics and version distribution.
+    """
+    releases  = _load_releases()
+    total_dl  = sum(r.get("downloads", 0) for r in releases)
+    active    = [r for r in releases if r.get("current") and not r.get("disabled")]
+    stable_ver = next((r.get("version") for r in active if r.get("channel") == "stable"), None)
+    beta_ver   = next((r.get("version") for r in active if r.get("channel") == "beta"), None)
+    dev_ver    = next((r.get("version") for r in active if r.get("channel") == "development"), None)
+
+    dist = []
+    for r in releases:
+        dl = int(r.get("downloads", 0))
+        dist.append({
+            "version":   r.get("version", ""),
+            "channel":   r.get("channel", "stable"),
+            "downloads": dl,
+            "percent":   round(dl * 100 / total_dl, 1) if total_dl else 0,
+            "current":   bool(r.get("current")),
+            "disabled":  bool(r.get("disabled")),
+            "released_at": r.get("released_at", ""),
+        })
+    dist.sort(key=lambda x: x["downloads"], reverse=True)
+
+    return jsonify({
+        "ok":              True,
+        "total_downloads": total_dl,
+        "stable_version":  stable_ver,
+        "beta_version":    beta_ver,
+        "dev_version":     dev_ver,
+        "total_releases":  len(releases),
+        "distribution":    dist,
+    })
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Admin — Settings
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1788,6 +1982,7 @@ def _load_settings() -> dict:
         "paypal_client_id":    "",
         "paypal_environment":  "sandbox",
         "admin_password_hash": "",
+        "silent_updates":      False,
     }
     if SETTINGS_DB.exists():
         try:
@@ -1825,6 +2020,7 @@ def route_admin_update_settings():
         "site_name", "logo_url", "discord_invite", "download_url",
         "maintenance_mode", "announcement_banner",
         "paypal_client_id", "paypal_environment",
+        "silent_updates",
     }
     for k, v in data.items():
         if k in allowed:
@@ -2462,6 +2658,23 @@ def _429(_e):
 def _500(_e):
     log.exception("Unhandled exception")
     return jsonify({"ok": False, "error": "Internal server error"}), 500
+
+
+# ── Public: client settings (silent_updates etc.) ────────────────────────────
+
+@app.route("/api/client/settings", methods=["GET"])
+@limiter.limit("60 per minute")
+def route_client_settings():
+    """
+    GET /api/client/settings
+    Returns settings that the desktop client needs at startup.
+    No auth required — only safe fields are exposed.
+    """
+    s = _load_settings()
+    return jsonify({
+        "ok":             True,
+        "silent_updates": bool(s.get("silent_updates", False)),
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────

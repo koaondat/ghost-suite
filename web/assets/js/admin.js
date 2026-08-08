@@ -2372,36 +2372,97 @@
     });
   }
 
-  /* ── Releases ───────────────────────────────────────────────────────── */
+  /* ── Release Manager ────────────────────────────────────────────────── */
   let _allReleases   = [];
   let _relFilterMode = 'all';
+  let _uploadedRelUrl    = '';
+  let _uploadedRelSha256 = '';
+  let _uploadedRelSize   = 0;
 
-  // Utility: compare semver strings "1.2.3" — returns -1/0/1
-  function _semverCmp (a, b) {
-    const parse = s => (s || '0').replace(/^v/, '').split('.').map(Number);
-    const [av, bv] = [parse(a), parse(b)];
-    for (let i = 0; i < 3; i++) {
-      const d = (av[i] || 0) - (bv[i] || 0);
-      if (d !== 0) return d;
-    }
-    return 0;
+  // Utility: human-readable file size
+  function _fmtBytes (b) {
+    if (!b) return '—';
+    if (b >= 1_048_576) return (b / 1_048_576).toFixed(1) + ' MB';
+    if (b >= 1024)      return (b / 1024).toFixed(0) + ' KB';
+    return b + ' B';
+  }
+
+  // Utility: channel colour
+  function _chColor (ch) {
+    if (ch === 'beta')        return 'var(--cyan)';
+    if (ch === 'development') return 'var(--purple)';
+    return 'var(--green)';
   }
 
   async function loadReleases () {
-    const { ok, data } = await apiFetch('/api/admin/releases');
-    if (!ok) { showAlert('releasesAlert', 'error', data.error || 'Failed to load releases.'); return; }
-    _allReleases = data.releases || [];
+    const [relRes, statsRes] = await Promise.all([
+      apiFetch('/api/admin/releases'),
+      apiFetch('/api/admin/releases/stats'),
+    ]);
+    if (!relRes.ok) { showAlert('releasesAlert', 'error', relRes.data.error || 'Failed to load releases.'); return; }
+    _allReleases = relRes.data.releases || [];
     renderReleasesTable(_allReleases);
-    updateReleaseSummary(_allReleases);
+    updateReleaseSummary(_allReleases, relRes.data);
+    if (statsRes.ok) renderVersionDistribution(statsRes.data);
+    updateCurrentReleaseCard(_allReleases);
+    loadSilentUpdateSetting();
   }
 
   function updateReleaseSummary (releases) {
-    const stableCurrent = releases.find(r => r.channel === 'stable' && r.current && !r.disabled);
-    const betaCurrent   = releases.find(r => r.channel === 'beta'   && r.current && !r.disabled);
+    const stableCurrent = releases.find(r => r.channel === 'stable'      && r.current && !r.disabled);
+    const betaCurrent   = releases.find(r => r.channel === 'beta'        && r.current && !r.disabled);
+    const devCurrent    = releases.find(r => r.channel === 'development' && r.current && !r.disabled);
     const totalDl       = releases.reduce((s, r) => s + (r.downloads || 0), 0);
     setText('relStableVer', stableCurrent ? stableCurrent.version : '—');
     setText('relBetaVer',   betaCurrent   ? betaCurrent.version   : '—');
-    setText('relTotalDl',   totalDl);
+    setText('relDevVer',    devCurrent    ? devCurrent.version    : '—');
+    setText('relTotalDl',   totalDl.toLocaleString());
+  }
+
+  function updateCurrentReleaseCard (releases) {
+    // Show info for the stable current release (highest priority)
+    const current = releases.find(r => r.channel === 'stable' && r.current && !r.disabled)
+                 || releases.find(r => r.current && !r.disabled);
+    if (!current) return;
+    setText('relCurVersion',   current.version || '—');
+    setText('relCurPublished', current.released_at ? current.released_at.slice(0, 10) : '—');
+    setText('relCurDownloads', (current.downloads || 0).toLocaleString());
+    setText('relCurSize',      _fmtBytes(current.fileSize));
+    setText('relCurMinVer',    current.minVersion || 'Any');
+    setText('relCurSha',       current.sha256 || '—');
+    const ch = $('relCurrentChannel');
+    if (ch) { ch.textContent = (current.channel || 'stable').toUpperCase(); ch.style.color = _chColor(current.channel); }
+    // Release notes
+    const ul = $('relCurNotes');
+    if (ul) {
+      const notes = current.releaseNotes || [];
+      ul.innerHTML = notes.length
+        ? notes.map(n => `<li>${esc(n)}</li>`).join('')
+        : '<li style="color:var(--muted)">No release notes.</li>';
+    }
+  }
+
+  function renderVersionDistribution (stats) {
+    const wrap = $('relDistribution');
+    if (!wrap) return;
+    const dist = stats.distribution || [];
+    if (!dist.length) { wrap.innerHTML = '<p style="color:var(--muted);font-size:13px">No download data yet.</p>'; return; }
+    const total = stats.total_downloads || 0;
+    wrap.innerHTML = dist.slice(0, 10).map(d => {
+      const pct = d.percent || 0;
+      const bar = Math.round(pct);
+      return `
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <code style="width:70px;font-size:12px;flex-shrink:0">${esc(d.version)}</code>
+          <span style="width:68px;font-size:11px;color:${_chColor(d.channel)};flex-shrink:0">${esc(d.channel)}</span>
+          <div style="flex:1;height:12px;background:var(--surface-3);border-radius:6px;overflow:hidden">
+            <div style="height:100%;width:${bar}%;background:${_chColor(d.channel)};border-radius:6px;transition:width .4s"></div>
+          </div>
+          <span style="width:54px;text-align:right;font-size:12px;color:var(--muted)">${pct}%</span>
+          <span style="width:64px;text-align:right;font-size:12px;color:var(--muted)">${(d.downloads||0).toLocaleString()} dl</span>
+          ${d.current ? '<span style="font-size:10px;color:var(--green);font-weight:700">● current</span>' : '<span style="width:52px"></span>'}
+        </div>`;
+    }).join('');
   }
 
   function renderReleasesTable (releases) {
@@ -2413,12 +2474,12 @@
     filtered = [...filtered].sort((a, b) => (b.released_at || '').localeCompare(a.released_at || ''));
 
     if (!filtered.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="admin-table-empty">No releases found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="admin-table-empty">No releases found.</td></tr>';
       return;
     }
 
     tbody.innerHTML = filtered.map(r => {
-      const chClass = r.channel === 'beta' ? 'var(--cyan)' : 'var(--green)';
+      const chColor = _chColor(r.channel);
       const statusBadge = r.disabled
         ? `<span style="color:var(--red);font-weight:600">Disabled</span>`
         : r.current
@@ -2428,18 +2489,22 @@
         ? `<span style="color:var(--red);font-size:11px;font-weight:700">REQUIRED</span>`
         : `<span style="color:var(--muted);font-size:11px">—</span>`;
       const relDate = r.released_at ? r.released_at.slice(0, 10) : '—';
+      const sizeStr = _fmtBytes(r.fileSize);
 
       return `<tr>
-        <td><code style="font-size:12px">${esc(r.version)}</code></td>
-        <td><span style="color:${chClass};font-weight:600;text-transform:capitalize">${esc(r.channel)}</span></td>
+        <td><code style="font-size:12px">${esc(r.version)}</code>${r.minVersion ? `<br><span style="font-size:10px;color:var(--muted)">min: ${esc(r.minVersion)}</span>` : ''}</td>
+        <td><span style="color:${chColor};font-weight:600;text-transform:capitalize">${esc(r.channel)}</span></td>
         <td>${relDate}</td>
-        <td>${r.downloads || 0}</td>
+        <td>${(r.downloads||0).toLocaleString()}</td>
+        <td style="font-size:11px;color:var(--muted)">${sizeStr}</td>
         <td>${mandBadge}</td>
         <td>${statusBadge}</td>
         <td style="white-space:nowrap;display:flex;gap:6px;flex-wrap:wrap">
           ${!r.current && !r.disabled ? `<button class="btn btn-ghost btn--sm" onclick="relSetCurrent(${r.id})">Set Current</button>` : ''}
           <button class="btn btn-ghost btn--sm" onclick="relEditNotes(${r.id})">Edit Notes</button>
-          ${!r.disabled ? `<button class="btn btn-ghost btn--sm" style="color:var(--red)" onclick="relDisable(${r.id})">Disable</button>` : `<button class="btn btn-ghost btn--sm" onclick="relRollback(${r.id})">Roll Back</button>`}
+          ${!r.disabled
+            ? `<button class="btn btn-ghost btn--sm" style="color:var(--red)" onclick="relDisable(${r.id})">Disable</button>`
+            : `<button class="btn btn-ghost btn--sm" onclick="relRollback(${r.id})">Roll Back</button>`}
         </td>
       </tr>`;
     }).join('');
@@ -2447,15 +2512,151 @@
 
   window._relFilter = function (mode) {
     _relFilterMode = mode;
-    // Update button styles
-    ['relFilterAll','relFilterStable','relFilterBeta'].forEach(id => {
+    // Update button active states
+    ['relFilterAll','relFilterStable','relFilterBeta','relFilterDev'].forEach(id => {
       const btn = $(id);
       if (!btn) return;
-      const active = (id === `relFilter${mode.charAt(0).toUpperCase() + mode.slice(1)}`);
-      btn.className = active ? 'btn btn-primary btn--sm' : 'btn btn-ghost btn--sm';
+      const modeMap = { relFilterAll:'all', relFilterStable:'stable', relFilterBeta:'beta', relFilterDev:'development' };
+      btn.className = modeMap[id] === mode ? 'btn btn-primary btn--sm' : 'btn btn-ghost btn--sm';
     });
     renderReleasesTable(_allReleases);
   };
+
+  /* ── Upload + auto-publish flow ────────────────────────────────────── */
+  function wireUploadZone () {
+    const input    = $('relFileInput');
+    const dropZone = $('relDropZone');
+    const label    = $('relDropLabel');
+    if (!input) return;
+
+    function handleFile (file) {
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.exe')) {
+        toast('Only .exe files are accepted.', 'error'); return;
+      }
+      if (label) label.textContent = `✓  ${file.name}  (${_fmtBytes(file.size)})`;
+      if (dropZone) dropZone.style.borderColor = 'var(--accent)';
+    }
+
+    input.addEventListener('change', () => handleFile(input.files?.[0]));
+    if (dropZone) {
+      dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = 'var(--accent)'; });
+      dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = 'var(--border-2)'; });
+      dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        const file = e.dataTransfer.files[0];
+        if (file) { input.files = e.dataTransfer.files; handleFile(file); }
+      });
+    }
+  }
+
+  async function relUploadAndPublish () {
+    const file    = $('relFileInput')?.files?.[0];
+    const version = $('relUploadVersion')?.value.trim();
+    if (!file) { showAlert('relUploadAlert', 'error', 'Select a GhostConfig.exe first.'); return; }
+    if (!version) { showAlert('relUploadAlert', 'error', 'Enter a version number (e.g. 2.5.0).'); return; }
+
+    setBusy('relUploadPublishBtn', true);
+    hideAlert('relUploadAlert');
+    const progressWrap = $('relUploadProgress');
+    const progressBar  = $('relUploadProgressBar');
+    const progressLbl  = $('relUploadProgressLabel');
+    if (progressWrap) progressWrap.style.display = '';
+
+    // ── Step 1: Upload EXE ────────────────────────────────────────────
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('version', version);
+
+    let uploadData = null;
+    try {
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/admin/releases/upload');
+        xhr.withCredentials = true;
+        xhr.upload.addEventListener('progress', e => {
+          if (e.lengthComputable && progressBar && progressLbl) {
+            const pct = Math.round(e.loaded * 100 / e.total);
+            progressBar.style.width = pct + '%';
+            progressLbl.textContent = `Uploading…  ${pct}%  (${_fmtBytes(e.loaded)} / ${_fmtBytes(e.total)})`;
+          }
+        });
+        xhr.addEventListener('load', () => {
+          try { uploadData = JSON.parse(xhr.responseText); }
+          catch (_) { uploadData = { ok: false, error: 'Invalid response' }; }
+          if (uploadData.ok) resolve();
+          else reject(new Error(uploadData.error || 'Upload failed'));
+        });
+        xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+        xhr.send(fd);
+      });
+    } catch (err) {
+      showAlert('relUploadAlert', 'error', err.message);
+      setBusy('relUploadPublishBtn', false);
+      if (progressWrap) progressWrap.style.display = 'none';
+      return;
+    }
+
+    if (progressBar)  progressBar.style.width = '100%';
+    if (progressLbl)  progressLbl.textContent = 'Verifying upload…';
+
+    // ── Step 2: Publish the release ───────────────────────────────────
+    const notes   = $('relUploadNotes')?.value.trim().split('\n').map(s => s.replace(/^[•·\-]\s*/,'').trim()).filter(Boolean) || [];
+    const payload = {
+      version,
+      downloadUrl:  uploadData.downloadUrl,
+      filename:     uploadData.filename || 'GhostConfig.exe',
+      sha256:       uploadData.sha256   || '',
+      fileSize:     uploadData.fileSize || 0,
+      releaseNotes: notes,
+      mandatory:    !!$('relUploadMandatory')?.checked,
+      channel:      $('relUploadChannel')?.value || 'stable',
+      set_current:  !!$('relUploadSetCurrent')?.checked,
+      minVersion:   $('relUploadMinVer')?.value.trim() || '',
+    };
+
+    if (progressLbl) progressLbl.textContent = 'Publishing release…';
+    const { ok, data } = await apiFetch('/api/admin/releases', { method: 'POST', body: JSON.stringify(payload) });
+
+    if (progressWrap) progressWrap.style.display = 'none';
+    setBusy('relUploadPublishBtn', false);
+
+    if (ok) {
+      toast(`✓ Release ${version} published and live!`, 'success');
+      // Reset form
+      if ($('relFileInput'))        $('relFileInput').value = '';
+      if ($('relUploadVersion'))    $('relUploadVersion').value = '';
+      if ($('relUploadNotes'))      $('relUploadNotes').value = '';
+      if ($('relUploadSha256'))     $('relUploadSha256').value = '';
+      if ($('relUploadMinVer'))     $('relUploadMinVer').value = '';
+      if ($('relUploadMandatory'))  $('relUploadMandatory').checked = false;
+      if ($('relUploadSetCurrent')) $('relUploadSetCurrent').checked = true;
+      if ($('relDropLabel'))        $('relDropLabel').textContent = 'Drop GhostConfig.exe here or click to browse';
+      if ($('relDropZone'))         $('relDropZone').style.borderColor = 'var(--border-2)';
+      loadReleases();
+    } else {
+      showAlert('relUploadAlert', 'error', data.error || 'Publish failed after upload.');
+    }
+  }
+
+  /* ── Silent updates setting ────────────────────────────────────────── */
+  async function loadSilentUpdateSetting () {
+    const { ok, data } = await apiFetch('/api/admin/settings');
+    if (!ok) return;
+    const s = data.settings || {};
+    const cb = $('relSilentUpdates');
+    if (cb) cb.checked = !!s.silent_updates;
+  }
+
+  async function saveSilentUpdateSetting () {
+    const val = !!$('relSilentUpdates')?.checked;
+    const { ok, data } = await apiFetch('/api/admin/settings', {
+      method: 'POST',
+      body: JSON.stringify({ silent_updates: val }),
+    });
+    if (ok) toast(`Silent updates ${val ? 'enabled' : 'disabled'}.`, 'success');
+    else toast(data.error || 'Save failed.', 'error');
+  }
 
   window.relSetCurrent = async function (id) {
     confirmAction('Set as Current', 'Promote this release to the active version for its channel?', async () => {
@@ -2474,7 +2675,7 @@
   };
 
   window.relRollback = async function (id) {
-    confirmAction('Roll Back', 'Re-enable this release and make it current?', async () => {
+    confirmAction('Roll Back', 'Re-enable this release and make it current for clients?', async () => {
       const { ok, data } = await apiFetch('/api/admin/releases/rollback', {
         method: 'POST',
         body: JSON.stringify({ release_id: id }),
@@ -2487,8 +2688,8 @@
   window.relEditNotes = function (id) {
     const r = _allReleases.find(r => r.id === id);
     if (!r) return;
-    $('editRelNotesId').value   = id;
-    $('editRelNotesText').value = (r.releaseNotes || []).join('\n');
+    $('editRelNotesId').value     = id;
+    $('editRelNotesText').value   = (r.releaseNotes || []).join('\n');
     $('editRelMandatory').checked = !!r.mandatory;
     show('editRelNotesModal');
   };
@@ -2504,9 +2705,9 @@
         body: JSON.stringify({ releaseNotes: notes, mandatory: mand }),
       });
       if (ok) { toast('Notes updated.', 'success'); hide('editRelNotesModal'); loadReleases(); }
-      else showAlert('publishRelAlert', 'error', data.error || 'Save failed.');
+      else showAlert('editRelNotesModal', 'error', data.error || 'Save failed.');
     } catch (_) {
-      showAlert('publishRelAlert', 'error', 'Network error.');
+      toast('Network error.', 'error');
     } finally {
       setBusy('saveEditRelNotesBtn', false);
     }
@@ -2522,6 +2723,7 @@
     $('relNotes').value         = '';
     $('relMandatory').checked   = false;
     $('relSetCurrent').checked  = true;
+    if ($('relMinVersion')) $('relMinVersion').value = '';
     $('publishRelModalTitle').textContent = 'Publish New Release';
     hide('publishRelAlert');
     show('publishReleaseModal');
@@ -2544,6 +2746,7 @@
       mandatory:    $('relMandatory').checked,
       channel:      $('relChannel').value,
       set_current:  $('relSetCurrent').checked,
+      minVersion:   ($('relMinVersion')?.value || '').trim(),
     };
     setBusy('savePublishReleaseBtn', true);
     hideAlert('publishRelAlert');
@@ -2568,6 +2771,7 @@
 
   function wireReleases () {
     $('openPublishReleaseBtn')?.addEventListener('click', openPublishRelease);
+    $('refreshReleasesBtn')?.addEventListener('click', loadReleases);
     $('closePublishReleaseModal')?.addEventListener('click', () => hide('publishReleaseModal'));
     $('cancelPublishReleaseBtn')?.addEventListener('click', () => hide('publishReleaseModal'));
     $('savePublishReleaseBtn')?.addEventListener('click', savePublishRelease);
@@ -2580,6 +2784,9 @@
     $('editRelNotesModal')?.addEventListener('click', e => {
       if (e.target === $('editRelNotesModal')) hide('editRelNotesModal');
     });
+    $('relUploadPublishBtn')?.addEventListener('click', relUploadAndPublish);
+    $('saveSilentUpdatesBtn')?.addEventListener('click', saveSilentUpdateSetting);
+    wireUploadZone();
   }
 
   /* ── Init ───────────────────────────────────────────────────────────── */

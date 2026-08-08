@@ -489,6 +489,8 @@
       link.addEventListener('click', e => {
         e.preventDefault();
         showSection(link.dataset.section);
+        // Auto-check for updates when navigating to the updates section
+        if (link.dataset.section === 'updates') checkForUpdates(false);
       });
     });
 
@@ -1290,6 +1292,98 @@
     console.log('content_shown');
   }
 
+  /* ── Update Status section ───────────────────────────────────────────────── */
+
+  const _UPD_API = '/api/releases/latest';
+  let _updLastChecked = null;
+
+  function _semverGt (a, b) {
+    const parse = s => (s || '0').replace(/^v/, '').split('.').map(Number);
+    const av = parse(a), bv = parse(b);
+    for (let i = 0; i < 3; i++) {
+      if ((av[i]||0) > (bv[i]||0)) return true;
+      if ((av[i]||0) < (bv[i]||0)) return false;
+    }
+    return false;
+  }
+
+  function _setEl (id, val) {
+    const el = _el(id);
+    if (el) el.textContent = val ?? '—';
+  }
+
+  async function checkForUpdates (showFeedback) {
+    const loading = _el('upd-loading');
+    const errBox  = _el('upd-error');
+    const avBanner= _el('upd-available-banner');
+    const okBanner= _el('upd-current-banner');
+
+    if (loading)   loading.style.display = '';
+    if (errBox)    errBox.style.display  = 'none';
+    if (avBanner)  avBanner.hidden       = true;
+    if (okBanner)  okBanner.style.display= 'none';
+    _setEl('upd-status-val',  'Checking…');
+    _setEl('upd-status-hint', '');
+
+    try {
+      const res  = await fetch(`${_UPD_API}?channel=stable`);
+      const data = await res.json();
+
+      if (loading) loading.style.display = 'none';
+      _updLastChecked = new Date();
+      _setEl('upd-last-checked', _updLastChecked.toLocaleTimeString());
+
+      if (!data.ok) throw new Error(data.error || 'Server returned error');
+
+      const latestVer  = data.version   || '—';
+      const notes      = data.releaseNotes || data.release_notes || [];
+      const relDate    = data.releasedAt ? data.releasedAt.slice(0, 10) : '—';
+      const isNewer    = _semverGt(latestVer, '');   // web page doesn't know current ver
+
+      _setEl('upd-current-ver', 'Check the app');
+      _setEl('upd-latest-ver',  latestVer);
+
+      // Update available (we always show the latest info and a download button)
+      _setEl('upd-status-val', latestVer);
+      _setEl('upd-status-hint', `Published ${relDate}`);
+
+      if (avBanner) {
+        avBanner.hidden = false;
+        const desc = _el('upd-available-desc');
+        if (desc) desc.textContent = `Ghost ${latestVer} is available (published ${relDate}).`;
+        const dlBtn = _el('upd-download-btn');
+        if (dlBtn) dlBtn.href = data.downloadUrl || '/download/latest';
+      }
+
+      // Release notes
+      const notesCard = _el('upd-notes-card');
+      const notesList = _el('upd-notes-list');
+      const notesVer  = _el('upd-notes-version');
+      if (notesCard && notesList) {
+        notesCard.hidden = false;
+        if (notesVer) notesVer.textContent = `v${latestVer}`;
+        notesList.innerHTML = notes.length
+          ? notes.map(n => `<li>${_esc(n)}</li>`).join('')
+          : '<li style="color:var(--muted)">No release notes available.</li>';
+      }
+
+    } catch (err) {
+      if (loading) loading.style.display = 'none';
+      if (errBox) {
+        errBox.style.display = '';
+        const msg = _el('upd-error-msg');
+        if (msg) msg.textContent = 'Could not reach the update server. Check your connection.';
+      }
+      _setEl('upd-status-val',  'Error');
+      _setEl('upd-status-hint', err.message);
+    }
+  }
+
+  function initUpdates () {
+    _el('upd-check-btn')  ?.addEventListener('click', () => checkForUpdates(true));
+    _el('upd-retry-btn')  ?.addEventListener('click', () => checkForUpdates(true));
+  }
+
   /* ── Boot sequence ───────────────────────────────────────────────────────── */
   /* ── setup()    : runs once on DOMContentLoaded — wires all static UI       */
   /* ── loadData() : fetches account data and renders — safe to retry          */
@@ -1303,6 +1397,7 @@
     initNav();
     initLogout();
     initDownloadBtns();
+    initUpdates();
 
     // Retry button: replace its node to guarantee no stacked listeners,
     // then attach a single click handler that calls loadData().

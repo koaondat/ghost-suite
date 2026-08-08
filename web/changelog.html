@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Changelog — Ghost</title>
+  <meta name="description" content="Ghost release history — every version, release notes, and download links." />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="/assets/css/ghost.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/><path d='M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z' fill='white'/></svg>" />
+
+  <style>
+    /* ── Changelog page styles ──────────────────────────────── */
+    .changelog-hero {
+      padding: 80px 0 48px;
+      text-align: center;
+    }
+    .changelog-hero h1 {
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 800;
+      margin: 12px 0 16px;
+      letter-spacing: -0.03em;
+    }
+    .changelog-hero p {
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 500px;
+      margin: 0 auto 28px;
+    }
+    .changelog-download-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ── Timeline container ──────────────────────────────────── */
+    .changelog-body {
+      padding: 0 0 80px;
+    }
+    .changelog-body .container {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 40px;
+      align-items: start;
+    }
+    @media (max-width: 820px) {
+      .changelog-body .container {
+        grid-template-columns: 1fr;
+      }
+      .changelog-sidebar { display: none; }
+    }
+
+    /* ── Sidebar ─────────────────────────────────────────────── */
+    .changelog-sidebar {
+      position: sticky;
+      top: 88px;
+    }
+    .changelog-sidebar-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .changelog-toc {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .changelog-toc-item a {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      text-decoration: none;
+      transition: background 0.15s, color 0.15s;
+    }
+    .changelog-toc-item a:hover,
+    .changelog-toc-item a.active {
+      background: var(--surface);
+      color: var(--text);
+    }
+    .changelog-toc-item a .toc-version {
+      font-family: 'Fira Code', monospace;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .changelog-toc-item a .toc-channel {
+      margin-left: auto;
+      font-size: 0.68rem;
+      padding: 2px 6px;
+      border-radius: 99px;
+      background: rgba(168,85,247,0.12);
+      color: var(--accent);
+    }
+    .toc-channel.beta  { background: rgba(251,191,36,0.12); color: #f59e0b; }
+    .toc-channel.dev   { background: rgba(99,102,241,0.12); color: #818cf8; }
+
+    /* ── Timeline ────────────────────────────────────────────── */
+    .changelog-timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .changelog-entry {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 0 28px;
+      padding-bottom: 48px;
+      position: relative;
+    }
+    .changelog-entry::before {
+      content: '';
+      position: absolute;
+      left: 140px;
+      top: 8px;
+      bottom: 0;
+      width: 1px;
+      background: var(--border);
+      transform: translateX(-1px);
+    }
+    .changelog-entry:last-child::before { display: none; }
+
+    /* Left meta */
+    .entry-meta {
+      text-align: right;
+      padding-top: 2px;
+    }
+    .entry-version {
+      font-family: 'Fira Code', monospace;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--accent);
+      display: block;
+      margin-bottom: 4px;
+    }
+    .entry-date {
+      font-size: 0.75rem;
+      color: var(--muted);
+      display: block;
+    }
+    .entry-channel-badge {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 0.65rem;
+      padding: 2px 7px;
+      border-radius: 99px;
+      background: rgba(168,85,247,0.14);
+      color: var(--accent);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .entry-channel-badge.beta  { background: rgba(251,191,36,0.14); color: #f59e0b; }
+    .entry-channel-badge.dev   { background: rgba(99,102,241,0.14); color: #818cf8; }
+
+    /* Right content */
+    .entry-body {
+      padding-left: 20px;
+      position: relative;
+    }
+    .entry-body::before {
+      content: '';
+      position: absolute;
+      left: -5px;
+      top: 8px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--bg);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .entry-latest-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: #4ade80;
+      background: rgba(74,222,128,0.1);
+      border: 1px solid rgba(74,222,128,0.25);
+      border-radius: 99px;
+      padding: 2px 8px;
+      margin-bottom: 10px;
+    }
+    .entry-latest-tag::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+      display: inline-block;
+    }
+    .entry-required-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: #f87171;
+      background: rgba(248,113,113,0.1);
+      border: 1px solid rgba(248,113,113,0.25);
+      border-radius: 99px;
+      padding: 2px 8px;
+      margin-bottom: 10px;
+      margin-left: 6px;
+    }
+    .entry-notes {
+      list-style: none;
+      padding: 0;
+      margin: 8px 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .entry-notes li {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 0.88rem;
+      color: var(--text-secondary, #c9d1d9);
+      line-height: 1.5;
+    }
+    .entry-notes li::before {
+      content: '•';
+      color: var(--accent);
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .entry-footer {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+    .entry-meta-info {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .entry-dl-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+      padding: 5px 12px;
+      border-radius: 6px;
+      background: rgba(168,85,247,0.1);
+      border: 1px solid rgba(168,85,247,0.25);
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+    .entry-dl-btn:hover { background: rgba(168,85,247,0.2); }
+
+    /* ── Loading / empty state ──────────────────────────────── */
+    .changelog-state {
+      text-align: center;
+      padding: 64px 24px;
+      color: var(--muted);
+    }
+    .changelog-state svg { opacity: 0.3; margin-bottom: 16px; }
+    .changelog-state h3 { color: var(--text); margin-bottom: 8px; }
+
+    .cl-spinner {
+      display: inline-block;
+      width: 32px; height: 32px;
+      border: 3px solid rgba(168,85,247,0.15);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: cl-spin 0.7s linear infinite;
+      margin-bottom: 16px;
+    }
+    @keyframes cl-spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════ NAVIGATION -->
+<header class="nav" role="banner">
+  <div class="container">
+    <nav class="nav-inner" aria-label="Primary navigation">
+
+      <a href="index.html" class="nav-logo" aria-label="Ghost home">
+        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
+          <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
+          <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
+          <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+        </svg>
+        Ghost
+      </a>
+
+      <ul class="nav-links" role="list">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="pricing.html">Pricing</a></li>
+        <li><a href="changelog.html" class="active">Changelog</a></li>
+        <li><a href="index.html#support">Support</a></li>
+      </ul>
+
+      <div class="nav-cta">
+        <a href="login.html" class="btn btn-ghost">Login</a>
+        <a href="dashboard.html" class="btn btn-ghost">Dashboard</a>
+        <a href="/download/latest" download="GhostConfig.exe" class="btn btn-primary">Download</a>
+      </div>
+
+      <button class="nav-toggle" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+    </nav>
+
+    <div class="nav-mobile" role="navigation" aria-label="Mobile navigation">
+      <a href="index.html">Home</a>
+      <a href="index.html#features">Features</a>
+      <a href="pricing.html">Pricing</a>
+      <a href="changelog.html">Changelog</a>
+      <a href="index.html#support">Support</a>
+      <div class="mobile-cta">
+        <a href="login.html" class="btn btn-ghost">Login</a>
+        <a href="/download/latest" download="GhostConfig.exe" class="btn btn-primary">Download</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+
+<main>
+
+<!-- ═══════════════════════════════════════════════ HERO -->
+<section class="changelog-hero">
+  <div class="container">
+    <span class="section-label">Release History</span>
+    <h1>Changelog</h1>
+    <p>Every Ghost release — version notes, improvements, and fixes.</p>
+    <a href="/download/latest" download="GhostConfig.exe" class="btn btn-primary changelog-download-btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      Download Latest
+    </a>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════ CHANGELOG BODY -->
+<section class="changelog-body">
+  <div class="container">
+
+    <!-- Sidebar ToC -->
+    <aside class="changelog-sidebar" aria-label="Version index">
+      <div class="changelog-sidebar-title">Versions</div>
+      <ul class="changelog-toc" id="changelog-toc" role="list">
+        <li style="color:var(--muted);font-size:0.82rem;padding:4px 10px">Loading…</li>
+      </ul>
+    </aside>
+
+    <!-- Timeline -->
+    <div class="changelog-timeline" id="changelog-timeline" aria-live="polite">
+      <div class="changelog-state" id="cl-loading">
+        <div class="cl-spinner"></div>
+        <p>Loading release history…</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+</main>
+
+
+<!-- ═══════════════════════════════════════════════ FOOTER -->
+<footer class="footer" role="contentinfo">
+  <div class="container">
+    <div class="footer-grid">
+
+      <div class="footer-brand">
+        <a href="index.html" class="nav-logo" aria-label="Ghost home">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
+            <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
+            <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
+            <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+          </svg>
+          Ghost
+        </a>
+        <p>Premium Windows configuration utility. Fast, offline, and built for users who need full control.</p>
+      </div>
+
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul role="list">
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="pricing.html">Pricing</a></li>
+          <li><a href="index.html#download">Download</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Support</h4>
+        <ul role="list">
+          <li><a href="index.html#faq">FAQ</a></li>
+          <li><a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Discord</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Account</h4>
+        <ul role="list">
+          <li><a href="login.html">Login</a></li>
+          <li><a href="dashboard.html">Dashboard</a></li>
+          <li><a href="checkout.html">Get Pro</a></li>
+        </ul>
+      </div>
+
+    </div>
+
+    <div class="footer-bottom">
+      <p>&copy; 2025 Ghost. All rights reserved.</p>
+      <nav class="footer-legal" aria-label="Legal">
+        <a href="terms.html">Terms</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="index.html#support">Support</a>
+        <a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Discord</a>
+      </nav>
+    </div>
+  </div>
+</footer>
+
+<script src="/assets/js/ghost.js" defer></script>
+<script>
+/* ── Changelog — auto-generated from /api/releases ──────────────────── */
+(function () {
+  'use strict';
+
+  const timeline = document.getElementById('changelog-timeline');
+  const toc      = document.getElementById('changelog-toc');
+
+  function _fmt_date (iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch (_) { return iso.slice(0, 10); }
+  }
+
+  function _fmt_size (bytes) {
+    if (!bytes || bytes <= 0) return '';
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1024).toFixed(0) + ' KB';
+  }
+
+  function _channel_label (ch) {
+    if (!ch) return 'Stable';
+    return ch.charAt(0).toUpperCase() + ch.slice(1).toLowerCase();
+  }
+
+  function _channel_cls (ch) {
+    const c = (ch || '').toLowerCase();
+    if (c === 'beta') return 'beta';
+    if (c === 'development' || c === 'dev') return 'dev';
+    return '';
+  }
+
+  function _render (releases) {
+    if (!releases || !releases.length) {
+      timeline.innerHTML = `
+        <div class="changelog-state">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <h3>No releases yet</h3>
+          <p>New releases will appear here as they are published.</p>
+        </div>`;
+      toc.innerHTML = '<li style="color:var(--muted);font-size:0.82rem;padding:4px 10px">No releases</li>';
+      return;
+    }
+
+    // Sort newest first
+    const sorted = [...releases].sort((a, b) => {
+      // Compare by published_at or created_at descending
+      const da = a.published_at || a.created_at || '';
+      const db = b.published_at || b.created_at || '';
+      if (da > db) return -1;
+      if (da < db) return 1;
+      return 0;
+    });
+
+    const latestId = sorted[0] && (sorted[0].id || sorted[0].version);
+
+    // Render ToC
+    toc.innerHTML = sorted.map(r => {
+      const ver = r.version || '?';
+      const cls = _channel_cls(r.channel);
+      const ch  = _channel_label(r.channel);
+      const id  = `release-${(ver || '').replace(/\./g, '-')}`;
+      return `<li class="changelog-toc-item">
+        <a href="#${id}">
+          <span class="toc-version">v${ver.replace(/^v/, '')}</span>
+          ${ch !== 'Stable' ? `<span class="toc-channel ${cls}">${ch}</span>` : ''}
+        </a>
+      </li>`;
+    }).join('');
+
+    // Render timeline entries
+    timeline.innerHTML = sorted.map((r, i) => {
+      const ver     = r.version || '?';
+      const id      = `release-${(ver || '').replace(/\./g, '-')}`;
+      const isFirst = (r.id || r.version) === latestId;
+      const date    = _fmt_date(r.published_at || r.created_at);
+      const cls     = _channel_cls(r.channel);
+      const ch      = _channel_label(r.channel);
+      const size    = _fmt_size(r.file_size || r.fileSize);
+      const sha     = r.sha256 || r.checksum || '';
+      const req     = r.required || r.mandatory;
+
+      // Notes: can be array or newline string
+      let notes = r.release_notes || r.releaseNotes || [];
+      if (typeof notes === 'string') {
+        notes = notes.split('\n').map(l => l.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
+      }
+
+      const noteItems = notes.length
+        ? notes.map(n => `<li>${_esc(n)}</li>`).join('')
+        : '<li>No release notes provided.</li>';
+
+      const metaParts = [];
+      if (size)         metaParts.push(size);
+      if (r.min_version || r.minVersion) metaParts.push(`Min v${(r.min_version || r.minVersion).replace(/^v/, '')}`);
+      if (sha)          metaParts.push(`SHA256: ${sha.slice(0, 12)}…`);
+
+      return `
+      <article class="changelog-entry" id="${_esc(id)}">
+        <div class="entry-meta">
+          <span class="entry-version">v${_esc(ver.replace(/^v/, ''))}</span>
+          <span class="entry-date">${_esc(date)}</span>
+          ${ch !== 'Stable' ? `<span class="entry-channel-badge ${cls}">${_esc(ch)}</span>` : ''}
+        </div>
+        <div class="entry-body">
+          ${isFirst ? '<span class="entry-latest-tag">Latest</span>' : ''}
+          ${req     ? '<span class="entry-required-tag">Required update</span>' : ''}
+          <ul class="entry-notes">${noteItems}</ul>
+          <div class="entry-footer">
+            ${metaParts.length ? `<span class="entry-meta-info">${metaParts.map(_esc).join(' &nbsp;·&nbsp; ')}</span>` : ''}
+            <a href="/download/latest" download="GhostConfig.exe" class="entry-dl-btn">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download
+            </a>
+          </div>
+        </div>
+      </article>`;
+    }).join('');
+
+    // Intersection observer for ToC highlighting
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          const id = e.target.getAttribute('id');
+          toc.querySelectorAll('a').forEach(a => {
+            a.classList.toggle('active', a.getAttribute('href') === '#' + id);
+          });
+        }
+      });
+    }, { rootMargin: '-80px 0px -60% 0px' });
+
+    timeline.querySelectorAll('.changelog-entry').forEach(el => observer.observe(el));
+  }
+
+  function _esc (str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  async function _load () {
+    try {
+      const res  = await fetch('/api/releases');
+      const data = await res.json();
+      if (!data.ok && !Array.isArray(data.releases)) {
+        throw new Error(data.error || 'Failed to load releases');
+      }
+      _render(Array.isArray(data.releases) ? data.releases : (Array.isArray(data) ? data : []));
+    } catch (err) {
+      timeline.innerHTML = `
+        <div class="changelog-state">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <h3>Could not load changelog</h3>
+          <p>${_esc(err.message)}</p>
+          <button class="btn btn-ghost" style="margin-top:16px" onclick="location.reload()">Retry</button>
+        </div>`;
+    }
+  }
+
+  _load();
+})();
+</script>
+</body>
+</html>

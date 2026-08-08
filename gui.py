@@ -90,6 +90,21 @@ def _fetch_latest_release(channel: str = "stable") -> dict | None:
     return None
 
 
+def _fetch_client_settings() -> dict:
+    """GET /api/client/settings — returns silent_updates flag etc."""
+    if not _API_BASE_URL:
+        return {}
+    try:
+        req = urllib.request.Request(
+            f"{_API_BASE_URL}/api/client/settings",
+            headers={"User-Agent": f"GhostConfig/{CURRENT_VERSION}"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return {}
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -1008,10 +1023,11 @@ class UpdateDialog(tk.Toplevel):
             req = urllib.request.Request(
                 url, headers={"User-Agent": f"GhostConfig/{CURRENT_VERSION}"}
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                total  = int(resp.headers.get("Content-Length", 0) or 0)
-                done   = 0
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                total      = int(resp.headers.get("Content-Length", 0) or 0)
+                done       = 0
                 chunk_size = 65536
+                t_start    = time.monotonic()
                 with open(staged, "wb") as fh:
                     while True:
                         chunk = resp.read(chunk_size)
@@ -1019,13 +1035,27 @@ class UpdateDialog(tk.Toplevel):
                             break
                         fh.write(chunk)
                         done += len(chunk)
+                        elapsed = time.monotonic() - t_start or 0.001
+                        speed   = done / elapsed          # bytes/s
+                        speed_k = speed / 1024
+
                         if total:
                             pct = int(done * 100 / total)
-                            self.after(0, lambda p=pct: self._set_progress(
-                                f"Downloading update…  {p}%", p))
+                            remaining = ((total - done) / speed) if speed > 0 else 0
+                            eta_s = int(remaining)
+                            mb_done  = done / 1_048_576
+                            mb_total = total / 1_048_576
+                            msg = (
+                                f"Downloading…  {pct}%  "
+                                f"({mb_done:.1f} / {mb_total:.1f} MB)  "
+                                f"{speed_k:.0f} KB/s  "
+                                f"ETA {eta_s}s"
+                            )
+                            self.after(0, lambda p=pct, m=msg: self._set_progress(m, p))
                         else:
-                            self.after(0, lambda d=done: self._set_progress(
-                                f"Downloading…  {d // 1024} KB"))
+                            kb_done = done / 1024
+                            msg = f"Downloading…  {kb_done:.0f} KB  ({speed_k:.0f} KB/s)"
+                            self.after(0, lambda m=msg: self._set_progress(m))
         except Exception as exc:
             self.after(0, lambda e=str(exc): self._set_error(f"Download failed: {e}"))
             return
@@ -1170,19 +1200,145 @@ class App(tk.Tk):
         self.after(2000, self._async_update_check)
 
     def _async_update_check(self) -> None:
-        """Background thread: fetch latest release, compare versions."""
+        """Background thread: fetch latest release, compare versions.
+        Respects silent_updates from server settings and minVersion guard.
+        """
         settings = _load_update_settings()
         channel  = settings.get("channel", "stable")
 
         def _worker():
-            release = _fetch_latest_release(channel)
+            # Fetch server settings (silent_updates) and latest release in parallel
+            client_cfg = _fetch_client_settings()
+            release    = _fetch_latest_release(channel)
             if release is None:
                 return
-            latest  = release.get("version", "0.0.0")
-            if _semver_tuple(latest) > _semver_tuple(CURRENT_VERSION):
+
+            latest     = release.get("version", "0.0.0")
+            min_ver    = (release.get("minVersion") or "").strip()
+            mandatory  = bool(release.get("mandatory", False))
+            silent     = bool(client_cfg.get("silent_updates", False))
+
+            # Must be newer than current version
+            if _semver_tuple(latest) <= _semver_tuple(CURRENT_VERSION):
+                return
+
+            # minVersion: if our version is older than minVersion the update is
+            # effectively required (clients cannot keep using this version).
+            if min_ver and _semver_tuple(CURRENT_VERSION) < _semver_tuple(min_ver):
+                release["mandatory"] = True
+
+            if silent:
+                # Silent mode: download and apply immediately, no dialog
+                self.after(0, lambda r=release: self._silent_update(r))
+            else:
                 self.after(0, lambda r=release: self._show_update_dialog(r))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _silent_update(self, release: dict) -> None:
+        """Silently download, verify, and apply an update — no UI prompts."""
+        _log("[update] Silent update starting…", "info")
+        threading.Thread(
+            target=self._run_silent_update,
+            args=(release,),
+            daemon=True,
+        ).start()
+
+    def _run_silent_update(self, release: dict) -> None:
+        """Worker thread that performs a complete silent update."""
+        url             = release.get("downloadUrl", "")
+        filename        = release.get("filename", "GhostConfig.exe")
+        expected_sha256 = (release.get("sha256") or "").strip().lower()
+        version         = release.get("version", "unknown")
+
+        if not url.startswith("https://"):
+            _log("[update] Silent update aborted: download URL is not HTTPS.", "warn")
+            return
+
+        safe_name = Path(filename).name
+        if not safe_name.lower().endswith(".exe"):
+            _log("[update] Silent update aborted: invalid filename.", "warn")
+            return
+
+        stage_dir = Path(tempfile.gettempdir()) / "ghost_update_staging"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        staged = stage_dir / safe_name
+
+        # Download
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": f"GhostConfig/{CURRENT_VERSION}"}
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                with open(staged, "wb") as fh:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+        except Exception as exc:
+            _log(f"[update] Silent download failed: {exc}", "warn")
+            return
+
+        # Verify SHA-256
+        actual_sha256 = _sha256_file(staged)
+        if expected_sha256 and actual_sha256 != expected_sha256:
+            try:
+                staged.unlink()
+            except Exception:
+                pass
+            _log("[update] Silent update aborted: SHA-256 mismatch.", "warn")
+            return
+
+        # Locate updater
+        if getattr(sys, "frozen", False):
+            current_exe = Path(sys.executable).resolve()
+            updater_exe = current_exe.parent / "ghost_updater.exe"
+            updater_py  = current_exe.parent / "ghost_updater.py"
+        else:
+            current_exe = Path(sys.argv[0]).resolve()
+            updater_exe = Path(__file__).parent / "ghost_updater.exe"
+            updater_py  = Path(__file__).parent / "ghost_updater.py"
+
+        if updater_exe.exists():
+            updater_cmd = [str(updater_exe)]
+        elif updater_py.exists():
+            updater_cmd = [sys.executable, str(updater_py)]
+        else:
+            _log("[update] ghost_updater not found — silent update aborted.", "warn")
+            return
+
+        pid         = os.getpid()
+        backup_path = current_exe.with_suffix(".exe.bak")
+        cmd         = updater_cmd + [str(pid), str(current_exe), str(staged),
+                                     "--backup", str(backup_path)]
+
+        # Notify server
+        try:
+            if _API_BASE_URL:
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"{_API_BASE_URL}/api/releases/downloaded",
+                        data=json.dumps({"version": version}).encode(),
+                        headers={"Content-Type": "application/json",
+                                 "User-Agent": f"GhostConfig/{CURRENT_VERSION}"},
+                    ), timeout=5)
+        except Exception:
+            pass
+
+        try:
+            subprocess.Popen(
+                cmd,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) |
+                              getattr(subprocess, "DETACHED_PROCESS", 0),
+                close_fds=True,
+            )
+        except Exception as exc:
+            _log(f"[update] Silent update: could not launch updater: {exc}", "warn")
+            return
+
+        # Destroy the main window so the updater can replace the exe
+        self.after(300, lambda: self.destroy())
 
     def _show_update_dialog(self, release: dict) -> None:
         try:
@@ -3140,14 +3296,14 @@ class App(tk.Tk):
         tk.Label(lc_ch, text="Update Channel",
                  font=tkfont.Font(family="Segoe UI", size=9, weight="bold"),
                  fg=TEXT, bg=SURFACE2, anchor="w").pack(anchor="w")
-        tk.Label(lc_ch, text="Stable: tested releases.   Beta: early access builds.",
+        tk.Label(lc_ch, text="Stable: tested releases.   Beta: early access.   Development: internal builds.",
                  font=tkfont.Font(family="Segoe UI", size=8),
                  fg=TEXT_MUTED, bg=SURFACE2, anchor="w").pack(anchor="w", pady=(1, 0))
         _upd_settings = _load_update_settings()
         self._upd_channel_var = tk.StringVar(value=_upd_settings.get("channel", "stable"))
         ch_combo = ttk.Combobox(ch_row, textvariable=self._upd_channel_var,
-                                values=["stable", "beta"],
-                                state="readonly", width=9, font=F_BODY)
+                                values=["stable", "beta", "development"],
+                                state="readonly", width=12, font=F_BODY)
         ch_combo.pack(side="right", padx=(0, 2), ipady=4)
 
         def _on_channel_change(_e=None):
