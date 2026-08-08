@@ -138,5 +138,33 @@
     "license_key": "GHOST-AA…",
     "result": "Admin key login successful (tier=ADMIN)",
     "error": ""
+  },
+  {
+    "event_type": "admin_key_login_success",
+    "username": "__admin_key__",
+    "user_id": "a81a0fbe5d81",
+    "timestamp": "2026-08-08T01:49:09Z",
+    "ip": "192.168.0.129",
+    "geo": "N/A",
+    "device_name": "HOST-VT2IN8",
+    "os_info": "Windows 11 (10.0.26200)",
+    "browser": "GhostConfig/4.0",
+    "license_key": "GHOST-AA…",
+    "result": "Admin key login successful (tier=ADMIN)",
+    "error": ""
+  },
+  {
+    "event_type": "admin_key_login_success",
+    "username": "__admin_key__",
+    "user_id": "a81a0fbe5d81",
+    "timestamp": "2026-08-08T01:56:05Z",
+    "ip": "192.168.0.129",
+    "geo": "N/A",
+    "device_name": "HOST-VT2IN8",
+    "os_info": "Windows 11 (10.0.26200)",
+    "browser": "GhostConfig/4.0",
+    "license_key": "GHOST-AA…",
+    "result": "Admin key login successful (tier=ADMIN)",
+    "error": ""
   }
 ]
