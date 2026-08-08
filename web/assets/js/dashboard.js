@@ -1291,6 +1291,8 @@
     _el('db-loading')     ?.setAttribute('hidden', '');
     _el('db-error-state') ?.setAttribute('hidden', '');
     _el('db-content')     ?.removeAttribute('hidden');
+    console.log('loading_hidden');
+    console.log('content_shown');
   }
 
   /* ── Boot sequence ───────────────────────────────────────────────────────── */
@@ -1326,8 +1328,10 @@
 
     try {
       const account = await GhostDashboard.loadAccount();
+      console.log('dashboard_fetch_complete');
 
       // Populate all sections
+      console.log('dashboard_render_start');
       try { renderUserInfo(account); }
         catch (err) { console.error("renderUserInfo failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
 
@@ -1355,6 +1359,8 @@
       // Wire reset modal after key is loaded
       try { initResetModal(account.license.key); }
         catch (err) { console.error("initResetModal failed:", err); console.error(err.stack); console.error("license.key:", account.license?.key); throw err; }
+
+      console.log('dashboard_render_complete');
 
       // Reveal content — stop here; never fall through to showError()
       showContent();

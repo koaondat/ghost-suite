@@ -1841,6 +1841,8 @@ section { padding: 100px 0; }
   color: var(--muted);
   font-size: 0.9rem;
 }
+/* [hidden] must win over the display:flex rule above */
+.db-loading[hidden] { display: none; }
 
 .db-loading-spinner {
   width: 36px;
@@ -1862,6 +1864,9 @@ section { padding: 100px 0; }
   color: var(--muted);
   text-align: center;
 }
+/* [hidden] must win over the display:flex rule above */
+.db-error-state[hidden],
+.db-empty-state[hidden] { display: none; }
 .db-error-state svg,
 .db-empty-state svg { color: var(--border); }
 .db-error-state h3  { font-size: 1rem; font-weight: 700; color: var(--text); }
