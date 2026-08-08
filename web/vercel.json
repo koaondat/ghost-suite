@@ -12,9 +12,11 @@
           "dashboard.html",
           "pricing.html",
           "checkout.html",
+          "order-success.html",
           "admin.html",
           "assets/**",
           "public/**",
+          "downloads/**",
           "api/paypal.js",
           "api/checkout.js",
           "api/stripe_webhook.js"
@@ -25,6 +27,14 @@
   "routes": [
     {
       "src": "/api/(.*)",
+      "dest": "server.js"
+    },
+    {
+      "src": "/download/latest",
+      "dest": "server.js"
+    },
+    {
+      "src": "/dl/(.*)",
       "dest": "server.js"
     },
     {

@@ -768,25 +768,20 @@
    * never exposed to the frontend.
    */
   async function _requestDownload (token, licenseKey) {
-    // Fetch the current production download URL from server config.
-    // Falls back to /dl/GhostConfig.exe if not configured.
+    // All downloads go through /download/latest — the server resolves the
+    // current configured release so this never needs updating per-version.
     try {
-      const cfgRes  = await fetch('/api/download/current');
-      const cfg     = await cfgRes.json().catch(() => ({}));
-      const dlUrl   = (cfg.ok && cfg.url) ? cfg.url : '/dl/GhostConfig.exe';
-      const dlName  = (cfg.ok && cfg.filename) ? cfg.filename : 'GhostConfig.exe';
-
-      const a   = document.createElement('a');
-      a.href    = dlUrl;
-      a.download = dlName;
+      const a    = document.createElement('a');
+      a.href     = '/download/latest';
+      a.download = 'GhostConfig.exe';
       document.body.appendChild(a);
       a.click();
       a.remove();
       toast('Download started — GhostConfig.exe', 'success');
     } catch (_) {
-      // Fallback: direct link
-      const a   = document.createElement('a');
-      a.href    = '/dl/GhostConfig.exe';
+      // Fallback: same canonical URL
+      const a    = document.createElement('a');
+      a.href     = '/download/latest';
       a.download = 'GhostConfig.exe';
       document.body.appendChild(a);
       a.click();

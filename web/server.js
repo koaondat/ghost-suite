@@ -1267,7 +1267,7 @@ app.post('/api/admin/customers/:email/reset-hwid', _requireAdminSession, async (
 // ── Downloads endpoints ───────────────────────────────────────────────────────
 app.get('/api/admin/downloads', _requireAdminSession, async (req, res) => {
   const dl = await _redisGet('ghost:downloads') || {
-    version: '—', filename: 'GhostConfig.exe', url: '/dl/GhostConfig.exe',
+    version: 'v2', filename: 'GhostConfig.exe', url: '/downloads/GhostConfig-v2.exe',
     changelog: '', release_date: '', download_count: 0, history: [],
   };
   // current_version is an alias for version (admin.js reads current_version)
@@ -1287,7 +1287,7 @@ app.post('/api/admin/downloads', _requireAdminSession, async (req, res) => {
       changelog: prev.changelog, release_date: prev.release_date,
       replaced_at: new Date().toISOString() });
   }
-  const updated = { version, filename: filename || 'GhostConfig.exe', url: url || '/dl/GhostConfig.exe',
+  const updated = { version, filename: filename || 'GhostConfig.exe', url: url || '/downloads/GhostConfig-v2.exe',
     changelog: changelog || '',
     release_date: release_date || new Date().toISOString().slice(0, 10),
     download_count: prev.download_count || 0, history };
@@ -1820,8 +1820,7 @@ app.get('/api/order/:orderId/download', async (req, res) => {
       if (raw) {
         const record = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (record.delivery_status === 'delivered' || record.license_key) {
-          // Redirect to the direct download
-          return res.redirect('/dl/GhostConfig.exe');
+          return res.redirect('/download/latest');
         }
       }
     } catch (_) {}
@@ -2077,32 +2076,70 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // ── GET /api/download/current — public download redirect ─────────────────────
-// Returns the current production download URL from Redis settings, or falls
-// back to the bundled /dl/GhostConfig.exe if not configured in admin.
-app.get('/api/download/current', async (_req, res) => {
+// ── GET /api/downloads/current — shared download config endpoint ──────────────
+// Returns the current configured download URL and filename from admin settings.
+// Every page that needs a download URL should call this instead of hardcoding.
+// Response: { ok, filename, url, version, platform }
+app.get('/api/downloads/current', async (_req, res) => {
   try {
     const dl = await _redisGet('ghost:downloads');
-    const url = dl && dl.url ? dl.url : null;
-    return res.json({ ok: true, url: url || '/dl/GhostConfig.exe', filename: (dl && dl.filename) || 'GhostConfig.exe' });
+    return res.json({
+      ok:       true,
+      filename: (dl && dl.filename) || 'GhostConfig.exe',
+      url:      (dl && dl.url)      || '/downloads/GhostConfig-v2.exe',
+      version:  (dl && dl.version)  || 'v2',
+      platform: 'Windows x64',
+    });
   } catch (_) {
-    return res.json({ ok: true, url: '/dl/GhostConfig.exe', filename: 'GhostConfig.exe' });
+    return res.json({ ok: true, filename: 'GhostConfig.exe', url: '/downloads/GhostConfig-v2.exe', version: 'v2', platform: 'Windows x64' });
   }
 });
 
-// ── GET /dl/GhostConfig.exe — production binary download ─────────────────────
-// Serves the bundled GhostConfig.exe with a forced-download Content-Disposition.
-// The admin can configure an external URL via the Downloads admin panel instead;
-// this route is the self-hosted fallback when no external URL is set.
-app.get('/dl/GhostConfig.exe', (req, res) => {
-  const filePath = path.join(WEB_ROOT, 'downloads', 'GhostConfig.exe');
-  res.setHeader('Content-Disposition', 'attachment; filename="GhostConfig.exe"');
+// ── GET /api/download/current — legacy alias (kept for back-compat) ──────────
+app.get('/api/download/current', async (req, res) => {
+  return res.redirect('/api/downloads/current');
+});
+
+// ── GET /download/latest — permanent customer download link ──────────────────
+// This is the ONE canonical URL the entire site uses for every download button.
+// It reads the current configured release from admin/Redis and serves the file
+// with Content-Disposition so the browser saves it as "GhostConfig.exe"
+// regardless of the versioned filename on disk/CDN.
+// To publish v3: update the release config once in admin — nothing else changes.
+app.get('/download/latest', async (_req, res) => {
+  let url      = '/downloads/GhostConfig-v2.exe';
+  let filename = 'GhostConfig.exe';
+  try {
+    const dl = await _redisGet('ghost:downloads');
+    if (dl && dl.url)      url      = dl.url;
+    if (dl && dl.filename) filename = dl.filename;
+  } catch (_) {}
+
+  // If the target is an external URL (http/https), redirect directly.
+  if (/^https?:\/\//i.test(url)) {
+    return res.redirect(302, url);
+  }
+
+  // Local file — serve with Content-Disposition so the browser always
+  // presents the download as "GhostConfig.exe".
+  const filePath = path.join(WEB_ROOT, url.replace(/^\//, ''));
+  res.setHeader('Content-Disposition', `attachment; filename="GhostConfig.exe"`);
   res.setHeader('Content-Type', 'application/octet-stream');
   res.sendFile(filePath, err => {
     if (err) {
-      console.error('[ghost/download] GhostConfig.exe not found at', filePath);
-      res.status(404).json({ ok: false, error: 'Download file not found. Please contact support.' });
+      console.error('[ghost/download/latest] file not found at', filePath);
+      // Final fallback: try the hardcoded v2 path
+      const fallback = path.join(WEB_ROOT, 'downloads', 'GhostConfig-v2.exe');
+      res.sendFile(fallback, err2 => {
+        if (err2) res.status(404).json({ ok: false, error: 'Download not available. Please contact support.' });
+      });
     }
   });
+});
+
+// ── GET /dl/GhostConfig.exe — legacy alias (kept for back-compat) ────────────
+app.get('/dl/GhostConfig.exe', (_req, res) => {
+  return res.redirect(302, '/download/latest');
 });
 
 // ── Shared customer auth middleware ───────────────────────────────────────────

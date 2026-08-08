@@ -308,21 +308,18 @@
         dlBtn.disabled    = true;
         dlBtn.textContent = 'Preparing download\u2026';
         try {
-          // Ask server for the current configured download URL
-          const cfgRes = await fetch('/api/download/current');
-          const cfg    = await cfgRes.json().catch(() => ({}));
-          const dlUrl  = (cfg.ok && cfg.url)      ? cfg.url      : '/dl/GhostConfig.exe';
-          const dlName = (cfg.ok && cfg.filename) ? cfg.filename : 'GhostConfig.exe';
-          const a   = document.createElement('a');
-          a.href     = dlUrl;
-          a.download = dlName;
+          // /download/latest resolves the current release server-side —
+          // no need to fetch config separately.
+          const a    = document.createElement('a');
+          a.href     = '/download/latest';
+          a.download = 'GhostConfig.exe';
           document.body.appendChild(a);
           a.click();
           a.remove();
         } catch (err) {
-          // Hard fallback
-          const a   = document.createElement('a');
-          a.href     = '/dl/GhostConfig.exe';
+          // Hard fallback — same canonical URL
+          const a    = document.createElement('a');
+          a.href     = '/download/latest';
           a.download = 'GhostConfig.exe';
           document.body.appendChild(a);
           a.click();

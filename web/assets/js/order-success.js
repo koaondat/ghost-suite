@@ -383,9 +383,9 @@
     var btn = document.getElementById('os-download-btn');
     if (!btn) return;
 
-    var downloadUrl = '/dl/GhostConfig.exe';
+    var downloadUrl = '/download/latest';
     try {
-      var r = await fetch('/api/download/current');
+      var r = await fetch('/api/downloads/current');
       var d = await r.json().catch(function() { return {}; });
       if (d.ok && d.url) downloadUrl = d.url;
     } catch (_) {}
@@ -394,7 +394,7 @@
     btn.parentNode.replaceChild(fresh, btn);
     fresh.addEventListener('click', function() {
       var a = document.createElement('a');
-      a.href     = downloadUrl;
+      a.href     = '/download/latest';
       a.download = 'GhostConfig.exe';
       a.click();
       toast('✔ Download started', 'success', 2000);

@@ -1171,7 +1171,7 @@
       setText('dlReleaseDate', data.release_date || '—');
       setText('dlFilename',    data.filename     || 'GhostConfig.exe');
       setText('dlPlatform',    data.platform     || 'Windows x64');
-      setText('dlUrl',         data.url || data.download_url || '/dl/GhostConfig.exe');
+      setText('dlUrl',         data.url || data.download_url || '/downloads/GhostConfig-v2.exe');
       setText('dlCount',       data.download_count ?? 0);
       $('dlChangelog').value = data.changelog || '';
       $('dlVersionBadge').textContent = v || 'None';
@@ -1212,7 +1212,7 @@
     const payload = {
       current_version: $('dlNewVersion').value.trim(),
       release_date:    $('dlNewReleaseDate').value,
-      url:             ($('dlNewUrl').value.trim()) || '/dl/GhostConfig.exe',
+      url:             ($('dlNewUrl').value.trim()) || '/downloads/GhostConfig-v2.exe',
       filename:        ($('dlNewFilename').value.trim()) || 'GhostConfig.exe',
       changelog:       $('dlNewChangelog').value.trim(),
     };
