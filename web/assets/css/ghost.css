@@ -1782,6 +1782,15 @@ section { padding: 100px 0; }
   gap: 16px;
 }
 
+/* V2 grid — 4 equal columns on desktop */
+.db-support-grid--v2 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+/* Legacy horizontal card (kept for fallback) */
 .db-support-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1790,8 +1799,10 @@ section { padding: 100px 0; }
   display: flex;
   align-items: center;
   gap: 16px;
-  transition: border-color var(--transition), box-shadow var(--transition);
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
   cursor: pointer;
+  color: inherit;
+  text-decoration: none;
 }
 .db-support-card:hover { border-color: rgba(168,85,247,0.4); box-shadow: var(--glow-purple); }
 .db-support-card h3 { font-size: 0.95rem; font-weight: 700; margin-bottom: 4px; color: var(--text); }
@@ -1811,9 +1822,121 @@ section { padding: 100px 0; }
 }
 .db-support-icon--discord { background: rgba(88,101,242,0.15); color: #7289da; }
 .db-support-icon--cyan    { background: rgba(34,211,238,0.1);  color: var(--cyan); }
+.db-support-icon--email   { background: rgba(168,85,247,0.1);  color: var(--accent); }
+.db-support-icon--green   { background: rgba(34,197,94,0.12);  color: #22c55e; }
 
 .db-support-arrow { color: var(--muted); margin-left: auto; flex-shrink: 0; transition: transform var(--transition); }
 .db-support-card:hover .db-support-arrow { transform: translateX(3px); color: var(--text); }
+
+/* ── V2 vertical support card ────────────────────────────── */
+.db-support-card--v2 {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 24px;
+  gap: 0;
+  position: relative;
+  overflow: hidden;
+}
+.db-support-card--v2::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+.db-support-card--v2:hover::before { opacity: 1; }
+.db-support-card--v2:hover {
+  border-color: rgba(168,85,247,0.45);
+  box-shadow: 0 0 32px rgba(168,85,247,0.22), 0 8px 24px rgba(0,0,0,0.3);
+  transform: translateY(-3px);
+}
+.db-support-card--v2:hover .db-support-arrow { transform: translateX(4px); color: var(--accent); }
+
+/* Muted/disabled card */
+.db-support-card--muted { cursor: default; opacity: 0.75; }
+.db-support-card--muted:hover {
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
+}
+.db-support-card--muted::before { display: none; }
+
+/* Card sections */
+.db-support-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  gap: 12px;
+}
+
+.db-support-card-body {
+  flex: 1;
+  margin-bottom: 20px;
+}
+.db-support-card-body h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.db-support-card-body p {
+  font-size: 0.83rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.db-support-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+}
+.db-support-card-footer .btn { pointer-events: none; }
+
+/* Override btn sizing for card footer */
+.db-support-card--v2 .btn-sm { padding: 8px 16px; font-size: 0.8rem; }
+.db-support-btn-discord { background: #5865f2; color: #fff; box-shadow: none; padding: 8px 14px !important; font-size: 0.8rem !important; border-radius: var(--radius-sm); }
+
+/* ── Support status badges ────────────────────────────────── */
+.db-support-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.db-support-badge--online {
+  background: rgba(34,197,94,0.12);
+  color: #4ade80;
+  border: 1px solid rgba(34,197,94,0.25);
+}
+.db-support-badge--soon {
+  background: rgba(168,85,247,0.1);
+  color: var(--accent);
+  border: 1px solid rgba(168,85,247,0.2);
+}
+.db-support-badge--operational {
+  background: rgba(34,197,94,0.1);
+  color: #4ade80;
+  border: 1px solid rgba(34,197,94,0.2);
+}
+.db-support-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4ade80;
+  animation: pulse 2s infinite;
+  flex-shrink: 0;
+}
+.db-support-badge-dot--green { background: #4ade80; }
 
 /* ── Settings ────────────────────────────────────────────── */
 .db-settings-group-title {
@@ -1952,6 +2075,7 @@ section { padding: 100px 0; }
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 1100px) {
   .db-stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .db-support-grid--v2 { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 860px) {
@@ -1971,6 +2095,7 @@ section { padding: 100px 0; }
   .db-key-actions .btn { width: 100%; justify-content: center; }
   .db-download-grid   { grid-template-columns: 1fr; }
   .db-support-grid    { grid-template-columns: 1fr; }
+  .db-support-grid--v2 { grid-template-columns: 1fr; }
   .db-detail-row      { flex-direction: column; gap: 4px; }
   .db-detail-label    { min-width: unset; }
   .db-welcome         { flex-direction: column; }

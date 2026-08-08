@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>System Status — Ghost</title>
+  <meta name="description" content="Live status for Ghost services — authentication, licensing, payments, downloads, and more." />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="/assets/css/ghost.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/><path d='M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z' fill='white'/></svg>" />
+  <style>
+    /* ── Status page–specific styles ── */
+    .status-hero { padding: 140px 0 52px; text-align: center; position: relative; overflow: hidden; }
+    .status-hero::before {
+      content: '';
+      position: absolute;
+      width: 600px; height: 500px;
+      border-radius: 50%;
+      background: radial-gradient(ellipse at center, rgba(168,85,247,0.10) 0%, transparent 70%);
+      top: -80px; left: 50%;
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+    .status-hero h1 { margin-bottom: 12px; }
+    .status-hero p  { color: var(--muted); font-size: 1rem; max-width: 480px; margin-inline: auto; }
+
+    .status-overall {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 22px;
+      border-radius: 40px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      margin-top: 24px;
+      letter-spacing: 0.02em;
+    }
+    .status-overall--ok {
+      background: rgba(34,197,94,0.12);
+      color: #4ade80;
+      border: 1px solid rgba(34,197,94,0.3);
+    }
+    .status-overall-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #4ade80;
+      animation: pulse 2s infinite;
+      flex-shrink: 0;
+    }
+
+    .status-section { padding: 24px 0 80px; }
+
+    .status-timestamp {
+      text-align: center;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 36px;
+    }
+    .status-timestamp strong { color: var(--text); }
+
+    .status-group { margin-bottom: 48px; }
+    .status-group-title {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .status-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 10px;
+      transition: border-color var(--transition), box-shadow var(--transition);
+      position: relative;
+      overflow: hidden;
+    }
+    .status-card::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      border-radius: 3px 0 0 3px;
+    }
+    .status-card.online::before   { background: #22c55e; }
+    .status-card.offline::before  { background: #ef4444; }
+    .status-card.degraded::before { background: #f59e0b; }
+
+    .status-card:hover { border-color: rgba(168,85,247,0.3); box-shadow: var(--glow-purple); }
+
+    .status-indicator {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-indicator.online   { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.6); animation: pulse 3s infinite; }
+    .status-indicator.offline  { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.6); }
+    .status-indicator.degraded { background: #f59e0b; box-shadow: 0 0 8px rgba(245,158,11,0.6); animation: pulse 1.5s infinite; }
+
+    .status-service-name {
+      font-size: 0.93rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 2px;
+    }
+    .status-service-sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .status-meta {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .status-meta-item { display: flex; flex-direction: column; gap: 2px; }
+    .status-meta-value {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--text);
+      font-family: 'Fira Code', monospace;
+    }
+    .status-meta-value.online  { color: #4ade80; }
+    .status-meta-value.offline { color: #f87171; }
+    .status-meta-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+    }
+    .status-badge-text {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 20px;
+    }
+    .status-badge-text.online   { background: rgba(34,197,94,0.12); color: #4ade80; border: 1px solid rgba(34,197,94,0.25); }
+    .status-badge-text.offline  { background: rgba(239,68,68,0.12);  color: #f87171; border: 1px solid rgba(239,68,68,0.25); }
+    .status-badge-text.degraded { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.25); }
+
+    .status-uptime-bar {
+      display: flex;
+      gap: 3px;
+      margin-top: 24px;
+    }
+    .uptime-bar-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .uptime-segment {
+      flex: 1;
+      height: 28px;
+      border-radius: 3px;
+      background: rgba(34,197,94,0.55);
+      position: relative;
+      cursor: default;
+    }
+    .uptime-segment.ok      { background: rgba(34,197,94,0.55); }
+    .uptime-segment.partial { background: rgba(245,158,11,0.55); }
+    .uptime-segment.down    { background: rgba(239,68,68,0.55); }
+
+    @media (max-width: 640px) {
+      .status-card { grid-template-columns: auto 1fr; }
+      .status-meta  { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════ NAVIGATION -->
+<header class="nav" role="banner">
+  <div class="container">
+    <nav class="nav-inner" aria-label="Primary navigation">
+
+      <a href="index.html" class="nav-logo" aria-label="Ghost home">
+        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
+          <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
+          <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
+          <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+        </svg>
+        Ghost
+      </a>
+
+      <ul class="nav-links" role="list">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="index.html#features">Features</a></li>
+        <li><a href="pricing.html">Pricing</a></li>
+        <li><a href="#" class="active">Status</a></li>
+      </ul>
+
+      <div class="nav-cta">
+        <a href="login.html" class="btn btn-ghost">Login</a>
+        <a href="dashboard.html" class="btn btn-ghost">Dashboard</a>
+        <a href="checkout.html" class="btn btn-primary">Get Ghost</a>
+      </div>
+
+      <button class="nav-toggle" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+
+    </nav>
+
+    <div class="nav-mobile" role="navigation" aria-label="Mobile navigation">
+      <a href="index.html">Home</a>
+      <a href="index.html#features">Features</a>
+      <a href="pricing.html">Pricing</a>
+      <a href="#">Status</a>
+      <div class="mobile-cta">
+        <a href="login.html" class="btn btn-ghost">Login</a>
+        <a href="checkout.html" class="btn btn-primary">Get Ghost</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════ HERO -->
+<main>
+<section class="status-hero" aria-labelledby="status-heading">
+  <div class="container">
+    <span class="section-label">Infrastructure</span>
+    <h1 id="status-heading">System Status</h1>
+    <p>Live health and performance indicators for all Ghost services and servers.</p>
+    <div class="status-overall status-overall--ok" aria-live="polite" id="overall-status">
+      <span class="status-overall-dot"></span>
+      All Systems Operational
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════ STATUS CARDS -->
+<section class="status-section" aria-label="Service status">
+  <div class="container">
+
+    <p class="status-timestamp">Last checked: <strong id="last-checked">—</strong> &nbsp;·&nbsp; Auto-refreshes every 60 seconds</p>
+
+    <!-- Core Services -->
+    <div class="status-group">
+      <div class="status-group-title">Core Services</div>
+
+      <div class="status-card online" data-service="auth" aria-label="Authentication Server status">
+        <span class="status-indicator online" aria-label="Online"></span>
+        <div>
+          <div class="status-service-name">Authentication Server</div>
+          <div class="status-service-sub">User login, session management, token validation</div>
+        </div>
+        <div class="status-meta">
+          <div class="status-meta-item">
+            <span class="status-meta-value online" id="auth-ms">34 ms</span>
+            <span class="status-meta-label">Response</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-meta-value" id="auth-uptime">99.99%</span>
+            <span class="status-meta-label">30d Uptime</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-badge-text online" id="auth-badge">Online</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-card online" data-service="license" aria-label="License Server status">
+        <span class="status-indicator online" aria-label="Online"></span>
+        <div>
+          <div class="status-service-name">License Server</div>
+          <div class="status-service-sub">License validation, activation, and revocation</div>
+        </div>
+        <div class="status-meta">
+          <div class="status-meta-item">
+            <span class="status-meta-value online" id="license-ms">28 ms</span>
+            <span class="status-meta-label">Response</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-meta-value" id="license-uptime">99.97%</span>
+            <span class="status-meta-label">30d Uptime</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-badge-text online" id="license-badge">Online</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-card online" data-service="api" aria-label="API status">
+        <span class="status-indicator online" aria-label="Online"></span>
+        <div>
+          <div class="status-service-name">API</div>
+          <div class="status-service-sub">REST endpoints powering the dashboard and app</div>
+        </div>
+        <div class="status-meta">
+          <div class="status-meta-item">
+            <span class="status-meta-value online" id="api-ms">19 ms</span>
+            <span class="status-meta-label">Response</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-meta-value" id="api-uptime">99.99%</span>
+            <span class="status-meta-label">30d Uptime</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-badge-text online" id="api-badge">Online</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Commerce & Distribution -->
+    <div class="status-group">
+      <div class="status-group-title">Commerce &amp; Distribution</div>
+
+      <div class="status-card online" data-service="payments" aria-label="Payment Processing status">
+        <span class="status-indicator online" aria-label="Online"></span>
+        <div>
+          <div class="status-service-name">Payment Processing</div>
+          <div class="status-service-sub">Stripe &amp; PayPal checkout and webhook processing</div>
+        </div>
+        <div class="status-meta">
+          <div class="status-meta-item">
+            <span class="status-meta-value online" id="payments-ms">62 ms</span>
+            <span class="status-meta-label">Response</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-meta-value" id="payments-uptime">99.95%</span>
+            <span class="status-meta-label">30d Uptime</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-badge-text online" id="payments-badge">Online</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-card online" data-service="downloads" aria-label="Downloads status">
+        <span class="status-indicator online" aria-label="Online"></span>
+        <div>
+          <div class="status-service-name">Downloads</div>
+          <div class="status-service-sub">GhostConfig.exe delivery and version management</div>
+        </div>
+        <div class="status-meta">
+          <div class="status-meta-item">
+            <span class="status-meta-value online" id="downloads-ms">41 ms</span>
+            <span class="status-meta-label">Response</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-meta-value" id="downloads-uptime">100%</span>
+            <span class="status-meta-label">30d Uptime</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-badge-text online" id="downloads-badge">Online</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-card online" data-service="website" aria-label="Website status">
+        <span class="status-indicator online" aria-label="Online"></span>
+        <div>
+          <div class="status-service-name">Website</div>
+          <div class="status-service-sub">ghost.gg storefront, dashboard, and landing pages</div>
+        </div>
+        <div class="status-meta">
+          <div class="status-meta-item">
+            <span class="status-meta-value online" id="website-ms">15 ms</span>
+            <span class="status-meta-label">Response</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-meta-value" id="website-uptime">100%</span>
+            <span class="status-meta-label">30d Uptime</span>
+          </div>
+          <div class="status-meta-item">
+            <span class="status-badge-text online" id="website-badge">Online</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 90-day uptime bar -->
+    <div class="status-group">
+      <div class="status-group-title">90-Day Uptime History</div>
+      <div class="uptime-bar-label">
+        <span>90 days ago</span>
+        <span>Today</span>
+      </div>
+      <div class="status-uptime-bar" id="uptime-bar" aria-label="90-day uptime history"></div>
+    </div>
+
+    <!-- Subscribe notice -->
+    <div style="text-align:center;padding-top:12px;">
+      <p style="color:var(--muted);font-size:0.875rem;margin-bottom:16px;">Get notified about incidents and maintenance windows.</p>
+      <a href="https://discord.gg/E6SWZ8PpkK" target="_blank" rel="noopener noreferrer" class="btn btn-discord" style="display:inline-flex;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.04.033.054a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
+        Subscribe on Discord
+      </a>
+    </div>
+
+  </div>
+</section>
+</main>
+
+<!-- ═══════════════════════════════════════════════ FOOTER -->
+<footer class="footer" role="contentinfo">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="index.html" class="nav-logo" style="margin-bottom:14px;display:inline-flex;">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width:24px;height:24px;">
+            <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
+            <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
+            <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
+            <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+          </svg>
+          Ghost
+        </a>
+        <p>Premium Windows configuration utility for power users and professionals.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="pricing.html">Pricing</a></li>
+          <li><a href="dashboard.html#downloads">Downloads</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Support</h4>
+        <ul>
+          <li><a href="faq.html">FAQ</a></li>
+          <li><a href="status.html">System Status</a></li>
+          <li><a href="https://discord.gg/E6SWZ8PpkK" target="_blank" rel="noopener noreferrer">Discord</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Account</h4>
+        <ul>
+          <li><a href="login.html">Login</a></li>
+          <li><a href="register.html">Register</a></li>
+          <li><a href="dashboard.html">Dashboard</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© 2025 Ghost. All rights reserved.</p>
+      <div class="footer-legal">
+        <a href="#">Privacy Policy</a>
+        <a href="#">Terms of Service</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // ── Nav
+  window.addEventListener('scroll', () => {
+    document.querySelector('.nav').classList.toggle('scrolled', window.scrollY > 10);
+  });
+  const navToggle = document.querySelector('.nav-toggle');
+  const navMobile = document.querySelector('.nav-mobile');
+  if (navToggle && navMobile) {
+    navToggle.addEventListener('click', () => {
+      const open = navMobile.classList.toggle('open');
+      navToggle.setAttribute('aria-expanded', open);
+    });
+  }
+
+  // ── Build uptime bar (90 segments; mostly green, one partial ~60 days ago)
+  const bar = document.getElementById('uptime-bar');
+  if (bar) {
+    for (let i = 0; i < 90; i++) {
+      const seg = document.createElement('div');
+      seg.className = 'uptime-segment ' + (i === 31 ? 'partial' : 'ok');
+      seg.title = i === 31 ? 'Partial outage' : 'Operational';
+      bar.appendChild(seg);
+    }
+  }
+
+  // ── Timestamp
+  function updateTime() {
+    const el = document.getElementById('last-checked');
+    if (el) {
+      const now = new Date();
+      el.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+  }
+  updateTime();
+  setInterval(updateTime, 1000);
+
+  // ── Simulated live ping — jitter the response times slightly each minute
+  const services = [
+    { id: 'auth',      base: 34 },
+    { id: 'license',   base: 28 },
+    { id: 'api',       base: 19 },
+    { id: 'payments',  base: 62 },
+    { id: 'downloads', base: 41 },
+    { id: 'website',   base: 15 },
+  ];
+  function refreshPings() {
+    services.forEach(s => {
+      const el = document.getElementById(s.id + '-ms');
+      if (el) {
+        const jitter = Math.floor(Math.random() * 18) - 9;
+        el.textContent = Math.max(5, s.base + jitter) + ' ms';
+      }
+    });
+  }
+  setInterval(refreshPings, 60000);
+</script>
+
+</body>
+</html>
