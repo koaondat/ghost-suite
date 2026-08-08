@@ -2353,6 +2353,8 @@ app.get('/:page(login|register|dashboard|pricing|checkout)', (req, res) =>
 
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
+app.use(express.static(path.join(WEB_ROOT, 'public')));
+
 app.use(express.static(WEB_ROOT, {
   index: 'index.html',
   setHeaders (res, filePath) {
