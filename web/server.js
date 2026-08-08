@@ -1791,26 +1791,56 @@ app.get('/api/admin/releases',                       _requireAdminSession, (req,
 app.get('/api/admin/releases/stats',                 _requireAdminSession, (req, res) => _proxyToApi(req, res));
 app.post('/api/admin/releases',                      _requireAdminSession, (req, res) => _proxyToApi(req, res));
 app.post('/api/admin/releases/upload',               _requireAdminSession, async (req, res) => {
-  // Multipart upload must be forwarded as raw — content-type boundary must pass through.
+  // Multipart upload must be forwarded raw — the content-type boundary must pass through.
   // For Vercel deployments, large file uploads should target the Python backend directly
   // via GHOST_API_URL since Vercel has a 4.5 MB body limit.
-  if (!GHOST_API_URL) return res.status(503).json({ ok: false, error: 'API service unavailable.' });
+  if (!GHOST_API_URL) {
+    return res.status(503).json({ ok: false, error: 'Upload service unavailable: GHOST_API_URL is not configured.' });
+  }
   const { default: fetch } = await import('node-fetch');
   const targetUrl = `${GHOST_API_URL}/api/admin/releases/upload`;
   try {
+    // Build a clean forwarding header set:
+    //   • Strip 'host' (must not be forwarded — it confuses the upstream server).
+    //   • Strip 'cookie' (Node session cookie is meaningless to the Python backend).
+    //   • Inject X-Admin-Key so the Python require_admin gate passes.
+    //   • Keep content-type (multipart boundary), content-length, and user-agent intact.
+    const forwardHeaders = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      const lk = k.toLowerCase();
+      if (lk === 'host' || lk === 'cookie') continue;
+      forwardHeaders[lk] = v;
+    }
+    if (GHOST_ADMIN_API_KEY) forwardHeaders['x-admin-key'] = GHOST_ADMIN_API_KEY;
+
     const upstream = await fetch(targetUrl, {
-      method: 'POST',
-      headers: {
-        ...req.headers,
-        host: undefined,
-        'x-admin-key': GHOST_ADMIN_API_KEY || '',
-      },
-      body: req,
+      method:   'POST',
+      headers:  forwardHeaders,
+      body:     req,           // pipe the raw multipart stream straight through
       redirect: 'follow',
     });
-    const data = await upstream.json().catch(() => ({}));
+
+    // Always parse as text first so we can return a useful error if the
+    // upstream response body is not JSON (e.g. an HTML Flask traceback).
+    const text = await upstream.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      console.error('[ghost/upload] upstream returned non-JSON (status=%d): %s',
+                    upstream.status, text.slice(0, 300));
+      return res.status(upstream.status === 200 || upstream.status === 201
+        ? 502
+        : upstream.status
+      ).json({
+        ok:    false,
+        error: `Upload backend error (HTTP ${upstream.status}): upstream returned a non-JSON response`,
+      });
+    }
+
     return res.status(upstream.status).json(data);
   } catch (err) {
+    console.error('[ghost/upload] fetch error: %s', err.message);
     return res.status(502).json({ ok: false, error: 'Upload proxy failed: ' + err.message });
   }
 });

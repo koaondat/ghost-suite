@@ -2553,7 +2553,7 @@
   async function relUploadAndPublish () {
     const file    = $('relFileInput')?.files?.[0];
     const version = $('relUploadVersion')?.value.trim();
-    if (!file) { showAlert('relUploadAlert', 'error', 'Select a GhostConfig.exe first.'); return; }
+    if (!file)    { showAlert('relUploadAlert', 'error', 'Select a GhostConfig.exe first.'); return; }
     if (!version) { showAlert('relUploadAlert', 'error', 'Enter a version number (e.g. 2.5.0).'); return; }
 
     setBusy('relUploadPublishBtn', true);
@@ -2563,10 +2563,20 @@
     const progressLbl  = $('relUploadProgressLabel');
     if (progressWrap) progressWrap.style.display = '';
 
-    // ── Step 1: Upload EXE ────────────────────────────────────────────
+    // Build the multipart payload — the upload endpoint validates, saves, and
+    // publishes the release in one atomic step, so no separate publish call needed.
+    const notes = ($('relUploadNotes')?.value || '')
+      .split('\n')
+      .map(s => s.replace(/^[•·\-]\s*/, '').trim())
+      .filter(Boolean);
+
     const fd = new FormData();
-    fd.append('file', file);
-    fd.append('version', version);
+    fd.append('file',          file);
+    fd.append('version',       version);
+    fd.append('channel',       $('relUploadChannel')?.value    || 'stable');
+    fd.append('release_notes', notes.join('\n'));
+    fd.append('mandatory',     $('relUploadMandatory')?.checked  ? 'true' : 'false');
+    fd.append('set_current',   $('relUploadSetCurrent')?.checked ? 'true' : 'false');
 
     let uploadData = null;
     try {
@@ -2577,13 +2587,23 @@
         xhr.upload.addEventListener('progress', e => {
           if (e.lengthComputable && progressBar && progressLbl) {
             const pct = Math.round(e.loaded * 100 / e.total);
-            progressBar.style.width = pct + '%';
+            progressBar.style.width  = pct + '%';
             progressLbl.textContent = `Uploading…  ${pct}%  (${_fmtBytes(e.loaded)} / ${_fmtBytes(e.total)})`;
           }
         });
         xhr.addEventListener('load', () => {
-          try { uploadData = JSON.parse(xhr.responseText); }
-          catch (_) { uploadData = { ok: false, error: 'Invalid response' }; }
+          let parsed;
+          try {
+            parsed = JSON.parse(xhr.responseText);
+          } catch (_) {
+            // Response body was not JSON — surface the raw status code so it's
+            // easy to diagnose (e.g. a proxy 413 or an HTML Flask traceback).
+            parsed = {
+              ok:    false,
+              error: `Server returned a non-JSON response (HTTP ${xhr.status}). Check backend logs.`,
+            };
+          }
+          uploadData = parsed;
           if (uploadData.ok) resolve();
           else reject(new Error(uploadData.error || 'Upload failed'));
         });
@@ -2597,46 +2617,22 @@
       return;
     }
 
-    if (progressBar)  progressBar.style.width = '100%';
-    if (progressLbl)  progressLbl.textContent = 'Verifying upload…';
-
-    // ── Step 2: Publish the release ───────────────────────────────────
-    const notes   = $('relUploadNotes')?.value.trim().split('\n').map(s => s.replace(/^[•·\-]\s*/,'').trim()).filter(Boolean) || [];
-    const payload = {
-      version,
-      downloadUrl:  uploadData.downloadUrl,
-      filename:     uploadData.filename || 'GhostConfig.exe',
-      sha256:       uploadData.sha256   || '',
-      fileSize:     uploadData.fileSize || 0,
-      releaseNotes: notes,
-      mandatory:    !!$('relUploadMandatory')?.checked,
-      channel:      $('relUploadChannel')?.value || 'stable',
-      set_current:  !!$('relUploadSetCurrent')?.checked,
-      minVersion:   $('relUploadMinVer')?.value.trim() || '',
-    };
-
-    if (progressLbl) progressLbl.textContent = 'Publishing release…';
-    const { ok, data } = await apiFetch('/api/admin/releases', { method: 'POST', body: JSON.stringify(payload) });
-
     if (progressWrap) progressWrap.style.display = 'none';
     setBusy('relUploadPublishBtn', false);
 
-    if (ok) {
-      toast(`✓ Release ${version} published and live!`, 'success');
-      // Reset form
-      if ($('relFileInput'))        $('relFileInput').value = '';
-      if ($('relUploadVersion'))    $('relUploadVersion').value = '';
-      if ($('relUploadNotes'))      $('relUploadNotes').value = '';
-      if ($('relUploadSha256'))     $('relUploadSha256').value = '';
-      if ($('relUploadMinVer'))     $('relUploadMinVer').value = '';
-      if ($('relUploadMandatory'))  $('relUploadMandatory').checked = false;
-      if ($('relUploadSetCurrent')) $('relUploadSetCurrent').checked = true;
-      if ($('relDropLabel'))        $('relDropLabel').textContent = 'Drop GhostConfig.exe here or click to browse';
-      if ($('relDropZone'))         $('relDropZone').style.borderColor = 'var(--border-2)';
-      loadReleases();
-    } else {
-      showAlert('relUploadAlert', 'error', data.error || 'Publish failed after upload.');
-    }
+    // Upload endpoint now publishes the release atomically — no second request needed.
+    toast(`✓ Release ${version} published and live!`, 'success');
+    // Reset form
+    if ($('relFileInput'))        $('relFileInput').value = '';
+    if ($('relUploadVersion'))    $('relUploadVersion').value = '';
+    if ($('relUploadNotes'))      $('relUploadNotes').value = '';
+    if ($('relUploadSha256'))     $('relUploadSha256').value = '';
+    if ($('relUploadMinVer'))     $('relUploadMinVer').value = '';
+    if ($('relUploadMandatory'))  $('relUploadMandatory').checked = false;
+    if ($('relUploadSetCurrent')) $('relUploadSetCurrent').checked = true;
+    if ($('relDropLabel'))        $('relDropLabel').textContent = 'Drop GhostConfig.exe here or click to browse';
+    if ($('relDropZone'))         $('relDropZone').style.borderColor = 'var(--border-2)';
+    loadReleases();
   }
 
   /* ── Silent updates setting ────────────────────────────────────────── */

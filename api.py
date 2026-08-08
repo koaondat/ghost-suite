@@ -1680,62 +1680,148 @@ def route_admin_publish_release():
 
 # ── Admin: upload EXE ─────────────────────────────────────────────────────────
 
+_VALID_CHANNELS = {"stable", "beta", "development"}
+_VERSION_RE     = __import__("re").compile(r"^v?\d+\.\d+(\.\d+)?([.-][\w.+-]+)?$")
+
+
 @app.route("/api/admin/releases/upload", methods=["POST"])
 @require_admin
 @limiter.limit("10 per minute")
 def route_admin_release_upload():
     """
     POST /api/admin/releases/upload  (multipart/form-data)
-    Upload a GhostConfig.exe and receive its URL + SHA-256.
+    Upload a GhostConfig.exe, validate the payload, save the binary,
+    publish a new release record, and return the release metadata.
+
     Fields:
-      file      — the binary (required)
-      version   — version string (optional, for naming)
+      file         — the EXE binary (required; must end in .exe)
+      version      — semver string, e.g. "2.5.0" (required)
+      channel      — "stable" | "beta" | "development"  (default: "stable")
+      release_notes — newline-separated changelog lines (optional)
+      mandatory    — "true" | "1" to mark as a mandatory update (optional)
+      set_current  — "false" | "0" to publish as draft (default: current)
 
     The file is saved under release_files/<version>/<filename> and served
-    at /download/<version>/<filename>.  Also updates the /download/latest
-    redirect to point at the new file when version is provided.
+    at /download/<version>/<filename>.
     """
-    from flask import request as _req
-    f = _req.files.get("file")
-    if not f:
-        return jsonify({"ok": False, "error": "No file uploaded"}), 400
+    try:
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"ok": False, "error": "No file uploaded — include the EXE as 'file' in the multipart body"}), 400
 
-    safe_name = Path(f.filename).name if f.filename else "GhostConfig.exe"
-    if not safe_name.lower().endswith(".exe") or "/" in safe_name or "\\" in safe_name:
-        return jsonify({"ok": False, "error": "Only .exe uploads accepted"}), 400
+        safe_name = Path(f.filename).name if f.filename else ""
+        if not safe_name:
+            return jsonify({"ok": False, "error": "Uploaded file has no filename"}), 400
+        if not safe_name.lower().endswith(".exe"):
+            return jsonify({"ok": False, "error": f"Only .exe uploads are accepted; got '{safe_name}'"}), 400
+        if "/" in safe_name or "\\" in safe_name:
+            return jsonify({"ok": False, "error": "Filename must not contain path separators"}), 400
 
-    version = (_req.form.get("version") or "").strip()
-    subdir  = version if version else str(int(time.time()))
+        version = (request.form.get("version") or "").strip()
+        if not version:
+            return jsonify({"ok": False, "error": "'version' is required (e.g. '2.5.0')"}), 400
+        if not _VERSION_RE.match(version):
+            return jsonify({"ok": False, "error": f"'version' must be a valid semver string (got '{version}')"}), 400
 
-    target_dir = RELEASES_DIR / subdir
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target_path = target_dir / safe_name
+        channel = (request.form.get("channel") or "stable").lower().strip()
+        if channel not in _VALID_CHANNELS:
+            return jsonify({"ok": False,
+                            "error": f"'channel' must be one of {sorted(_VALID_CHANNELS)}; got '{channel}'"}), 400
 
-    # Stream to disk
-    h = hashlib.sha256()
-    size = 0
-    with open(target_path, "wb") as fh:
-        while True:
-            chunk = f.stream.read(65536)
-            if not chunk:
-                break
-            fh.write(chunk)
-            h.update(chunk)
-            size += len(chunk)
+        raw_notes   = (request.form.get("release_notes") or "").strip()
+        notes       = [ln.strip() for ln in raw_notes.splitlines() if ln.strip()] if raw_notes else []
+        mandatory   = request.form.get("mandatory", "").lower() in ("true", "1", "yes")
+        set_current = request.form.get("set_current", "true").lower() not in ("false", "0", "no")
 
-    sha256   = h.hexdigest()
-    dl_url   = f"/download/{subdir}/{safe_name}"
+        # ── Duplicate version guard (same channel) ────────────────────────────
+        releases = _load_releases()
+        existing = next((r for r in releases
+                         if r.get("version") == version
+                         and r.get("channel", "stable") == channel), None)
+        if existing:
+            return jsonify({"ok": False,
+                            "error": f"Version {version} already exists in the '{channel}' channel"}), 409
 
-    _audit("release_upload", g.actor, version or safe_name,
-           f"file={safe_name} size={size} sha256={sha256[:16]}…")
-    return jsonify({
-        "ok":          True,
-        "filename":    safe_name,
-        "downloadUrl": dl_url,
-        "sha256":      sha256,
-        "fileSize":    size,
-        "version":     subdir,
-    }), 201
+        # ── Save binary to disk ───────────────────────────────────────────────
+        target_dir = RELEASES_DIR / version
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.error("release_upload mkdir failed: %s", exc)
+            return jsonify({"ok": False,
+                            "error": f"Server could not create release directory: {exc}"}), 500
+
+        target_path = target_dir / safe_name
+        h    = hashlib.sha256()
+        size = 0
+        try:
+            with open(target_path, "wb") as fh:
+                while True:
+                    chunk = f.stream.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    h.update(chunk)
+                    size += len(chunk)
+        except OSError as exc:
+            log.error("release_upload write failed path=%s: %s", target_path, exc)
+            return jsonify({"ok": False,
+                            "error": f"Server could not write uploaded file: {exc}"}), 500
+
+        if size == 0:
+            target_path.unlink(missing_ok=True)
+            return jsonify({"ok": False, "error": "Uploaded file is empty"}), 400
+
+        sha256 = h.hexdigest()
+        dl_url = f"/download/{version}/{safe_name}"
+
+        # ── Publish the release record ────────────────────────────────────────
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        max_id  = max((r.get("id", 0) for r in releases), default=0)
+        record  = {
+            "id":           max_id + 1,
+            "version":      version,
+            "downloadUrl":  dl_url,
+            "filename":     safe_name,
+            "sha256":       sha256,
+            "fileSize":     size,
+            "minVersion":   "",
+            "releaseNotes": notes,
+            "mandatory":    mandatory,
+            "channel":      channel,
+            "current":      set_current,
+            "disabled":     False,
+            "downloads":    0,
+            "released_at":  now_iso,
+            "published_by": g.actor,
+        }
+
+        if set_current:
+            for r in releases:
+                if r.get("channel", "stable") == channel:
+                    r["current"] = False
+
+        releases.append(record)
+        _save_releases(releases)
+
+        _audit("release_upload", g.actor, version,
+               f"file={safe_name} size={size} sha256={sha256[:16]}… channel={channel} current={set_current}")
+        log.info("release_upload version=%s channel=%s size=%d sha256=%s… actor=%s",
+                 version, channel, size, sha256[:16], g.actor)
+
+        return jsonify({
+            "ok":          True,
+            "filename":    safe_name,
+            "downloadUrl": dl_url,
+            "sha256":      sha256,
+            "fileSize":    size,
+            "version":     version,
+            "release":     record,
+        }), 201
+
+    except Exception as exc:
+        log.error("release_upload unhandled error: %s", exc, exc_info=True)
+        return jsonify({"ok": False, "error": f"Upload failed: {exc}"}), 500
 
 
 # ── Admin: get / patch / delete a single release ─────────────────────────────
