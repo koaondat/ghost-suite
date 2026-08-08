@@ -2,11 +2,14 @@
 gui.py — GhostConfig  (GUI entry point)
 ========================================
 Tabbed main window with 5 tabs:
-  Dashboard   — live license key, GUID, volume serial, status cards
-  Spoofer     — GUID / MAC / volume controls with live log
-  Admin Panel — key-gated admin controls (ADMIN tier only)
-  Settings    — backup dir, license display
-  Support     — FAQ / help
+  Dashboard    — live license key, GUID, volume serial, status cards
+  Spoofer      — GUID / MAC / volume controls with live log
+  Devices      — detailed hardware component info
+  Task Manager — live process monitor
+  Settings     — update channel, license display, backup dir
+  Support      — FAQ / help
+
+Admin functionality is managed entirely from the web admin panel.
 
 Auth screen is shown as a Toplevel first; main window appears on
 successful login.
@@ -18,16 +21,81 @@ from __future__ import annotations
 
 import ctypes
 import datetime
+import hashlib
+import json
 import os
 import queue
 import random
+import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
+import urllib.request
 from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import messagebox, scrolledtext, simpledialog, ttk
 from typing import Callable
+
+# ── Auto-update: current version of this build ───────────────────────────────
+CURRENT_VERSION = "1.0.0"
+
+# Update channel is persisted in update_settings.json next to the exe
+_UPDATE_SETTINGS_PATH: Path = (
+    Path(sys.executable).parent if getattr(sys, "frozen", False)
+    else Path(__file__).parent
+) / "update_settings.json"
+
+_API_BASE_URL = os.environ.get("GHOST_API_URL", "").rstrip("/")
+
+
+def _load_update_settings() -> dict:
+    try:
+        if _UPDATE_SETTINGS_PATH.exists():
+            return json.loads(_UPDATE_SETTINGS_PATH.read_text("utf-8"))
+    except Exception:
+        pass
+    return {"channel": "stable"}
+
+
+def _save_update_settings(data: dict) -> None:
+    try:
+        _UPDATE_SETTINGS_PATH.write_text(json.dumps(data, indent=2), "utf-8")
+    except Exception:
+        pass
+
+
+def _semver_tuple(v: str) -> tuple:
+    """Parse '1.2.3' or 'v1.2.3' → (1, 2, 3). Returns (0, 0, 0) on error."""
+    try:
+        parts = v.lstrip("v").split(".", 2)
+        return tuple(int(p) for p in (parts + ["0", "0"])[:3])
+    except Exception:
+        return (0, 0, 0)
+
+
+def _fetch_latest_release(channel: str = "stable") -> dict | None:
+    """Call /api/releases/latest and return the JSON dict, or None on failure."""
+    if not _API_BASE_URL:
+        return None
+    url = f"{_API_BASE_URL}/api/releases/latest?channel={channel}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": f"GhostConfig/{CURRENT_VERSION}"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("ok"):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 # ── path so PyInstaller frozen exe can find keygen / config_utility ──────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(
@@ -459,1125 +527,22 @@ def _log(msg: str, level: str = "info") -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Admin Panel  (Toplevel, ADMIN tier only)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class AdminPanel(tk.Toplevel):
-    """
-    Admin Panel — improved layout, inline search/filter, row-count badges,
-    sortable headings, keyboard shortcuts, and a cleaner toolbar.
-    All backend calls (kg.*) are unchanged.
-    """
-
-    _TAB_NAMES = ["Keys", "Banned", "Blacklist", "Whitelist", "Users", "Activity"]
-    _TAB_ICONS = ["◆", "⛔", "✕", "✓", "⊙", "◉"]
-
-    def __init__(self, master: tk.Tk):
-        super().__init__(master)
-        self.title("GhostConfig — Admin Panel")
-        self.configure(bg=BG)
-        self.geometry("980x660")
-        self.minsize(820, 520)
-        self.resizable(True, True)
-        self._active_tab: int = 0
-        self._tab_frames: list[tk.Frame] = []
-        self._tab_btns:   list[tk.Label] = []
-        self._row_count_vars: list[tk.StringVar] = [tk.StringVar(value="0")
-                                                     for _ in self._TAB_NAMES]
-        self._activity_filter_var = tk.StringVar(value="All")
-        self._activity_search_var = tk.StringVar(value="")
-        self._build()
-        self.grab_set()
-        self.update_idletasks()
-        x = master.winfo_x() + (master.winfo_width()  - 980) // 2
-        y = master.winfo_y() + (master.winfo_height() - 660) // 2
-        self.geometry(f"+{x}+{y}")
-        # Keyboard: Escape closes, Ctrl+R refreshes active tab
-        self.bind("<Escape>", lambda _e: self.destroy())
-        self.bind("<Control-r>", lambda _e: self._refresh_active())
-        self.bind("<Control-R>", lambda _e: self._refresh_active())
-
-    # ── Shell ─────────────────────────────────────────────────────────────
-    def _build(self) -> None:
-        # ── Header bar ────────────────────────────────────────────────────
-        hdr = tk.Frame(self, bg=SURFACE, height=52)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
-
-        # Accent logo square
-        logo_box = tk.Frame(hdr, bg=ACCENT, width=30, height=30)
-        logo_box.place(x=16, rely=0.5, anchor="w")
-        logo_box.pack_propagate(False)
-        tk.Label(logo_box, text="A",
-                 font=tkfont.Font(family="Segoe UI", size=10, weight="bold"),
-                 fg=BG, bg=ACCENT).place(relx=0.5, rely=0.5, anchor="center")
-
-        title_f = tk.Frame(hdr, bg=SURFACE)
-        title_f.place(x=56, rely=0.5, anchor="w")
-        tk.Label(title_f, text="Admin Panel",
-                 font=tkfont.Font(family="Segoe UI", size=11, weight="bold"),
-                 fg=TEXT, bg=SURFACE).pack(side="left")
-        tk.Label(title_f, text="  ·  key, user & list management",
-                 font=tkfont.Font(family="Segoe UI", size=9),
-                 fg=TEXT_MUTED, bg=SURFACE).pack(side="left")
-
-        # Close button in header
-        close_btn = tk.Label(hdr, text="✕",
-                             font=tkfont.Font(family="Segoe UI", size=11),
-                             fg=TEXT_MUTED, bg=SURFACE,
-                             padx=18, cursor="hand2")
-        close_btn.pack(side="right", fill="y")
-        close_btn.bind("<Button-1>", lambda _e: self.destroy())
-        close_btn.bind("<Enter>",    lambda _e: close_btn.configure(fg=DANGER,   bg=DANGER_BG))
-        close_btn.bind("<Leave>",    lambda _e: close_btn.configure(fg=TEXT_MUTED, bg=SURFACE))
-
-        _sep(self, color=BORDER).pack(fill="x")
-
-        # ── Custom tab bar ────────────────────────────────────────────────
-        tab_bar = tk.Frame(self, bg=BG, highlightthickness=0)
-        tab_bar.pack(fill="x")
-        _sep(self, color=BORDER).pack(fill="x")
-
-        for i, (icon, name) in enumerate(zip(self._TAB_ICONS, self._TAB_NAMES)):
-            tf = tk.Frame(tab_bar, bg=BG, cursor="hand2")
-            tf.pack(side="left")
-
-            lbl = tk.Label(tf,
-                           text=f"  {icon}  {name}  ",
-                           font=tkfont.Font(family="Segoe UI", size=9),
-                           fg=TEXT_MUTED, bg=BG,
-                           padx=6, pady=10, cursor="hand2")
-            lbl.pack(side="left")
-
-            # Badge showing row count
-            badge = tk.Label(tf, textvariable=self._row_count_vars[i],
-                             font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
-                             fg=BG, bg=TEXT_MUTED2,
-                             padx=5, pady=1)
-            badge.pack(side="left", pady=0)
-            self._tab_badges: list[tk.Label]  # forward declaration
-            if i == 0:
-                self._tab_badges = []
-            self._tab_badges.append(badge)
-
-            # Bottom-border active indicator (3px, hidden when inactive)
-            bar = tk.Frame(tf, bg=BG, height=3)
-            bar.pack(fill="x", side="bottom")
-
-            for w in (tf, lbl, badge, bar):
-                w.bind("<Button-1>", lambda _e, idx=i: self._switch_tab(idx))
-                w.bind("<Enter>",    lambda _e, lb=lbl, bb=bar: (
-                    lb.configure(fg=TEXT2, bg=SURFACE2) if lb.cget("fg") != str(ACCENT) else None,
-                    bb.master.configure(bg=SURFACE2) if lb.cget("fg") != str(ACCENT) else None))
-                w.bind("<Leave>",    lambda _e, lb=lbl, bb=bar: (
-                    lb.configure(fg=TEXT_MUTED, bg=BG) if lb.cget("fg") != str(ACCENT) else None,
-                    bb.master.configure(bg=BG) if lb.cget("fg") != str(ACCENT) else None))
-
-            self._tab_btns.append(lbl)
-
-        # Refresh shortcut hint (right side of tab bar)
-        tk.Label(tab_bar,
-                 text="Ctrl+R · refresh    Esc · close",
-                 font=tkfont.Font(family="Segoe UI", size=7),
-                 fg=TEXT_MUTED2, bg=BG, padx=14).pack(side="right")
-
-        # ── Content area ──────────────────────────────────────────────────
-        content = tk.Frame(self, bg=BG)
-        content.pack(fill="both", expand=True)
-
-        self._tab_keys      = _frame(content, bg=BG)
-        self._tab_banned    = _frame(content, bg=BG)
-        self._tab_blacklist = _frame(content, bg=BG)
-        self._tab_whitelist = _frame(content, bg=BG)
-        self._tab_users     = _frame(content, bg=BG)
-        self._tab_activity  = _frame(content, bg=BG)
-
-        self._tab_frames = [
-            self._tab_keys, self._tab_banned,
-            self._tab_blacklist, self._tab_whitelist,
-            self._tab_users, self._tab_activity,
-        ]
-        for f in self._tab_frames:
-            f.place(relx=0, rely=0, relwidth=1, relheight=1)
-
-        self._build_keys_tab()
-        self._build_banned_tab()
-        self._build_users_tab()
-        self._build_activity_tab()
-        self._build_list_tab(self._tab_blacklist,
-            cols=[("entry","Entry",280),("note","Note",200),("date","Date",90)],
-            load_fn=kg.load_blacklist, add_fn=self._bl_add,
-            remove_fn=self._bl_remove, attr="_bl_tree")
-        self._build_list_tab(self._tab_whitelist,
-            cols=[("entry","Entry",280),("note","Note",200),("date","Date",90)],
-            load_fn=kg.load_whitelist, add_fn=self._wl_add,
-            remove_fn=self._wl_remove, attr="_wl_tree")
-
-        self._switch_tab(0)
-
-    # ── Tab switching ─────────────────────────────────────────────────────
-    def _switch_tab(self, index: int) -> None:
-        self._active_tab = index
-        for i, (lbl, frame) in enumerate(zip(self._tab_btns, self._tab_frames)):
-            active = (i == index)
-            lbl.configure(
-                fg=ACCENT if active else TEXT_MUTED,
-                bg=SURFACE if active else BG,
-                font=tkfont.Font(family="Segoe UI", size=9,
-                                 weight="bold" if active else "normal"),
-            )
-            # Container frame bg — SURFACE when active for raised look
-            lbl.master.configure(bg=SURFACE if active else BG)
-            # Active bottom bar = accent stripe; inactive = transparent
-            for child in lbl.master.winfo_children():
-                if isinstance(child, tk.Frame) and child is not lbl.master:
-                    child.configure(bg=ACCENT if active else BG)
-            self._tab_badges[i].configure(
-                bg=ACCENT if active else TEXT_MUTED2,
-                fg=BG,
-            )
-            if active:
-                frame.lift()
-            else:
-                frame.lower()
-
-    def _refresh_active(self) -> None:
-        fns = [self._refresh_keys, self._refresh_banned,
-               lambda: self._refresh_list(self._bl_tree, kg.load_blacklist,
-                   [("entry","Entry",280),("note","Note",200),("date","Date",90)]),
-               lambda: self._refresh_list(self._wl_tree, kg.load_whitelist,
-                   [("entry","Entry",280),("note","Note",200),("date","Date",90)]),
-               self._refresh_users,
-               self._refresh_activity]
-        fns[self._active_tab]()
-
-    # ── Toolbar builder (shared between all tabs) ─────────────────────────
-    def _make_toolbar(self, parent: tk.Frame, bg: str = BG) -> tk.Frame:
-        """Returns a left-aligned toolbar row with a right-side search entry."""
-        bar = tk.Frame(parent, bg=SURFACE, highlightthickness=0)
-        bar.pack(fill="x", padx=0, pady=0)
-        _sep(bar, color=BORDER).pack(side="bottom", fill="x")
-        inner = tk.Frame(bar, bg=SURFACE)
-        inner.pack(fill="x", padx=14, pady=9)
-        return inner
-
-    def _make_search(self, parent: tk.Frame, tree: ttk.Treeview,
-                     load_fn, cols,
-                     bg: str = BG) -> tk.StringVar:
-        """Search box that filters *tree* rows in real time."""
-        sv = tk.StringVar()
-
-        wrap = tk.Frame(parent, bg=SURFACE3,
-                        highlightthickness=1,
-                        highlightbackground=BORDER2,
-                        highlightcolor=ACCENT)
-        wrap.pack(side="right")
-
-        tk.Label(wrap, text="⌕",
-                 font=tkfont.Font(family="Segoe UI", size=9),
-                 fg=TEXT_MUTED, bg=SURFACE3, padx=8).pack(side="left")
-
-        e = tk.Entry(wrap, textvariable=sv, width=22,
-                     bg=SURFACE3, fg=TEXT,
-                     insertbackground=ACCENT,
-                     relief="flat", bd=0, font=F_BODY,
-                     highlightthickness=0)
-        e.pack(side="left", ipady=5, padx=(0, 8))
-
-        e.bind("<FocusIn>",  lambda _ev: wrap.configure(highlightbackground=ACCENT))
-        e.bind("<FocusOut>", lambda _ev: wrap.configure(highlightbackground=BORDER2))
-
-        def _filter(*_):
-            q = sv.get().strip().lower()
-            self._refresh_list(tree, load_fn, cols)
-            if not q:
-                return
-            keep = []
-            for iid in tree.get_children():
-                vals = " ".join(str(v) for v in tree.item(iid, "values")).lower()
-                if q in vals:
-                    keep.append(iid)
-                else:
-                    tree.delete(iid)
-            # re-tag survivors
-            for iid in tree.get_children():
-                tree.selection_remove(iid)
-
-        sv.trace_add("write", _filter)
-        return sv
-
-    # ── Keys tab ──────────────────────────────────────────────────────────
-    def _build_keys_tab(self) -> None:
-        p, bg = self._tab_keys, BG
-
-        # ── Generate form ─────────────────────────────────────────────────
-        gen_card = tk.Frame(p, bg=SURFACE,
-                            highlightthickness=1, highlightbackground=BORDER2)
-        gen_card.pack(fill="x", padx=16, pady=(16, 8))
-
-        top = tk.Frame(gen_card, bg=SURFACE)
-        top.pack(fill="x", padx=14, pady=(12, 6))
-
-        # Section label — accent left border accent
-        lbl_bar = tk.Frame(top, bg=ACCENT, width=3)
-        lbl_bar.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(top, text="GENERATE NEW KEY",
-                 font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
-                 fg=ACCENT, bg=SURFACE).pack(side="left", anchor="w")
-
-        form = tk.Frame(gen_card, bg=SURFACE)
-        form.pack(fill="x", padx=14, pady=(0, 14))
-
-        # Tier
-        tk.Label(form, text="Tier",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE).grid(row=0, column=0, sticky="w", pady=(0,3))
-        self._gen_tier = tk.StringVar(value="PRO")
-        ttk.Combobox(form, textvariable=self._gen_tier,
-                     values=["TRIAL","PRO","ADMIN"],
-                     state="readonly", width=9,
-                     font=F_BODY).grid(row=1, column=0, sticky="w", padx=(0,12), ipady=4)
-
-        # Expires
-        tk.Label(form, text="Expires (days, 0=never)",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE).grid(row=0, column=1, sticky="w", pady=(0,3))
-        self._gen_days = tk.StringVar(value="365")
-        _entry(form, self._gen_days, width=7).grid(row=1, column=1, sticky="w",
-                                                   padx=(0,12), ipady=4)
-
-        # Note
-        tk.Label(form, text="Note (optional)",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE).grid(row=0, column=2, sticky="w", pady=(0,3))
-        self._gen_note = tk.StringVar()
-        _entry(form, self._gen_note, width=24).grid(row=1, column=2, sticky="w",
-                                                    padx=(0,12), ipady=4)
-
-        # Generate button
-        tk.Label(form, text="",
-                 bg=SURFACE).grid(row=0, column=3, pady=(0,3))
-        _btn(form, "+ Generate Key", self._generate_key,
-             color=SUCCESS, fg=BG).grid(row=1, column=3, sticky="w", pady=0)
-
-        # Result strip — monospace key display with copy
-        res = tk.Frame(gen_card, bg=SURFACE2,
-                       highlightthickness=1, highlightbackground=BORDER)
-        res.pack(fill="x", padx=14, pady=(0, 14))
-        self._gen_result_var = tk.StringVar(value="")
-        res_lbl = tk.Label(res, textvariable=self._gen_result_var,
-                           font=F_MONO, fg=SUCCESS, bg=SURFACE2, anchor="w",
-                           padx=10, pady=6)
-        res_lbl.pack(side="left", fill="x", expand=True)
-        _btn(res, "⎘ Copy", self._copy_result,
-             color=SURFACE3, fg=TEXT_MUTED, small=True).pack(side="right", padx=4, pady=4)
-
-        # ── Search + table ────────────────────────────────────────────────
-        toolbar = self._make_toolbar(p)
-        _btn(toolbar, "↺ Refresh", self._refresh_keys,
-             color=SURFACE3, fg=TEXT2, small=True).pack(side="left")
-        _btn(toolbar, "✕ Delete", self._delete_key,
-             color=DANGER_BG, fg=DANGER, small=True).pack(side="left", padx=(8,0))
-        _btn(toolbar, "⛔ Ban Key", self._ban_selected_key,
-             color=WARNING_BG, fg=WARNING, small=True).pack(side="left", padx=(8,0))
-
-        cols = [("key","License Key",230),("tier","Tier",60),
-                ("created","Created",90),("expiry","Expiry",90),("note","Note",150)]
-        self._keys_tree = self._make_tree(p, cols, tag_idx=0)
-        self._keys_search = self._make_search(toolbar, self._keys_tree,
-                                              kg.load_all_keys, cols)
-        self._refresh_keys()
-
-    def _generate_key(self) -> None:
-        try:
-            days = int(self._gen_days.get())
-        except ValueError:
-            messagebox.showerror("Input", "Expires days must be an integer.", parent=self)
-            return
-        key  = kg.generate_key(expires_days=days, tier=self._gen_tier.get())
-        meta = kg.validate_key(key)
-        meta["note"] = self._gen_note.get().strip()
-        kg.save_key_record(key, meta)
-        self._gen_result_var.set(key)
-        _log(f"[admin] Generated {meta['tier']} key: {key}", "ok")
-        self._refresh_keys()
-
-    def _copy_result(self) -> None:
-        val = self._gen_result_var.get()
-        if val:
-            self.clipboard_clear(); self.clipboard_append(val)
-            _log(f"[admin] Copied: {val}", "info")
-
-    def _refresh_keys(self) -> None:
-        self._keys_tree.delete(*self._keys_tree.get_children())
-        rows = kg.load_all_keys()
-        for r in rows:
-            key = r.get("key","")
-            banned = kg.is_banned(key)
-            tag = "banned" if banned else ("admin_key" if r.get("tier","") == "ADMIN" else "")
-            display_key = key + "  [BANNED]" if banned else key
-            self._keys_tree.insert("", "end", tags=(tag,), values=(
-                display_key, r.get("tier",""),
-                r.get("created",""), r.get("expiry",""), r.get("note","")))
-        self._row_count_vars[0].set(str(len(rows)))
-
-    def _sel_key(self, tree: ttk.Treeview) -> str | None:
-        sel = tree.selection()
-        if not sel:
-            return None
-        raw = tree.item(sel[0], "values")[0]
-        return raw.replace("  [BANNED]","").replace(" [BANNED]","").strip()
-
-    def _delete_key(self) -> None:
-        key = self._sel_key(self._keys_tree)
-        if not key:
-            messagebox.showwarning("No Selection", "Select a key first.", parent=self); return
-        if not messagebox.askyesno("Delete Key",
-                f"Permanently delete this key?\n\n{key}", parent=self): return
-        kg.delete_key_record(key)
-        _log(f"[admin] Deleted key: {key}", "warn")
-        self._refresh_keys()
-
-    def _ban_selected_key(self) -> None:
-        key = self._sel_key(self._keys_tree)
-        if not key:
-            messagebox.showwarning("No Selection", "Select a key first.", parent=self); return
-        reason = simpledialog.askstring("Ban Key",
-            f"Reason for banning this key?\n(leave blank for none)\n\n{key}",
-            parent=self) or ""
-        kg.ban_key(key, reason)
-        _log(f"[admin] Banned: {key}", "error")
-        self._refresh_keys(); self._refresh_banned()
-
-    # ── Banned tab ────────────────────────────────────────────────────────
-    def _build_banned_tab(self) -> None:
-        p, bg = self._tab_banned, BG
-
-        add_card = tk.Frame(p, bg=SURFACE,
-                            highlightthickness=1, highlightbackground=BORDER2)
-        add_card.pack(fill="x", padx=16, pady=(16, 8))
-
-        top = tk.Frame(add_card, bg=SURFACE)
-        top.pack(fill="x", padx=14, pady=(12, 6))
-        lbl_bar = tk.Frame(top, bg=DANGER, width=3)
-        lbl_bar.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(top, text="BAN A KEY MANUALLY",
-                 font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
-                 fg=DANGER, bg=SURFACE).pack(side="left")
-
-        form = tk.Frame(add_card, bg=SURFACE)
-        form.pack(fill="x", padx=14, pady=(0, 14))
-
-        tk.Label(form, text="License Key",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE).grid(row=0, column=0, sticky="w", pady=(0,3))
-        self._ban_key_var = tk.StringVar()
-        _entry(form, self._ban_key_var, width=34).grid(row=1, column=0, sticky="w",
-                                                       padx=(0,12), ipady=4)
-
-        tk.Label(form, text="Reason (optional)",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE).grid(row=0, column=1, sticky="w", pady=(0,3))
-        self._ban_reason_var = tk.StringVar()
-        _entry(form, self._ban_reason_var, width=22).grid(row=1, column=1, sticky="w",
-                                                          padx=(0,12), ipady=4)
-
-        tk.Label(form, text="", bg=SURFACE).grid(row=0, column=2, pady=(0,3))
-        _btn(form, "⛔ Ban Key", self._ban_manual,
-             color=DANGER, fg=BG).grid(row=1, column=2, sticky="w")
-
-        toolbar = self._make_toolbar(p)
-        _btn(toolbar, "↺ Refresh", self._refresh_banned,
-             color=SURFACE3, fg=TEXT2, small=True).pack(side="left")
-        _btn(toolbar, "✓ Unban", self._unban_selected,
-             color=SUCCESS_BG, fg=SUCCESS, small=True).pack(side="left", padx=(8,0))
-
-        self._banned_tree = self._make_tree(
-            p, [("key","Banned Key",280),("reason","Reason",200),("date","Banned On",100)])
-        self._make_search(toolbar, self._banned_tree, kg.load_banned,
-            [("key","Banned Key",280),("reason","Reason",200),("date","Banned On",100)])
-        self._refresh_banned()
-
-    def _ban_manual(self) -> None:
-        key = self._ban_key_var.get().strip()
-        if not key:
-            messagebox.showwarning("Empty", "Enter a key to ban.", parent=self); return
-        kg.ban_key(key, self._ban_reason_var.get().strip())
-        self._ban_key_var.set(""); self._ban_reason_var.set("")
-        _log(f"[admin] Banned: {key}", "error")
-        self._refresh_banned()
-
-    def _refresh_banned(self) -> None:
-        self._banned_tree.delete(*self._banned_tree.get_children())
-        rows = kg.load_banned()
-        for r in rows:
-            self._banned_tree.insert("", "end", tags=("banned",),
-                values=(r.get("key",""), r.get("reason",""), r.get("date","")))
-        self._row_count_vars[1].set(str(len(rows)))
-
-    def _unban_selected(self) -> None:
-        key = self._sel_key(self._banned_tree)
-        if not key:
-            messagebox.showwarning("No Selection", "Select a key to unban.", parent=self); return
-        kg.unban_key(key)
-        _log(f"[admin] Unbanned: {key}", "ok")
-        self._refresh_banned(); self._refresh_keys()
-
-    # ── Users tab ─────────────────────────────────────────────────────────
-    def _build_users_tab(self) -> None:
-        p, bg = self._tab_users, BG
-        cols = [("username","Username",140),("tier","Tier",65),
-                ("key","License Key",260),("created","Created",100)]
-
-        toolbar = self._make_toolbar(p)
-        _btn(toolbar, "↺ Refresh", self._refresh_users,
-             color=SURFACE3, fg=TEXT2, small=True).pack(side="left")
-        _btn(toolbar, "✕ Delete User", self._delete_user,
-             color=DANGER_BG, fg=DANGER, small=True).pack(side="left", padx=(8,0))
-
-        self._users_tree = self._make_tree(p, cols)
-        self._make_search(toolbar, self._users_tree, kg.load_all_users, cols)
-        self._refresh_users()
-
-    def _refresh_users(self) -> None:
-        self._users_tree.delete(*self._users_tree.get_children())
-        rows = kg.load_all_users()
-        for u in rows:
-            tier = u.get("tier","")
-            tag  = "admin_key" if tier == "ADMIN" else ("pro_key" if tier == "PRO" else "")
-            self._users_tree.insert("", "end", tags=(tag,), values=(
-                u.get("username",""), tier,
-                u.get("key",""), u.get("created","")))
-        self._row_count_vars[4].set(str(len(rows)))
-
-    def _delete_user(self) -> None:
-        sel = self._users_tree.selection()
-        if not sel:
-            messagebox.showwarning("No Selection", "Select a user first.", parent=self); return
-        username = self._users_tree.item(sel[0], "values")[0]
-        if not messagebox.askyesno("Delete User",
-                f"Permanently delete user '{username}'?", parent=self): return
-        kg.delete_user(username)
-        _log(f"[admin] Deleted user: {username}", "warn")
-        self._refresh_users()
-
-
-    # ── Activity tab ──────────────────────────────────────────────────────
-    def _build_activity_tab(self) -> None:
-        p = self._tab_activity
-
-        # Guard: require VIEW_LOGIN_ACTIVITY permission
-        if not _has_activity_perm(self.master):
-            tk.Label(p, text="🔒  Admin permission required to view login activity.",
-                     font=tkfont.Font(family="Segoe UI", size=10),
-                     fg=TEXT_MUTED, bg=BG).pack(expand=True)
-            return
-
-        # ── Info card ─────────────────────────────────────────────────────
-        info_card = tk.Frame(p, bg=SURFACE,
-                             highlightthickness=1, highlightbackground=BORDER2)
-        info_card.pack(fill="x", padx=16, pady=(16, 8))
-
-        top = tk.Frame(info_card, bg=SURFACE)
-        top.pack(fill="x", padx=14, pady=(12, 8))
-
-        lbl_bar = tk.Frame(top, bg=INFO, width=3)
-        lbl_bar.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(top, text="LOGIN ACTIVITY",
-                 font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
-                 fg=INFO, bg=SURFACE).pack(side="left")
-
-        tk.Label(info_card,
-                 text="Records every login and registration attempt.  "
-                      "No passwords, tokens or secret keys are stored.",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE, anchor="w",
-                 padx=14, pady=(0)).pack(fill="x", padx=14, pady=(0, 10))
-
-        # ── Filter bar ────────────────────────────────────────────────────
-        filter_frame = tk.Frame(info_card, bg=SURFACE)
-        filter_frame.pack(fill="x", padx=14, pady=(0, 14))
-
-        tk.Label(filter_frame, text="Filter:",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE).pack(side="left", padx=(0, 6))
-
-        _filter_opts = [
-            "All", "Login Success", "Login Fail",
-            "Register Success", "Register Fail",
-            "Admin Key OK", "Admin Key Fail",
-        ]
-        _filter_map = {
-            "All":              None,
-            "Login Success":    "login_success",
-            "Login Fail":       "login_fail",
-            "Register Success": "register_success",
-            "Register Fail":    "register_fail",
-            "Admin Key OK":     "admin_key_login_success",
-            "Admin Key Fail":   "admin_key_login_fail",
-        }
-
-        for opt in _filter_opts:
-            is_active = (opt == "All")
-            btn = tk.Button(
-                filter_frame, text=opt,
-                font=tkfont.Font(family="Segoe UI", size=8),
-                fg=TEXT_MUTED if not is_active else BG,
-                bg=SURFACE3 if not is_active else ACCENT,
-                activebackground=ACCENT, activeforeground=BG,
-                relief="flat", bd=0, padx=8, pady=4, cursor="hand2",
-                highlightthickness=1, highlightbackground=BORDER,
-            )
-            btn.pack(side="left", padx=(0, 4))
-
-            def _make_filter_cmd(o=opt, b=btn, m=_filter_map[opt]):
-                def _cmd():
-                    self._activity_filter_var.set(o)
-                    # Recolour all filter buttons
-                    for child in filter_frame.winfo_children():
-                        if isinstance(child, tk.Button):
-                            active = (child.cget("text") == o)
-                            child.configure(
-                                bg=ACCENT if active else SURFACE3,
-                                fg=BG     if active else TEXT_MUTED,
-                            )
-                    self._refresh_activity()
-                return _cmd
-            btn.configure(command=_make_filter_cmd())
-
-        # ── Toolbar ────────────────────────────────────────────────────────
-        toolbar = self._make_toolbar(p)
-        _btn(toolbar, "↺ Refresh", self._refresh_activity,
-             color=SURFACE3, fg=TEXT2, small=True).pack(side="left")
-        _btn(toolbar, "👤 User Details", self._open_user_details,
-             color=SURFACE3, fg=TEXT2, small=True).pack(side="left", padx=(8, 0))
-        _btn(toolbar, "🗑 Clear All", self._clear_activity,
-             color=DANGER_BG, fg=DANGER, small=True).pack(side="left", padx=(8, 0))
-
-        # Search box (right side of toolbar, before _make_tree so we hook it up later)
-        search_wrap = tk.Frame(toolbar, bg=SURFACE3,
-                               highlightthickness=1,
-                               highlightbackground=BORDER2,
-                               highlightcolor=ACCENT)
-        search_wrap.pack(side="right")
-        tk.Label(search_wrap, text="⌕",
-                 font=tkfont.Font(family="Segoe UI", size=9),
-                 fg=TEXT_MUTED, bg=SURFACE3, padx=8).pack(side="left")
-        search_entry = tk.Entry(search_wrap, textvariable=self._activity_search_var,
-                                width=22,
-                                bg=SURFACE3, fg=TEXT,
-                                insertbackground=ACCENT,
-                                relief="flat", bd=0, font=F_BODY,
-                                highlightthickness=0)
-        search_entry.pack(side="left", ipady=5, padx=(0, 8))
-        search_entry.bind("<FocusIn>",  lambda _e: search_wrap.configure(highlightbackground=ACCENT))
-        search_entry.bind("<FocusOut>", lambda _e: search_wrap.configure(highlightbackground=BORDER2))
-
-        # ── Activity table ────────────────────────────────────────────────
-        _act_cols = [
-            ("timestamp",   "Date / Time",  145),
-            ("event_type",  "Event",         105),
-            ("username",    "Username",       100),
-            ("ip",          "IP Address",      110),
-            ("geo",         "Location",        130),
-            ("device_name", "Device",          120),
-            ("os_info",     "OS",              140),
-            ("license_key", "License Key",     100),
-            ("result",      "Result",          180),
-        ]
-        self._act_tree = self._make_tree(p, _act_cols)
-
-        # Wire search to filter
-        self._activity_search_var.trace_add("write", lambda *_: self._refresh_activity())
-
-        self._refresh_activity()
-
-    def _refresh_activity(self) -> None:
-        """Reload the activity log table, applying current filter + search."""
-        self._act_tree.delete(*self._act_tree.get_children())
-        if al is None:
-            self._row_count_vars[5].set("0")
-            return
-
-        _filter_map = {
-            "All":              None,
-            "Login Success":    "login_success",
-            "Login Fail":       "login_fail",
-            "Register Success": "register_success",
-            "Register Fail":    "register_fail",
-            "Admin Key OK":     "admin_key_login_success",
-            "Admin Key Fail":   "admin_key_login_fail",
-        }
-        event_filter = _filter_map.get(self._activity_filter_var.get())
-        search_q     = self._activity_search_var.get().strip().lower()
-
-        rows = al.load_all()
-        # Newest first
-        rows = list(reversed(rows))
-
-        displayed = 0
-        for r in rows:
-            if event_filter and r.get("event_type") != event_filter:
-                continue
-            if search_q:
-                haystack = " ".join(str(v) for v in r.values()).lower()
-                if search_q not in haystack:
-                    continue
-
-            ev = r.get("event_type", "")
-            if ev.startswith("admin_key_login_success"):
-                tag = "admin_key_ok_row"
-            elif ev.startswith("admin_key_login_fail"):
-                tag = "admin_key_fail_row"
-            elif "success" in ev:
-                tag = "success_row"
-            elif "fail" in ev:
-                tag = "fail_row"
-            elif "register" in ev:
-                tag = "reg_row"
-            else:
-                tag = ""
-
-            self._act_tree.insert("", "end", tags=(tag,), values=(
-                r.get("timestamp",   ""),
-                ev,
-                r.get("username",    ""),
-                r.get("ip",          ""),
-                r.get("geo",         ""),
-                r.get("device_name", ""),
-                r.get("os_info",     ""),
-                r.get("license_key", ""),
-                r.get("result",      ""),
-            ))
-            displayed += 1
-
-        # Tag colours
-        self._act_tree.tag_configure("success_row",
-            background=SUCCESS_BG, foreground=SUCCESS)
-        self._act_tree.tag_configure("fail_row",
-            background=DANGER_BG,  foreground=DANGER)
-        self._act_tree.tag_configure("reg_row",
-            background=PURPLE_BG,  foreground=PURPLE)
-        self._act_tree.tag_configure("admin_key_ok_row",
-            background=WARNING_BG, foreground=GOLD)
-        self._act_tree.tag_configure("admin_key_fail_row",
-            background=DANGER_BG,  foreground=DANGER)
-
-        self._row_count_vars[5].set(str(displayed))
-
-    def _clear_activity(self) -> None:
-        if al is None:
-            messagebox.showinfo("Not available",
-                "Activity log module not loaded.", parent=self); return
-        if not messagebox.askyesno(
-                "Clear Activity Log",
-                "Permanently delete ALL activity log records?\n\nThis cannot be undone.",
-                parent=self):
-            return
-        al.clear_all()
-        _log("[admin] Activity log cleared.", "warn")
-        self._refresh_activity()
-
-    def _open_user_details(self) -> None:
-        """Open a detail window for the currently selected activity-log row."""
-        sel = self._act_tree.selection()
-        if not sel:
-            # Fall back to the Users tab selection if nothing selected in activity
-            sel_u = self._users_tree.selection()
-            if not sel_u:
-                messagebox.showwarning(
-                    "No Selection",
-                    "Select a row in the Activity tab (or Users tab) first.",
-                    parent=self)
-                return
-            username = self._users_tree.item(sel_u[0], "values")[0]
-        else:
-            username = self._act_tree.item(sel[0], "values")[2]  # username column
-
-        if not username:
-            messagebox.showwarning("No Username",
-                "Could not determine username from selection.", parent=self); return
-        _UserDetailsWindow(self, username)
-
-
-    # ── Generic list tab (Blacklist / Whitelist) ──────────────────────────
-    def _build_list_tab(self, parent, cols, load_fn, add_fn, remove_fn, attr) -> None:
-        bg = BG
-        tab_idx = 2 if attr == "_bl_tree" else 3
-        heading = "BLACKLIST ENTRY" if attr == "_bl_tree" else "WHITELIST ENTRY"
-        add_color = DANGER if attr == "_bl_tree" else SUCCESS
-        bar_color = DANGER if attr == "_bl_tree" else SUCCESS
-        add_fg    = BG
-
-        add_card = tk.Frame(parent, bg=SURFACE,
-                            highlightthickness=1, highlightbackground=BORDER2)
-        add_card.pack(fill="x", padx=16, pady=(16, 8))
-
-        top = tk.Frame(add_card, bg=SURFACE)
-        top.pack(fill="x", padx=14, pady=(12, 6))
-        lbl_bar = tk.Frame(top, bg=bar_color, width=3)
-        lbl_bar.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(top, text=f"ADD {heading}",
-                 font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
-                 fg=bar_color, bg=SURFACE).pack(side="left")
-
-        form = tk.Frame(add_card, bg=SURFACE)
-        form.pack(fill="x", padx=14, pady=(0, 14))
-
-        tk.Label(form, text="Entry (HWID / IP / key)",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE).grid(row=0, column=0, sticky="w", pady=(0,3))
-        ev = tk.StringVar(); setattr(self, attr+"_entry_var", ev)
-        _entry(form, ev, width=30).grid(row=1, column=0, sticky="w",
-                                        padx=(0,12), ipady=4)
-
-        tk.Label(form, text="Note (optional)",
-                 font=tkfont.Font(family="Segoe UI", size=8),
-                 fg=TEXT_MUTED, bg=SURFACE).grid(row=0, column=1, sticky="w", pady=(0,3))
-        nv = tk.StringVar(); setattr(self, attr+"_note_var", nv)
-        _entry(form, nv, width=22).grid(row=1, column=1, sticky="w",
-                                        padx=(0,12), ipady=4)
-
-        tk.Label(form, text="", bg=SURFACE).grid(row=0, column=2, pady=(0,3))
-        add_label = "+ Blacklist" if attr == "_bl_tree" else "+ Whitelist"
-        _btn(form, add_label, lambda: add_fn(ev, nv),
-             color=add_color, fg=add_fg).grid(row=1, column=2, sticky="w")
-
-        toolbar = self._make_toolbar(parent)
-        _btn(toolbar, "↺ Refresh",
-             lambda: self._refresh_list(getattr(self, attr), load_fn, cols),
-             color=SURFACE3, fg=TEXT2, small=True).pack(side="left")
-        _btn(toolbar, "✕ Remove",
-             lambda: remove_fn(getattr(self, attr), load_fn, cols),
-             color=DANGER_BG, fg=DANGER, small=True).pack(side="left", padx=(8,0))
-
-        tree = self._make_tree(parent, cols); setattr(self, attr, tree)
-        self._make_search(toolbar, tree, load_fn, cols)
-        self._refresh_list(tree, load_fn, cols)
-
-        # Update badge
-        self._row_count_vars[tab_idx].set(str(len(tree.get_children())))
-
-    def _bl_add(self, ev, nv):
-        e = ev.get().strip()
-        if not e:
-            messagebox.showwarning("Empty", "Entry cannot be blank.", parent=self); return
-        kg.blacklist_add(e, nv.get().strip()); ev.set(""); nv.set("")
-        _log(f"[admin] Blacklisted: {e}", "warn")
-        cols = [("entry","Entry",280),("note","Note",200),("date","Date",90)]
-        self._refresh_list(self._bl_tree, kg.load_blacklist, cols)
-        self._row_count_vars[2].set(str(len(self._bl_tree.get_children())))
-
-    def _bl_remove(self, tree, load_fn, cols):
-        sel = tree.selection()
-        if not sel:
-            messagebox.showwarning("No Selection", "Select an entry first.", parent=self); return
-        kg.blacklist_remove(tree.item(sel[0],"values")[0])
-        self._refresh_list(tree, load_fn, cols)
-        self._row_count_vars[2].set(str(len(tree.get_children())))
-
-    def _wl_add(self, ev, nv):
-        e = ev.get().strip()
-        if not e:
-            messagebox.showwarning("Empty", "Entry cannot be blank.", parent=self); return
-        kg.whitelist_add(e, nv.get().strip()); ev.set(""); nv.set("")
-        _log(f"[admin] Whitelisted: {e}", "ok")
-        cols = [("entry","Entry",280),("note","Note",200),("date","Date",90)]
-        self._refresh_list(self._wl_tree, kg.load_whitelist, cols)
-        self._row_count_vars[3].set(str(len(self._wl_tree.get_children())))
-
-    def _wl_remove(self, tree, load_fn, cols):
-        sel = tree.selection()
-        if not sel:
-            messagebox.showwarning("No Selection", "Select an entry first.", parent=self); return
-        kg.whitelist_remove(tree.item(sel[0],"values")[0])
-        self._refresh_list(tree, load_fn, cols)
-        self._row_count_vars[3].set(str(len(tree.get_children())))
-
-    @staticmethod
-    def _refresh_list(tree, load_fn, cols):
-        tree.delete(*tree.get_children())
-        keys = [c[0] for c in cols]
-        for r in load_fn():
-            tree.insert("", "end", values=tuple(r.get(k,"") for k in keys))
-
-    @staticmethod
-    def _make_tree(parent, cols, tag_idx: int = -1) -> ttk.Treeview:
-        """Builds a scrollable Treeview with sortable headings and coloured tags."""
-        wrap = _frame(parent, bg=BG)
-        wrap.pack(fill="both", expand=True, padx=16, pady=(0, 14))
-
-        ids = [c[0] for c in cols]
-        tree = ttk.Treeview(wrap, columns=ids, show="headings", selectmode="browse")
-
-        # Scrollbars
-        vsb = ttk.Scrollbar(wrap, orient="vertical",   command=tree.yview)
-        hsb = ttk.Scrollbar(wrap, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
-        # Column headings with sort-on-click
-        for cid, hdr, w in cols:
-            tree.heading(cid, text=hdr,
-                         command=lambda c=cid, t=tree: AdminPanel._sort_tree(t, c, False))
-            tree.column(cid, width=w, minwidth=40, anchor="w", stretch=True)
-
-        # Row tag colours — dark theme
-        tree.tag_configure("odd",      background=SURFACE)
-        tree.tag_configure("even",     background=SURFACE2)
-        tree.tag_configure("banned",   background=DANGER_BG,  foreground=DANGER)
-        tree.tag_configure("admin_key",background=PURPLE_BG,  foreground=PURPLE)
-        tree.tag_configure("pro_key",  background=ACCENT_LIT, foreground=ACCENT)
-
-        # Alternating row recolouring on insert (via virtual event isn't available — do on pack)
-        def _recolour():
-            for i, iid in enumerate(tree.get_children()):
-                existing = tree.item(iid, "tags")
-                if not existing or existing == ("",):
-                    tree.item(iid, tags=("even" if i % 2 == 0 else "odd",))
-        tree.bind("<<TreeviewSelect>>", lambda _e: None)
-
-        vsb.pack(side="right",  fill="y")
-        hsb.pack(side="bottom", fill="x")
-        tree.pack(side="left",  fill="both", expand=True)
-
-        # Rebind double-click to copy selected row to clipboard
-        def _copy_row(_e):
-            sel = tree.selection()
-            if sel:
-                vals = "\t".join(str(v) for v in tree.item(sel[0], "values"))
-                tree.clipboard_clear(); tree.clipboard_append(vals)
-        tree.bind("<Double-1>", _copy_row)
-
-        return tree
-
-    @staticmethod
-    def _sort_tree(tree: ttk.Treeview, col: str, reverse: bool) -> None:
-        """Sort tree contents by column when header is clicked."""
-        data = [(tree.item(iid, "values"), iid) for iid in tree.get_children()]
-        col_idx = tree["columns"].index(col)
-        try:
-            data.sort(key=lambda x: x[0][col_idx].lower(), reverse=reverse)
-        except Exception:
-            data.sort(key=lambda x: x[0][col_idx], reverse=reverse)
-        for i, (_, iid) in enumerate(data):
-            tree.move(iid, "", i)
-            existing = tree.item(iid, "tags")
-            # Only recolour rows without a semantic tag (banned / admin_key etc.)
-            if not existing or set(existing) <= {"odd", "even", ""}:
-                tree.item(iid, tags=("even" if i % 2 == 0 else "odd",))
-        tree.heading(col, command=lambda c=col, t=tree:
-                     AdminPanel._sort_tree(t, c, not reverse))
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# User Details Window  (shown from Activity tab → User Details button)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _UserDetailsWindow(tk.Toplevel):
-    """
-    Shows the recent login history and registered devices for one user.
-    Only accessible from AdminPanel (which is already ADMIN-gated).
-    No passwords, hashes, tokens, or secret keys are displayed.
-    """
-
-    def __init__(self, master: tk.Widget, username: str) -> None:
-        super().__init__(master)
-        self.title(f"User Details — {username}")
-        self.configure(bg=BG)
-        self.geometry("860x580")
-        self.minsize(640, 400)
-        self.resizable(True, True)
-        self.grab_set()
-        self._username = username
-        self._build()
-        self.update_idletasks()
-        x = master.winfo_x() + (master.winfo_width()  - 860) // 2
-        y = master.winfo_y() + (master.winfo_height() - 580) // 2
-        self.geometry(f"+{x}+{y}")
-
-    def _build(self) -> None:
-        # ── Header ────────────────────────────────────────────────────────
-        hdr = tk.Frame(self, bg=SURFACE, height=52)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
-
-        logo = tk.Frame(hdr, bg=ACCENT, width=30, height=30)
-        logo.place(x=16, rely=0.5, anchor="w")
-        logo.pack_propagate(False)
-        tk.Label(logo, text="U",
-                 font=tkfont.Font(family="Segoe UI", size=10, weight="bold"),
-                 fg=BG, bg=ACCENT).place(relx=0.5, rely=0.5, anchor="center")
-
-        title_f = tk.Frame(hdr, bg=SURFACE)
-        title_f.place(x=56, rely=0.5, anchor="w")
-        tk.Label(title_f, text=self._username,
-                 font=tkfont.Font(family="Segoe UI", size=11, weight="bold"),
-                 fg=TEXT, bg=SURFACE).pack(side="left")
-        tk.Label(title_f, text="  ·  recent activity & devices",
-                 font=tkfont.Font(family="Segoe UI", size=9),
-                 fg=TEXT_MUTED, bg=SURFACE).pack(side="left")
-
-        close_lbl = tk.Label(hdr, text="✕",
-                             font=tkfont.Font(family="Segoe UI", size=11),
-                             fg=TEXT_MUTED, bg=SURFACE, padx=18, cursor="hand2")
-        close_lbl.pack(side="right", fill="y")
-        close_lbl.bind("<Button-1>", lambda _e: self.destroy())
-        close_lbl.bind("<Enter>",    lambda _e: close_lbl.configure(fg=DANGER, bg=DANGER_BG))
-        close_lbl.bind("<Leave>",    lambda _e: close_lbl.configure(fg=TEXT_MUTED, bg=SURFACE))
-
-        _sep(self, color=BORDER).pack(fill="x")
-
-        # ── Summary row from users.json ───────────────────────────────────
-        users = kg.load_all_users()
-        user_rec = next((u for u in users
-                         if u.get("username", "").lower() == self._username.lower()),
-                        None)
-
-        summary_f = tk.Frame(self, bg=BG)
-        summary_f.pack(fill="x", padx=16, pady=(12, 4))
-
-        def _kv(parent, key, val):
-            row = tk.Frame(parent, bg=SURFACE,
-                           highlightthickness=1, highlightbackground=BORDER,
-                           padx=12, pady=8)
-            row.pack(side="left", padx=(0, 8))
-            tk.Label(row, text=key.upper(),
-                     font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
-                     fg=TEXT_MUTED, bg=SURFACE).pack(anchor="w")
-            tk.Label(row, text=val,
-                     font=tkfont.Font(family="Segoe UI", size=10, weight="bold"),
-                     fg=TEXT, bg=SURFACE).pack(anchor="w")
-
-        if user_rec:
-            _kv(summary_f, "Tier",    user_rec.get("tier", "—"))
-            _kv(summary_f, "Joined",  user_rec.get("created", "—"))
-            key_masked = user_rec.get("key", "")
-            if len(key_masked) > 8:
-                key_masked = key_masked[:8] + "…"
-            _kv(summary_f, "Key",     key_masked)
-        else:
-            tk.Label(summary_f, text="No user record found in users.json",
-                     font=F_SMALL, fg=TEXT_MUTED, bg=BG).pack(anchor="w")
-
-        _sep(self, color=BORDER).pack(fill="x", pady=(8, 0))
-
-        # ── Two-panel split: login history | devices ──────────────────────
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=16, pady=12)
-        body.columnconfigure(0, weight=3)
-        body.columnconfigure(1, weight=2)
-        body.rowconfigure(0, weight=1)
-
-        # Left: login history
-        left = tk.Frame(body, bg=BG)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        tk.Label(left, text="RECENT LOGIN HISTORY",
-                 font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
-                 fg=TEXT_MUTED, bg=BG, anchor="w").pack(fill="x", pady=(0, 6))
-
-        hist_cols = [
-            ("timestamp",  "Date / Time",  140),
-            ("event_type", "Event",          100),
-            ("ip",         "IP",              100),
-            ("geo",        "Location",        120),
-            ("result",     "Result",          150),
-        ]
-        hist_tree = self._make_tree(left, hist_cols)
-
-        # Right: devices
-        right = tk.Frame(body, bg=BG)
-        right.grid(row=0, column=1, sticky="nsew")
-        tk.Label(right, text="REGISTERED DEVICES",
-                 font=tkfont.Font(family="Segoe UI", size=7, weight="bold"),
-                 fg=TEXT_MUTED, bg=BG, anchor="w").pack(fill="x", pady=(0, 6))
-
-        dev_cols = [
-            ("device_name", "Device",  130),
-            ("os_info",     "OS",       140),
-            ("ip",          "IP",        90),
-            ("last_seen",   "Last Seen", 130),
-        ]
-        dev_tree = self._make_tree(right, dev_cols)
-
-        # Populate
-        if al is not None:
-            history = al.load_for_user(self._username)
-            history = list(reversed(history))[:200]  # newest 200
-            for r in history:
-                ev = r.get("event_type", "")
-                tag = ("success_row" if "success" in ev
-                       else "fail_row" if "fail" in ev else "")
-                hist_tree.insert("", "end", tags=(tag,), values=(
-                    r.get("timestamp",  ""),
-                    ev,
-                    r.get("ip",         ""),
-                    r.get("geo",        ""),
-                    r.get("result",     ""),
-                ))
-
-            hist_tree.tag_configure("success_row",
-                background=SUCCESS_BG, foreground=SUCCESS)
-            hist_tree.tag_configure("fail_row",
-                background=DANGER_BG,  foreground=DANGER)
-
-            devices = al.load_devices_for_user(self._username)
-            for d in devices:
-                dev_tree.insert("", "end", values=(
-                    d.get("device_name", ""),
-                    d.get("os_info",     ""),
-                    d.get("ip",          ""),
-                    d.get("last_seen",   ""),
-                ))
-        else:
-            hist_tree.insert("", "end", values=(
-                "activity_log module not loaded", "", "", "", ""))
-
-    @staticmethod
-    def _make_tree(parent: tk.Widget, cols: list) -> ttk.Treeview:
-        """Lightweight scrollable tree for the details window."""
-        wrap = _frame(parent, bg=BG)
-        wrap.pack(fill="both", expand=True)
-
-        ids  = [c[0] for c in cols]
-        tree = ttk.Treeview(wrap, columns=ids, show="headings", selectmode="browse")
-
-        vsb = ttk.Scrollbar(wrap, orient="vertical",   command=tree.yview)
-        hsb = ttk.Scrollbar(wrap, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
-        for cid, hdr, w in cols:
-            tree.heading(cid, text=hdr)
-            tree.column(cid, width=w, minwidth=40, anchor="w", stretch=True)
-
-        tree.tag_configure("odd",  background=SURFACE)
-        tree.tag_configure("even", background=SURFACE2)
-
-        vsb.pack(side="right",  fill="y")
-        hsb.pack(side="bottom", fill="x")
-        tree.pack(side="left",  fill="both", expand=True)
-        return tree
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Auth Screen
 # ─────────────────────────────────────────────────────────────────────────────
 
-_CHANGELOG = """\
-GhostConfig
-Build 4.0  |  Windows Only
+_CHANGELOG = f"""\
+GhostConfig  v{CURRENT_VERSION}
+Windows Only  |  Auto-Updates Enabled
 
-  \u2022 Tabbed UI: Dashboard, Spoofer, Admin, Settings, Support
-  \u2022 Login & Register screen
-  \u2022 User accounts bound to license keys
+  \u2022 Dashboard — live GUID, serial, adapter status
+  \u2022 Spoofer — GUID / MAC / volume randomiser
+  \u2022 Devices — detailed hardware component info
+  \u2022 Task Manager — live process monitor
+  \u2022 Auto-updates — detects new versions on startup
+  \u2022 Settings — update channel, preferences
   \u2022 HMAC-SHA256 offline key validation
-  \u2022 ADMIN key unlocks Admin Panel
-  \u2022 Ban / blacklist / whitelist system
-  \u2022 Registry GUID rotate & MAC spoof
-  \u2022 Volume serial query via ctypes
-  \u2022 Auto .reg backup before every write
+  \u2022 Auto .reg backup before every registry write
   \u2022 PyInstaller single-file exe (UAC)
-  \u2022 Full dark theme
 """
 
 _SOCIAL = [("YouTube", "#ff0000"), ("Discord", "#5865f2"), ("Telegram", "#2ca5e0")]
@@ -1872,6 +837,277 @@ class AuthScreen(tk.Toplevel):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Update Dialog
+# ─────────────────────────────────────────────────────────────────────────────
+
+class UpdateDialog(tk.Toplevel):
+    """
+    Modal shown when a newer version is detected.
+    • Non-mandatory: shows "Update Now" and "Later" buttons.
+    • Mandatory:     shows only "Update Ghost" — cannot be dismissed.
+
+    After "Update Now" is clicked:
+      1. Downloads the new exe to a temp staging directory.
+      2. Verifies SHA-256 (if supplied by the release).
+      3. Launches ghost_updater.py with the current PID, old exe path, new exe path.
+      4. Calls self._app.destroy() to exit this process.
+    """
+
+    def __init__(self, master: tk.Tk, release: dict) -> None:
+        super().__init__(master)
+        self._app    = master
+        self._rel    = release
+        self._mandatory = bool(release.get("mandatory"))
+
+        self.title("GhostConfig Update")
+        self.configure(bg=SURFACE)
+        self.resizable(False, False)
+        self.grab_set()
+        if self._mandatory:
+            self.protocol("WM_DELETE_WINDOW", lambda: None)   # block close
+        else:
+            self.protocol("WM_DELETE_WINDOW", self._later)
+
+        version  = release.get("version", "Unknown")
+        notes    = release.get("releaseNotes") or []
+
+        # ── Layout ────────────────────────────────────────────────────────
+        # Header
+        hdr = tk.Frame(self, bg=ACCENT, height=4)
+        hdr.pack(fill="x")
+
+        body = tk.Frame(self, bg=SURFACE, padx=24, pady=20)
+        body.pack(fill="both", expand=True)
+
+        if self._mandatory:
+            tk.Label(body, text="Update Required",
+                     font=tkfont.Font(family="Segoe UI", size=14, weight="bold"),
+                     fg=DANGER, bg=SURFACE).pack(anchor="w")
+            tk.Label(body,
+                     text="This version of Ghost is no longer supported.\nPlease update to continue.",
+                     font=tkfont.Font(family="Segoe UI", size=9),
+                     fg=TEXT_MUTED, bg=SURFACE, justify="left").pack(anchor="w", pady=(4, 12))
+        else:
+            tk.Label(body, text="Ghost Update Available",
+                     font=tkfont.Font(family="Segoe UI", size=14, weight="bold"),
+                     fg=TEXT, bg=SURFACE).pack(anchor="w")
+            tk.Label(body, text=f"Version  {version}",
+                     font=tkfont.Font(family="Segoe UI", size=10),
+                     fg=ACCENT, bg=SURFACE).pack(anchor="w", pady=(4, 12))
+
+        if notes:
+            tk.Label(body, text="What's New",
+                     font=tkfont.Font(family="Segoe UI", size=9, weight="bold"),
+                     fg=TEXT_MUTED, bg=SURFACE).pack(anchor="w")
+            notes_frame = tk.Frame(body, bg=SURFACE2,
+                                   highlightthickness=1, highlightbackground=BORDER)
+            notes_frame.pack(fill="x", pady=(4, 14))
+            for note in notes[:8]:
+                tk.Label(notes_frame, text=f"  •  {note}",
+                         font=tkfont.Font(family="Segoe UI", size=9),
+                         fg=TEXT2, bg=SURFACE2, anchor="w", wraplength=380, justify="left",
+                         padx=8, pady=3).pack(fill="x")
+
+        # Progress area (hidden until download starts)
+        self._prog_frame = tk.Frame(body, bg=SURFACE)
+        self._prog_frame.pack(fill="x", pady=(0, 8))
+        self._prog_lbl = tk.Label(self._prog_frame, text="",
+                                  font=tkfont.Font(family="Segoe UI", size=9),
+                                  fg=TEXT_MUTED, bg=SURFACE)
+        self._prog_lbl.pack(anchor="w")
+        self._prog_bar = tk.Canvas(self._prog_frame, height=6, bg=SURFACE3,
+                                   bd=0, highlightthickness=1,
+                                   highlightbackground=BORDER, width=380)
+
+        # Error label
+        self._err_lbl = tk.Label(body, text="",
+                                 font=tkfont.Font(family="Segoe UI", size=9),
+                                 fg=DANGER, bg=SURFACE, wraplength=380, justify="left")
+        self._err_lbl.pack(anchor="w")
+
+        _sep(body, color=BORDER).pack(fill="x", pady=(8, 12))
+
+        # Buttons
+        btn_row = tk.Frame(body, bg=SURFACE)
+        btn_row.pack(fill="x")
+
+        update_label = "Update Ghost" if self._mandatory else "Update Now"
+        self._update_btn = tk.Button(
+            btn_row, text=update_label,
+            font=tkfont.Font(family="Segoe UI", size=10, weight="bold"),
+            fg=WHITE, bg=ACCENT, activebackground=ACCENT_HOV, activeforeground=WHITE,
+            relief="flat", bd=0, cursor="hand2", padx=16, pady=8,
+            command=self._start_update,
+        )
+        self._update_btn.pack(side="left")
+
+        if not self._mandatory:
+            tk.Button(
+                btn_row, text="Later",
+                font=tkfont.Font(family="Segoe UI", size=10),
+                fg=TEXT_MUTED, bg=SURFACE2,
+                activebackground=BORDER, activeforeground=TEXT,
+                relief="flat", bd=0, cursor="hand2", padx=16, pady=8,
+                command=self._later,
+            ).pack(side="left", padx=(8, 0))
+
+        # Centre the dialog
+        self.update_idletasks()
+        w, h = 440, self.winfo_reqheight() + 20
+        self.geometry(f"{w}x{h}")
+        px = master.winfo_x() + (master.winfo_width()  - w) // 2
+        py = master.winfo_y() + (master.winfo_height() - h) // 2
+        self.geometry(f"+{px}+{py}")
+
+    def _later(self) -> None:
+        self.destroy()
+
+    def _set_error(self, msg: str) -> None:
+        self._err_lbl.configure(text=msg)
+        self._update_btn.configure(state="normal", text="Retry")
+
+    def _set_progress(self, msg: str, pct: int | None = None) -> None:
+        self._prog_lbl.configure(text=msg)
+        self._prog_bar.pack(fill="x", pady=(4, 0))
+        if pct is not None:
+            self._prog_bar.delete("all")
+            width = self._prog_bar.winfo_width() or 380
+            filled = int(width * pct / 100)
+            self._prog_bar.create_rectangle(0, 0, filled, 6, fill=ACCENT, outline="")
+
+    def _start_update(self) -> None:
+        self._update_btn.configure(state="disabled", text="Downloading…")
+        self._err_lbl.configure(text="")
+        threading.Thread(target=self._download_and_apply, daemon=True).start()
+
+    def _download_and_apply(self) -> None:
+        rel      = self._rel
+        url      = rel.get("downloadUrl", "")
+        filename = rel.get("filename", "GhostConfig.exe")
+        expected_sha256 = (rel.get("sha256") or "").strip().lower()
+        version  = rel.get("version", "unknown")
+
+        if not url.startswith("https://"):
+            self.after(0, lambda: self._set_error(
+                "Update URL must use HTTPS. Aborting for security."))
+            return
+
+        # Validate filename — must end with .exe, no path separators
+        safe_name = Path(filename).name
+        if not safe_name.lower().endswith(".exe") or "/" in filename or "\\" in filename:
+            self.after(0, lambda: self._set_error("Invalid update filename. Aborting."))
+            return
+
+        # Staging directory — a subdirectory of the system temp folder
+        stage_dir = Path(tempfile.gettempdir()) / "ghost_update_staging"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        staged = stage_dir / safe_name
+
+        # ── Download ─────────────────────────────────────────────────────
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": f"GhostConfig/{CURRENT_VERSION}"}
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                total  = int(resp.headers.get("Content-Length", 0) or 0)
+                done   = 0
+                chunk_size = 65536
+                with open(staged, "wb") as fh:
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        done += len(chunk)
+                        if total:
+                            pct = int(done * 100 / total)
+                            self.after(0, lambda p=pct: self._set_progress(
+                                f"Downloading update…  {p}%", p))
+                        else:
+                            self.after(0, lambda d=done: self._set_progress(
+                                f"Downloading…  {d // 1024} KB"))
+        except Exception as exc:
+            self.after(0, lambda e=str(exc): self._set_error(f"Download failed: {e}"))
+            return
+
+        # ── SHA-256 verification ─────────────────────────────────────────
+        self.after(0, lambda: self._set_progress("Verifying…", None))
+        actual_sha256 = _sha256_file(staged)
+
+        if expected_sha256 and actual_sha256 != expected_sha256:
+            try:
+                staged.unlink()
+            except Exception:
+                pass
+            self.after(0, lambda: self._set_error(
+                "SHA-256 mismatch — download may be corrupted or tampered. "
+                "Update aborted. The old version remains intact."))
+            return
+
+        # ── Locate updater script and current exe ────────────────────────
+        if getattr(sys, "frozen", False):
+            current_exe = Path(sys.executable).resolve()
+            # Look for ghost_updater.exe alongside the exe first, then the .py
+            updater_exe = current_exe.parent / "ghost_updater.exe"
+            updater_py  = current_exe.parent / "ghost_updater.py"
+        else:
+            current_exe = Path(sys.argv[0]).resolve()
+            updater_exe = Path(__file__).parent / "ghost_updater.exe"
+            updater_py  = Path(__file__).parent / "ghost_updater.py"
+
+        if updater_exe.exists():
+            updater_cmd = [str(updater_exe)]
+        elif updater_py.exists():
+            updater_cmd = [sys.executable, str(updater_py)]
+        else:
+            self.after(0, lambda: self._set_error(
+                "ghost_updater.py not found next to the exe. Cannot apply update."))
+            return
+
+        pid = os.getpid()
+        backup_path = current_exe.with_suffix(".exe.bak")
+
+        cmd = updater_cmd + [
+            str(pid),
+            str(current_exe),
+            str(staged),
+            "--backup", str(backup_path),
+        ]
+
+        self.after(0, lambda: self._set_progress("Applying update…", 100))
+
+        try:
+            subprocess.Popen(
+                cmd,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) |
+                              getattr(subprocess, "DETACHED_PROCESS", 0),
+                close_fds=True,
+            )
+        except Exception as exc:
+            self.after(0, lambda e=str(exc): self._set_error(
+                f"Could not launch updater: {e}"))
+            return
+
+        # Notify server of download (best-effort, non-blocking)
+        def _notify():
+            try:
+                if _API_BASE_URL:
+                    req2 = urllib.request.Request(
+                        f"{_API_BASE_URL}/api/releases/downloaded",
+                        data=json.dumps({"version": version}).encode("utf-8"),
+                        headers={"Content-Type": "application/json",
+                                 "User-Agent": f"GhostConfig/{CURRENT_VERSION}"},
+                    )
+                    urllib.request.urlopen(req2, timeout=5)
+            except Exception:
+                pass
+        threading.Thread(target=_notify, daemon=True).start()
+
+        # Exit so the updater can replace the exe
+        self.after(300, lambda: self._app.destroy())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main Application  (single Tk root, tabbed)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1930,6 +1166,55 @@ class App(tk.Tk):
         self._build_ui()
         self._start_log_pump()
         self.deiconify()
+        # Kick off a background update check 2 s after the UI appears
+        self.after(2000, self._async_update_check)
+
+    def _async_update_check(self) -> None:
+        """Background thread: fetch latest release, compare versions."""
+        settings = _load_update_settings()
+        channel  = settings.get("channel", "stable")
+
+        def _worker():
+            release = _fetch_latest_release(channel)
+            if release is None:
+                return
+            latest  = release.get("version", "0.0.0")
+            if _semver_tuple(latest) > _semver_tuple(CURRENT_VERSION):
+                self.after(0, lambda r=release: self._show_update_dialog(r))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _show_update_dialog(self, release: dict) -> None:
+        try:
+            UpdateDialog(self, release)
+        except Exception as exc:
+            _log(f"[update] Could not show update dialog: {exc}", "warn")
+
+    def _manual_update_check(self) -> None:
+        """Called from the Settings tab 'Check for Updates' button."""
+        if hasattr(self, "_upd_latest_var"):
+            self._upd_latest_var.set("Checking…")
+        settings = _load_update_settings()
+        channel  = settings.get("channel", "stable")
+
+        def _worker():
+            release = _fetch_latest_release(channel)
+            def _done():
+                if release is None:
+                    if hasattr(self, "_upd_latest_var"):
+                        self._upd_latest_var.set("Could not reach server")
+                    return
+                latest = release.get("version", "—")
+                if hasattr(self, "_upd_latest_var"):
+                    self._upd_latest_var.set(latest)
+                if _semver_tuple(latest) > _semver_tuple(CURRENT_VERSION):
+                    self._show_update_dialog(release)
+                else:
+                    messagebox.showinfo("GhostConfig", "You are running the latest version.",
+                                        parent=self)
+            self.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ── Main shell layout  (HTML: .app > .sidebar + .main > .topbar + .content)
     def _build_ui(self) -> None:
@@ -1991,7 +1276,6 @@ class App(tk.Tk):
             ("⟳",  "Spoofer",      self._build_spoofer,      ()),
             ("◫",  "Devices",      self._build_devices,      ()),
             ("▤",  "Task Manager", self._build_task_manager, ()),
-            ("◆",  "Admin Panel",  self._build_admin_tab,    (tier,)),
         ]
         # .nav-group-label "SYSTEM"
         _system_pages = [
@@ -2069,21 +1353,6 @@ class App(tk.Tk):
                  font=tkfont.Font(family="Segoe UI", size=9),
                  fg=TEXT_MUTED, bg=SURFACE).pack(side="left", padx=(4, 0))
 
-        # Right side: status indicator + admin button (if ADMIN)
-        if tier == "ADMIN":
-            ab = tk.Button(
-                topbar, text="Admin Panel",
-                command=self._open_admin,
-                bg=ACCENT, fg=WHITE,
-                activebackground=ACCENT_HOV, activeforeground=WHITE,
-                relief="flat", bd=0, padx=14, pady=6,
-                font=tkfont.Font(family="Segoe UI", size=9, weight="bold"),
-                cursor="hand2", highlightthickness=0,
-            )
-            ab.pack(side="right", padx=(0, 20), pady=12)
-            ab.bind("<Enter>", lambda _e: ab.configure(bg=ACCENT_HOV))
-            ab.bind("<Leave>", lambda _e: ab.configure(bg=ACCENT))
-
         # Expiry / user info in topbar right area
         exp_lbl = f"Expires: {expiry_str}"
         tk.Label(topbar, text=exp_lbl,
@@ -2110,7 +1379,6 @@ class App(tk.Tk):
         ("Spoofer",      "Randomise hardware identifiers"),
         ("Devices",      "Detailed hardware component information"),
         ("Task Manager", "Live process monitor"),
-        ("Admin Panel",  "Key and user management"),
         ("Settings",     "Application preferences and account"),
         ("Support",      "Help, documentation, and FAQ"),
     ]
@@ -2133,9 +1401,6 @@ class App(tk.Tk):
         if canvas:
             self.bind_all("<MouseWheel>",
                 lambda e, c=canvas: c.yview_scroll(-1*(e.delta//120), "units"))
-
-    def _open_admin(self) -> None:
-        AdminPanel(self)
 
     # ─────────────────────────────────────────────────────────────────────
     # TAB 1 — Dashboard  (redesigned)
@@ -3644,42 +2909,10 @@ class App(tk.Tk):
         self.after(4000, lambda: self._tm_auto_refresh(_ps))
 
     # ─────────────────────────────────────────────────────────────────────
-    # TAB 3 — Admin Panel tab (in-app, ADMIN tier shows button; others see message)
-    # ─────────────────────────────────────────────────────────────────────
-    def _build_admin_tab(self, parent: tk.Frame, tier: str) -> None:
-        pad = _frame(parent, bg=BG)
-        pad.pack(expand=True, fill="both")
-
-        if tier == "ADMIN":
-            # Glowing icon
-            tk.Label(pad, text="◆",
-                     font=tkfont.Font(family="Segoe UI", size=44),
-                     fg=GOLD, bg=BG).pack(pady=(56, 6))
-            tk.Label(pad, text="Admin Panel",
-                     font=tkfont.Font(family="Segoe UI Semibold", size=20,
-                                      weight="bold"),
-                     fg=GOLD, bg=BG).pack()
-            tk.Label(pad, text="Open the full admin panel to manage keys, users, bans and lists.",
-                     font=F_BODY, fg=TEXT_MUTED, bg=BG).pack(pady=8)
-            _sep(pad, color=BORDER).pack(fill="x", padx=100, pady=14)
-            _btn(pad, "⚙  Open Admin Panel", self._open_admin,
-                 color=GOLD, fg=BG).pack(pady=6)
-        else:
-            tk.Label(pad, text="◎",
-                     font=tkfont.Font(family="Segoe UI", size=44),
-                     fg=TEXT_MUTED, bg=BG).pack(pady=(56, 6))
-            tk.Label(pad, text="Admin Panel",
-                     font=tkfont.Font(family="Segoe UI Semibold", size=20,
-                                      weight="bold"),
-                     fg=TEXT_MUTED, bg=BG).pack()
-            tk.Label(pad, text="This area requires an ADMIN-tier license key.",
-                     font=F_BODY, fg=TEXT_MUTED, bg=BG).pack(pady=8)
-
-    # ─────────────────────────────────────────────────────────────────────
     # TAB 5 — Settings  (redesigned with toggles, sliders & icon rows)
     # ─────────────────────────────────────────────────────────────────────
     def _build_settings(self, parent: tk.Frame) -> None:
-        PAGE_IDX = 5   # Dashboard=0,Spoofer=1,Devices=2,TaskMgr=3,Admin=4,Settings=5
+        PAGE_IDX = 4   # Dashboard=0,Spoofer=1,Devices=2,TaskMgr=3,Settings=4
         canvas = tk.Canvas(parent, bg=BG, bd=0, highlightthickness=0)
         vsb    = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
@@ -3873,11 +3106,69 @@ class App(tk.Tk):
             sub="One identifier spoofed at a time (background thread)",
             val="1", val_color=TEXT_MUTED, last=True)
 
+        # ── APP UPDATES ────────────────────────────────────────────────────
+        _sh("App Updates", "↑")
+        upd = _sc()
+        # Current Version row
+        _sr(upd, "Current Version",
+            sub="The version of Ghost currently installed on this machine",
+            val=f"v{CURRENT_VERSION}", val_color=ACCENT)
+        _sep(upd, color=BORDER).pack(fill="x")
+
+        # Latest Version row (populated by background check)
+        upd_latest_row = tk.Frame(upd, bg=SURFACE2)
+        upd_latest_row.pack(fill="x", padx=16, pady=11)
+        lc_ul = tk.Frame(upd_latest_row, bg=SURFACE2)
+        lc_ul.pack(side="left", fill="x", expand=True)
+        tk.Label(lc_ul, text="Latest Version",
+                 font=tkfont.Font(family="Segoe UI", size=9, weight="bold"),
+                 fg=TEXT, bg=SURFACE2, anchor="w").pack(anchor="w")
+        tk.Label(lc_ul, text="The newest release available from the update server",
+                 font=tkfont.Font(family="Segoe UI", size=8),
+                 fg=TEXT_MUTED, bg=SURFACE2, anchor="w").pack(anchor="w", pady=(1, 0))
+        self._upd_latest_var = tk.StringVar(value="—")
+        tk.Label(upd_latest_row, textvariable=self._upd_latest_var,
+                 font=F_MONO, fg=INFO, bg=SURFACE2).pack(side="right", padx=(0, 2))
+
+        _sep(upd, color=BORDER).pack(fill="x")
+
+        # Update Channel row with combobox
+        ch_row = tk.Frame(upd, bg=SURFACE2)
+        ch_row.pack(fill="x", padx=16, pady=11)
+        lc_ch = tk.Frame(ch_row, bg=SURFACE2)
+        lc_ch.pack(side="left", fill="x", expand=True)
+        tk.Label(lc_ch, text="Update Channel",
+                 font=tkfont.Font(family="Segoe UI", size=9, weight="bold"),
+                 fg=TEXT, bg=SURFACE2, anchor="w").pack(anchor="w")
+        tk.Label(lc_ch, text="Stable: tested releases.   Beta: early access builds.",
+                 font=tkfont.Font(family="Segoe UI", size=8),
+                 fg=TEXT_MUTED, bg=SURFACE2, anchor="w").pack(anchor="w", pady=(1, 0))
+        _upd_settings = _load_update_settings()
+        self._upd_channel_var = tk.StringVar(value=_upd_settings.get("channel", "stable"))
+        ch_combo = ttk.Combobox(ch_row, textvariable=self._upd_channel_var,
+                                values=["stable", "beta"],
+                                state="readonly", width=9, font=F_BODY)
+        ch_combo.pack(side="right", padx=(0, 2), ipady=4)
+
+        def _on_channel_change(_e=None):
+            ch = self._upd_channel_var.get()
+            _s = _load_update_settings()
+            _s["channel"] = ch
+            _save_update_settings(_s)
+
+        ch_combo.bind("<<ComboboxSelected>>", _on_channel_change)
+
+        # Check for Updates button
+        check_btn_row = tk.Frame(upd, bg=SURFACE2)
+        check_btn_row.pack(fill="x", padx=16, pady=(4, 12))
+        _btn(check_btn_row, "↺  Check for Updates", self._manual_update_check,
+             color=SURFACE3, fg=TEXT2, small=True).pack(anchor="w")
+
         # ── ABOUT ──────────────────────────────────────────────────────────
         _sh("About", "◆")
         ab = _sc()
         _sr(ab, "Application", val="GhostConfig",          val_color=TEXT)
-        _sr(ab, "Version",     val="4.0",                   val_color=ACCENT)
+        _sr(ab, "Version",     val=f"v{CURRENT_VERSION}",  val_color=ACCENT)
         _sr(ab, "Platform",    val="Windows 10 / 11",       val_color=TEXT)
         _sr(ab, "Python",      val=sys.version.split()[0],  val_color=TEXT_MUTED,
             last=True)
@@ -3906,9 +3197,9 @@ class App(tk.Tk):
             ("Do I need Administrator rights?",
              "Yes. Registry writes require elevation. Right-click the exe and choose\n"
              "'Run as administrator', or the UAC prompt will appear automatically."),
-            ("What is the admin key / master key?",
-             f"Admin master key: {kg.ADMIN_MASTER_KEY}\n"
-             "Use it to register/login as ADMIN. It unlocks the Admin Panel."),
+            ("How do I manage licenses and releases?",
+             "Log in to the Ghost web admin panel at your domain/admin\n"
+             "to manage keys, publish updates, view orders, and monitor customers."),
             ("Where are my backups stored?",
              f"Default: {cu.BACKUP_DIR}\n"
              "They are created automatically before every registry write."),
@@ -3933,7 +3224,7 @@ class App(tk.Tk):
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(wid, width=e.width))
         inner.bind("<Configure>",
                    lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        self._page_canvases[6] = canvas   # Support is page 6
+        self._page_canvases[5] = canvas   # Support is page 5 (Admin Panel removed)
 
         _section_label(inner, "Frequently Asked Questions").pack(
             fill="x", padx=PAD+12, pady=(16, 8))
@@ -4295,7 +3586,7 @@ class App(tk.Tk):
                 lbl_txt = (row_dict.get("Drive") or row_dict.get("Name") or
                            row_dict.get("GPU Name") or f"#{ridx+1}")
                 tk.Label(grid,
-                         text=f"  — {lbl_txt} —",
+                         text=f"  ◆ {lbl_txt} ◆",
                          font=tkfont.Font(family="Segoe UI", size=7,
                                           weight="bold"),
                          fg=TEXT_MUTED, bg=SURFACE2).pack(
@@ -4352,7 +3643,7 @@ class App(tk.Tk):
         """Return a colour for a value based on its field name and content."""
         v  = value.upper()
         fl = field.lower()
-        if v in ("N/A", "—", "UNKNOWN", ""):
+        if v in ("N/A", "…", "UNKNOWN", ""):
             return TEXT_MUTED
         if fl in ("status", "health"):
             if v in ("CONNECTED", "OK", "GOOD", "ACTIVE", "YES"):
@@ -4374,14 +3665,14 @@ class App(tk.Tk):
             if "NVME" in v: return ACCENT_LIT
             if "SSD" in v:  return SUCCESS
             return TEXT
-        if fl == "type" and v in ("WI-FI", "WI-FI"):
+        if fl == "type" and v in ("WI-FI", "WIFI"):
             return ACCENT_LIT
         return TEXT
 
     def _devices_refresh(self) -> None:
         """Kick off background collection for all sections."""
         self._dev_status_var.set("Refreshing hardware info…")
-        self._dev_refresh_btn.configure(state="disabled", text="⟳  Refreshing…")
+        self._dev_refresh_btn.configure(state="disabled", text="↻  Refreshing…")
 
         # Reset loaded flags + shimmer for each section
         for key, sec in self._dev_sections.items():
@@ -4426,13 +3717,13 @@ class App(tk.Tk):
     def _devices_refresh_done(self) -> None:
         ts = datetime.datetime.now().strftime("%H:%M:%S")
         self._dev_status_var.set(f"Refreshed at {ts}")
-        self._dev_refresh_btn.configure(state="normal", text="⟳  Refresh All")
+        self._dev_refresh_btn.configure(state="normal", text="↻  Refresh All")
         # Schedule auto-refresh in 60 s
         self.after(60_000, self._devices_refresh)
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     # Log pump
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     def _start_log_pump(self) -> None:
         self._pump()
 
@@ -4463,9 +3754,9 @@ class App(tk.Tk):
         self._log_box.configure(state="disabled")
         self._sync_log_gutter()
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     # Async runner
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     def _async(self, fn: Callable, *args) -> None:
         def _w():
             try:
@@ -4476,7 +3767,7 @@ class App(tk.Tk):
                 _log(f"[error] {exc}", "error")
         threading.Thread(target=_w, daemon=True).start()
 
-    # ── legacy GUID / MAC helpers kept for dashboard compatibility ─────────────
+    # ── legacy GUID / MAC helpers kept for dashboard compatibility ────────────
 
     def _read_guid(self) -> None:
         def _t():
@@ -4548,9 +3839,10 @@ class App(tk.Tk):
 
     def _randomise_all(self) -> None:
         self._spoof_everything()
-    # ─────────────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Backup label helper
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     def _upd_backup(self) -> None:
         bd = cu.BACKUP_DIR
         if bd.exists():

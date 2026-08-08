@@ -207,6 +207,7 @@
     if (name === 'fulfillment-diag')   loadFulfillmentDiag();
     if (name === 'settings')           loadSettings();
     if (name === 'coupons')            loadCoupons();
+    if (name === 'releases')           loadReleases();
   };
 
   /* ── Dashboard ─────────────────────────────────────────────────────── */
@@ -2237,6 +2238,7 @@
     wireInvStatusTabs();
     wireCoupons();
     wireGlobalSearch();
+    wireReleases();
 
     // Dashboard
     $('refreshDashboard').addEventListener('click', loadDashboard);
@@ -2367,6 +2369,216 @@
         const active = document.querySelector('.graph-btn.active');
         renderChart(active?.dataset.graph || 'revenue');
       }
+    });
+  }
+
+  /* ── Releases ───────────────────────────────────────────────────────── */
+  let _allReleases   = [];
+  let _relFilterMode = 'all';
+
+  // Utility: compare semver strings "1.2.3" — returns -1/0/1
+  function _semverCmp (a, b) {
+    const parse = s => (s || '0').replace(/^v/, '').split('.').map(Number);
+    const [av, bv] = [parse(a), parse(b)];
+    for (let i = 0; i < 3; i++) {
+      const d = (av[i] || 0) - (bv[i] || 0);
+      if (d !== 0) return d;
+    }
+    return 0;
+  }
+
+  async function loadReleases () {
+    const { ok, data } = await apiFetch('/api/admin/releases');
+    if (!ok) { showAlert('releasesAlert', 'error', data.error || 'Failed to load releases.'); return; }
+    _allReleases = data.releases || [];
+    renderReleasesTable(_allReleases);
+    updateReleaseSummary(_allReleases);
+  }
+
+  function updateReleaseSummary (releases) {
+    const stableCurrent = releases.find(r => r.channel === 'stable' && r.current && !r.disabled);
+    const betaCurrent   = releases.find(r => r.channel === 'beta'   && r.current && !r.disabled);
+    const totalDl       = releases.reduce((s, r) => s + (r.downloads || 0), 0);
+    setText('relStableVer', stableCurrent ? stableCurrent.version : '—');
+    setText('relBetaVer',   betaCurrent   ? betaCurrent.version   : '—');
+    setText('relTotalDl',   totalDl);
+  }
+
+  function renderReleasesTable (releases) {
+    const tbody = $('releasesTbody');
+    if (!tbody) return;
+    let filtered = releases;
+    if (_relFilterMode !== 'all') filtered = filtered.filter(r => r.channel === _relFilterMode);
+    // Sort newest released_at first
+    filtered = [...filtered].sort((a, b) => (b.released_at || '').localeCompare(a.released_at || ''));
+
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="admin-table-empty">No releases found.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(r => {
+      const chClass = r.channel === 'beta' ? 'var(--cyan)' : 'var(--green)';
+      const statusBadge = r.disabled
+        ? `<span style="color:var(--red);font-weight:600">Disabled</span>`
+        : r.current
+          ? `<span style="color:var(--green);font-weight:600">● Current</span>`
+          : `<span style="color:var(--muted)">Inactive</span>`;
+      const mandBadge = r.mandatory
+        ? `<span style="color:var(--red);font-size:11px;font-weight:700">REQUIRED</span>`
+        : `<span style="color:var(--muted);font-size:11px">—</span>`;
+      const relDate = r.released_at ? r.released_at.slice(0, 10) : '—';
+
+      return `<tr>
+        <td><code style="font-size:12px">${esc(r.version)}</code></td>
+        <td><span style="color:${chClass};font-weight:600;text-transform:capitalize">${esc(r.channel)}</span></td>
+        <td>${relDate}</td>
+        <td>${r.downloads || 0}</td>
+        <td>${mandBadge}</td>
+        <td>${statusBadge}</td>
+        <td style="white-space:nowrap;display:flex;gap:6px;flex-wrap:wrap">
+          ${!r.current && !r.disabled ? `<button class="btn btn-ghost btn--sm" onclick="relSetCurrent(${r.id})">Set Current</button>` : ''}
+          <button class="btn btn-ghost btn--sm" onclick="relEditNotes(${r.id})">Edit Notes</button>
+          ${!r.disabled ? `<button class="btn btn-ghost btn--sm" style="color:var(--red)" onclick="relDisable(${r.id})">Disable</button>` : `<button class="btn btn-ghost btn--sm" onclick="relRollback(${r.id})">Roll Back</button>`}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  window._relFilter = function (mode) {
+    _relFilterMode = mode;
+    // Update button styles
+    ['relFilterAll','relFilterStable','relFilterBeta'].forEach(id => {
+      const btn = $(id);
+      if (!btn) return;
+      const active = (id === `relFilter${mode.charAt(0).toUpperCase() + mode.slice(1)}`);
+      btn.className = active ? 'btn btn-primary btn--sm' : 'btn btn-ghost btn--sm';
+    });
+    renderReleasesTable(_allReleases);
+  };
+
+  window.relSetCurrent = async function (id) {
+    confirmAction('Set as Current', 'Promote this release to the active version for its channel?', async () => {
+      const { ok, data } = await apiFetch(`/api/admin/releases/${id}/set-current`, { method: 'POST' });
+      if (ok) { toast('Release set as current.', 'success'); loadReleases(); }
+      else toast(data.error || 'Failed.', 'error');
+    });
+  };
+
+  window.relDisable = async function (id) {
+    confirmAction('Disable Release', 'Hide this release from the desktop app update check?', async () => {
+      const { ok, data } = await apiFetch(`/api/admin/releases/${id}/disable`, { method: 'POST' });
+      if (ok) { toast('Release disabled.', 'success'); loadReleases(); }
+      else toast(data.error || 'Failed.', 'error');
+    });
+  };
+
+  window.relRollback = async function (id) {
+    confirmAction('Roll Back', 'Re-enable this release and make it current?', async () => {
+      const { ok, data } = await apiFetch('/api/admin/releases/rollback', {
+        method: 'POST',
+        body: JSON.stringify({ release_id: id }),
+      });
+      if (ok) { toast('Rolled back successfully.', 'success'); loadReleases(); }
+      else toast(data.error || 'Failed.', 'error');
+    });
+  };
+
+  window.relEditNotes = function (id) {
+    const r = _allReleases.find(r => r.id === id);
+    if (!r) return;
+    $('editRelNotesId').value   = id;
+    $('editRelNotesText').value = (r.releaseNotes || []).join('\n');
+    $('editRelMandatory').checked = !!r.mandatory;
+    show('editRelNotesModal');
+  };
+
+  async function saveEditRelNotes () {
+    const id    = parseInt($('editRelNotesId').value, 10);
+    const notes = $('editRelNotesText').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
+    const mand  = $('editRelMandatory').checked;
+    setBusy('saveEditRelNotesBtn', true);
+    try {
+      const { ok, data } = await apiFetch(`/api/admin/releases/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ releaseNotes: notes, mandatory: mand }),
+      });
+      if (ok) { toast('Notes updated.', 'success'); hide('editRelNotesModal'); loadReleases(); }
+      else showAlert('publishRelAlert', 'error', data.error || 'Save failed.');
+    } catch (_) {
+      showAlert('publishRelAlert', 'error', 'Network error.');
+    } finally {
+      setBusy('saveEditRelNotesBtn', false);
+    }
+  }
+
+  function openPublishRelease () {
+    $('editRelId').value        = '';
+    $('relVersion').value       = '';
+    $('relChannel').value       = 'stable';
+    $('relDownloadUrl').value   = '';
+    $('relFilename').value      = 'GhostConfig.exe';
+    $('relSha256').value        = '';
+    $('relNotes').value         = '';
+    $('relMandatory').checked   = false;
+    $('relSetCurrent').checked  = true;
+    $('publishRelModalTitle').textContent = 'Publish New Release';
+    hide('publishRelAlert');
+    show('publishReleaseModal');
+  }
+
+  async function savePublishRelease () {
+    const version = $('relVersion').value.trim();
+    const url     = $('relDownloadUrl').value.trim();
+    if (!version || !url) {
+      showAlert('publishRelAlert', 'error', 'Version and Download URL are required.');
+      return;
+    }
+    const notes = $('relNotes').value.trim().split('\n').map(s => s.trim()).filter(Boolean);
+    const payload = {
+      version,
+      downloadUrl:  url,
+      filename:     $('relFilename').value.trim() || 'GhostConfig.exe',
+      sha256:       $('relSha256').value.trim().toLowerCase(),
+      releaseNotes: notes,
+      mandatory:    $('relMandatory').checked,
+      channel:      $('relChannel').value,
+      set_current:  $('relSetCurrent').checked,
+    };
+    setBusy('savePublishReleaseBtn', true);
+    hideAlert('publishRelAlert');
+    try {
+      const { ok, data } = await apiFetch('/api/admin/releases', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (ok) {
+        toast(`Release ${version} published.`, 'success');
+        hide('publishReleaseModal');
+        loadReleases();
+      } else {
+        showAlert('publishRelAlert', 'error', data.error || 'Publish failed.');
+      }
+    } catch (_) {
+      showAlert('publishRelAlert', 'error', 'Network error.');
+    } finally {
+      setBusy('savePublishReleaseBtn', false);
+    }
+  }
+
+  function wireReleases () {
+    $('openPublishReleaseBtn')?.addEventListener('click', openPublishRelease);
+    $('closePublishReleaseModal')?.addEventListener('click', () => hide('publishReleaseModal'));
+    $('cancelPublishReleaseBtn')?.addEventListener('click', () => hide('publishReleaseModal'));
+    $('savePublishReleaseBtn')?.addEventListener('click', savePublishRelease);
+    $('publishReleaseModal')?.addEventListener('click', e => {
+      if (e.target === $('publishReleaseModal')) hide('publishReleaseModal');
+    });
+    $('closeEditRelNotesModal')?.addEventListener('click', () => hide('editRelNotesModal'));
+    $('cancelEditRelNotes')?.addEventListener('click',    () => hide('editRelNotesModal'));
+    $('saveEditRelNotesBtn')?.addEventListener('click', saveEditRelNotes);
+    $('editRelNotesModal')?.addEventListener('click', e => {
+      if (e.target === $('editRelNotesModal')) hide('editRelNotesModal');
     });
   }
 

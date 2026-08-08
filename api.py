@@ -1456,6 +1456,320 @@ def route_admin_downloads_rollback():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Releases  (auto-update system)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Public endpoint (no auth required):
+#   GET  /api/releases/latest?channel=stable   → latest release metadata
+#
+# Admin endpoints (require_admin):
+#   GET  /api/admin/releases             → list all releases
+#   POST /api/admin/releases             → publish a new release
+#   GET  /api/admin/releases/<id>        → single release
+#   PATCH /api/admin/releases/<id>       → edit notes / mandatory / disabled
+#   POST /api/admin/releases/<id>/set-current  → mark as current
+#   POST /api/admin/releases/<id>/disable      → disable without deleting
+#   POST /api/admin/releases/rollback    → re-publish a previous version as current
+#
+# Storage: releases.json   — list of release records, newest first
+# ─────────────────────────────────────────────────────────────────────────────
+
+RELEASES_DB  = _HERE / "releases.json"
+_releases_lock = threading.Lock()
+
+
+def _load_releases() -> list[dict]:
+    if RELEASES_DB.exists():
+        try:
+            data = json.loads(RELEASES_DB.read_text("utf-8"))
+            return data if isinstance(data, list) else []
+        except Exception:
+            pass
+    return []
+
+
+def _save_releases(data: list[dict]) -> None:
+    with _releases_lock:
+        tmp = RELEASES_DB.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, default=str), "utf-8")
+        tmp.replace(RELEASES_DB)
+
+
+def _semver_tuple(version: str) -> tuple[int, int, int]:
+    """Parse 'v1.2.3' or '1.2.3' into (1, 2, 3).  Returns (0,0,0) on parse error."""
+    v = version.lstrip("v").strip()
+    parts = v.split(".", 2)
+    try:
+        return (int(parts[0]), int(parts[1] if len(parts) > 1 else 0),
+                int(parts[2] if len(parts) > 2 else 0))
+    except (ValueError, IndexError):
+        return (0, 0, 0)
+
+
+# ── Public: GET /api/releases/latest ─────────────────────────────────────────
+
+@app.route("/api/releases/latest", methods=["GET"])
+@limiter.limit("60 per minute")
+def route_releases_latest():
+    """
+    GET /api/releases/latest?channel=stable
+    Returns the current (non-disabled) release for the requested channel.
+    No authentication required — the desktop app calls this on startup.
+    Only safe release metadata is returned; no internal ids or audit fields.
+    """
+    channel   = (request.args.get("channel") or "stable").lower().strip()
+    releases  = _load_releases()
+
+    # Filter: must be current + not disabled + matching channel
+    candidates = [
+        r for r in releases
+        if r.get("current") and not r.get("disabled")
+        and r.get("channel", "stable").lower() == channel
+    ]
+
+    if not candidates:
+        # Fall back to stable if beta channel has no current release
+        if channel != "stable":
+            candidates = [
+                r for r in releases
+                if r.get("current") and not r.get("disabled")
+                and r.get("channel", "stable").lower() == "stable"
+            ]
+        if not candidates:
+            return jsonify({"ok": False, "error": "No release available"}), 404
+
+    # Take the most-recently published among candidates
+    best = max(candidates, key=lambda r: r.get("released_at", ""))
+
+    return jsonify({
+        "ok":           True,
+        "version":      best.get("version", ""),
+        "downloadUrl":  best.get("downloadUrl", ""),
+        "filename":     best.get("filename", "GhostConfig.exe"),
+        "sha256":       best.get("sha256", ""),
+        "mandatory":    bool(best.get("mandatory", False)),
+        "releaseNotes": best.get("releaseNotes", []),
+        "releasedAt":   best.get("released_at", ""),
+        "channel":      best.get("channel", "stable"),
+    })
+
+
+# ── Admin: list releases ──────────────────────────────────────────────────────
+
+@app.route("/api/admin/releases", methods=["GET"])
+@require_admin
+def route_admin_list_releases():
+    """GET /api/admin/releases — list all releases, newest first."""
+    releases = _load_releases()
+    return jsonify({"ok": True, "releases": releases, "total": len(releases)})
+
+
+# ── Admin: publish a new release ─────────────────────────────────────────────
+
+@app.route("/api/admin/releases", methods=["POST"])
+@require_admin
+@limiter.limit("20 per minute")
+def route_admin_publish_release():
+    """
+    POST /api/admin/releases
+    {
+      version, downloadUrl, filename, sha256?,
+      releaseNotes: [str, ...], mandatory: bool,
+      channel: "stable"|"beta", set_current: bool
+    }
+    sha256 is optional — supply it to enable client-side hash verification.
+    set_current defaults to true; pass false to publish as non-current (draft).
+    """
+    data    = request.get_json(silent=True) or {}
+    version = (data.get("version") or "").strip()
+    url     = (data.get("downloadUrl") or "").strip()
+    fname   = (data.get("filename") or "GhostConfig.exe").strip()
+    sha256  = (data.get("sha256") or "").strip().lower()
+    notes   = data.get("releaseNotes") or []
+    mandatory  = bool(data.get("mandatory", False))
+    channel    = (data.get("channel") or "stable").lower().strip()
+    set_current = bool(data.get("set_current", True))
+
+    if not version:
+        return jsonify({"ok": False, "error": "'version' is required"}), 400
+    if not url:
+        return jsonify({"ok": False, "error": "'downloadUrl' is required"}), 400
+    if channel not in ("stable", "beta"):
+        return jsonify({"ok": False, "error": "channel must be 'stable' or 'beta'"}), 400
+    if not isinstance(notes, list):
+        notes = [str(notes)]
+
+    releases = _load_releases()
+
+    # Check for duplicate version in same channel
+    existing = next((r for r in releases
+                     if r.get("version") == version
+                     and r.get("channel", "stable") == channel), None)
+    if existing:
+        return jsonify({"ok": False,
+                        "error": f"Version {version} already exists in the {channel} channel"}), 409
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # Build new record — use numeric id (max existing + 1)
+    max_id  = max((r.get("id", 0) for r in releases), default=0)
+    record  = {
+        "id":           max_id + 1,
+        "version":      version,
+        "downloadUrl":  url,
+        "filename":     fname,
+        "sha256":       sha256,
+        "releaseNotes": notes,
+        "mandatory":    mandatory,
+        "channel":      channel,
+        "current":      set_current,
+        "disabled":     False,
+        "downloads":    0,
+        "released_at":  now_iso,
+        "published_by": g.actor,
+    }
+
+    # If set_current, un-current existing releases for the same channel
+    if set_current:
+        for r in releases:
+            if r.get("channel", "stable") == channel:
+                r["current"] = False
+
+    releases.append(record)
+    _save_releases(releases)
+    _audit("release_publish", g.actor, version,
+           f"channel={channel} mandatory={mandatory} url={url[:60]}")
+    return jsonify({"ok": True, "release": record}), 201
+
+
+# ── Admin: get / patch / delete a single release ─────────────────────────────
+
+@app.route("/api/admin/releases/<int:release_id>", methods=["GET"])
+@require_admin
+def route_admin_get_release(release_id: int):
+    """GET /api/admin/releases/<id>"""
+    releases = _load_releases()
+    record   = next((r for r in releases if r.get("id") == release_id), None)
+    if not record:
+        return jsonify({"ok": False, "error": "Release not found"}), 404
+    return jsonify({"ok": True, "release": record})
+
+
+@app.route("/api/admin/releases/<int:release_id>", methods=["PATCH"])
+@require_admin
+def route_admin_patch_release(release_id: int):
+    """PATCH /api/admin/releases/<id> — edit notes, mandatory, disabled, sha256, downloadUrl, filename."""
+    data     = request.get_json(silent=True) or {}
+    releases = _load_releases()
+    record   = next((r for r in releases if r.get("id") == release_id), None)
+    if not record:
+        return jsonify({"ok": False, "error": "Release not found"}), 404
+
+    allowed = {"releaseNotes", "mandatory", "disabled", "sha256", "downloadUrl", "filename"}
+    for k, v in data.items():
+        if k in allowed:
+            record[k] = v
+
+    _save_releases(releases)
+    _audit("release_edit", g.actor, record.get("version", ""), str({k: v for k, v in data.items() if k in allowed}))
+    return jsonify({"ok": True, "release": record})
+
+
+# ── Admin: set-current ────────────────────────────────────────────────────────
+
+@app.route("/api/admin/releases/<int:release_id>/set-current", methods=["POST"])
+@require_admin
+def route_admin_release_set_current(release_id: int):
+    """POST /api/admin/releases/<id>/set-current — promote this release to current."""
+    releases = _load_releases()
+    record   = next((r for r in releases if r.get("id") == release_id), None)
+    if not record:
+        return jsonify({"ok": False, "error": "Release not found"}), 404
+
+    channel = record.get("channel", "stable")
+    for r in releases:
+        if r.get("channel", "stable") == channel:
+            r["current"] = (r.get("id") == release_id)
+
+    _save_releases(releases)
+    _audit("release_set_current", g.actor, record.get("version", ""), f"channel={channel}")
+    return jsonify({"ok": True, "release": record})
+
+
+# ── Admin: disable ────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/releases/<int:release_id>/disable", methods=["POST"])
+@require_admin
+def route_admin_release_disable(release_id: int):
+    """POST /api/admin/releases/<id>/disable — disable a release (hide from clients)."""
+    releases = _load_releases()
+    record   = next((r for r in releases if r.get("id") == release_id), None)
+    if not record:
+        return jsonify({"ok": False, "error": "Release not found"}), 404
+
+    record["disabled"] = True
+    record["current"]  = False
+    _save_releases(releases)
+    _audit("release_disable", g.actor, record.get("version", ""))
+    return jsonify({"ok": True, "release": record})
+
+
+# ── Admin: rollback ───────────────────────────────────────────────────────────
+
+@app.route("/api/admin/releases/rollback", methods=["POST"])
+@require_admin
+def route_admin_release_rollback():
+    """
+    POST /api/admin/releases/rollback { release_id, channel? }
+    Re-enable and set-current a previous release, making it the active version
+    clients will receive from /api/releases/latest.
+    """
+    data       = request.get_json(silent=True) or {}
+    release_id = data.get("release_id")
+    if release_id is None:
+        return jsonify({"ok": False, "error": "'release_id' is required"}), 400
+
+    releases = _load_releases()
+    record   = next((r for r in releases if r.get("id") == int(release_id)), None)
+    if not record:
+        return jsonify({"ok": False, "error": "Release not found"}), 404
+
+    channel = record.get("channel", "stable")
+    for r in releases:
+        if r.get("channel", "stable") == channel:
+            r["current"] = (r.get("id") == int(release_id))
+    record["disabled"] = False
+
+    _save_releases(releases)
+    _audit("release_rollback", g.actor, record.get("version", ""),
+           f"channel={channel} rolled back to id={release_id}")
+    return jsonify({"ok": True, "release": record})
+
+
+# ── Admin: increment download counter (called by the desktop app after success) ──
+
+@app.route("/api/releases/downloaded", methods=["POST"])
+@limiter.limit("30 per minute")
+def route_release_downloaded():
+    """
+    POST /api/releases/downloaded { version }
+    Increments the download counter for the given version.
+    No auth required — desktop app sends this after a successful update.
+    """
+    data    = request.get_json(silent=True) or {}
+    version = (data.get("version") or "").strip()
+    if not version:
+        return jsonify({"ok": False, "error": "version is required"}), 400
+
+    releases = _load_releases()
+    record   = next((r for r in releases if r.get("version") == version), None)
+    if record:
+        record["downloads"] = int(record.get("downloads", 0)) + 1
+        _save_releases(releases)
+    return jsonify({"ok": True})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Admin — Settings
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1771,6 +2085,358 @@ def route_status():
         "users":      user_count,
         "version":    os.environ.get("GHOST_LATEST_VERSION", "unknown"),
     }), 200 if data_ok else 503
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin panel auth aliases  (JS expects /api/admin/login and /api/admin/logout)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/login", methods=["POST"])
+@limiter.limit("10 per minute")
+def route_admin_login_alias():
+    """Alias for /api/admin/panel/auth — used by the web admin panel JS."""
+    return route_admin_panel_auth()
+
+
+@app.route("/api/admin/logout", methods=["POST"])
+def route_admin_logout_alias():
+    """Alias for /api/admin/panel/logout — used by the web admin panel JS."""
+    return route_admin_panel_logout()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Customer Licenses  (inventory keys that have been sold/activated)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/customer-licenses", methods=["GET"])
+@require_admin
+def route_admin_customer_licenses():
+    """GET /api/admin/customer-licenses — keys with status sold/activated."""
+    licenses = _inv.list_keys(status=None)
+    sold = [k for k in licenses if k.get("status") in ("sold", "activated", "revoked")]
+    return jsonify({"ok": True, "licenses": sold, "total": len(sold)})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Inventory key generation
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/admin/inventory/generate", methods=["POST"])
+@require_admin
+@limiter.limit("20 per minute")
+def route_admin_inventory_generate():
+    """
+    POST /api/admin/inventory/generate
+    { plan, quantity, prefix, format, charTypes, expiration, notes }
+    Generates keys using the inventory module and saves them.
+    """
+    import random as _random
+    import string as _string
+
+    data     = request.get_json(silent=True) or {}
+    plan     = (data.get("plan") or "ghost_pro_monthly").strip().lower()
+    quantity = max(1, min(int(data.get("quantity", 100)), 10_000))
+    prefix   = (data.get("prefix") or "GHOST").strip().upper()[:16] or "GHOST"
+    fmt      = (data.get("format") or "seg4x4").strip()
+    char_types = data.get("charTypes") or {}
+    expiration = (data.get("expiration") or "never").strip()
+    notes    = (data.get("notes") or "").strip()[:200]
+
+    # Build character pool
+    pool = ""
+    if char_types.get("upper", True):
+        pool += _string.ascii_uppercase
+    if char_types.get("numbers", True):
+        pool += _string.digits
+    if char_types.get("symbols", False):
+        pool += "!@#$%^&*"
+    if not pool:
+        pool = _string.ascii_uppercase + _string.digits
+
+    # Resolve expiration date
+    exp_iso = ""
+    if expiration not in ("never", "custom", ""):
+        try:
+            days = int(expiration)
+            exp_iso = (datetime.datetime.now(datetime.timezone.utc)
+                       + datetime.timedelta(days=days)).date().isoformat()
+        except (ValueError, TypeError):
+            pass
+
+    def _gen_segment(length: int) -> str:
+        return "".join(_random.choices(pool, k=length))
+
+    def _make_key() -> str:
+        if fmt == "seg3x5":
+            return f"{prefix}-{_gen_segment(5)}-{_gen_segment(5)}-{_gen_segment(5)}"
+        if fmt == "seg1x12":
+            return f"{prefix}-{_gen_segment(12)}"
+        # default seg4x4
+        return f"{prefix}-{_gen_segment(4)}-{_gen_segment(4)}-{_gen_segment(4)}-{_gen_segment(4)}"
+
+    # Generate, dedup, and import
+    existing = {k["key"] for k in _inv.list_keys(status=None)}
+    generated: list[str] = []
+    duplicates = 0
+    attempts   = 0
+    max_attempts = quantity * 5
+
+    while len(generated) < quantity and attempts < max_attempts:
+        attempts += 1
+        key = _make_key()
+        if key in existing or key in generated:
+            duplicates += 1
+            continue
+        generated.append(key)
+
+    if generated:
+        # Write directly to inventory bypassing format validation
+        # (keys are generated to spec above, including non-GHOST prefixes)
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        norm_plan = _inv.normalize_plan(plan)
+        with _inv._inventory_lock:
+            records = _inv._load_migrated()
+            existing_keys = {r["key"].upper() for r in records}
+            for k in generated:
+                if k.upper() not in existing_keys:
+                    records.append({
+                        "key":            k,
+                        "plan":           norm_plan,
+                        "status":         "available",
+                        "customer":       "",
+                        "purchase_date":  "",
+                        "hwid":           "",
+                        "created_date":   now_iso,
+                        "expiration":     exp_iso,
+                        "notes":          notes,
+                        "order_id":       "",
+                        "customer_email": "",
+                        "assigned_user":  "",
+                        "added_at":       now_iso,
+                    })
+                    existing_keys.add(k.upper())
+            _inv._save(records)
+
+    inv_stats = _inv.stats()
+    _audit("inventory_generate", g.actor, f"{len(generated)} key(s)",
+           f"plan={plan} format={fmt} prefix={prefix} qty={len(generated)}")
+    return jsonify({
+        "ok":               True,
+        "keys":             generated,
+        "generated":        len(generated),
+        "duplicates":       duplicates,
+        "expiration":       exp_iso or None,
+        "prefix":           prefix,
+        "availableInventory": inv_stats.get("available", 0),
+    }), 201
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Fulfillment log
+# ─────────────────────────────────────────────────────────────────────────────
+
+FULFILLMENT_LOG = _HERE / "fulfillment_log.json"
+_fulfillment_lock = threading.Lock()
+
+
+def _load_fulfillment_log() -> list[dict]:
+    if FULFILLMENT_LOG.exists():
+        try:
+            return json.loads(FULFILLMENT_LOG.read_text("utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+@app.route("/api/admin/fulfillment-log", methods=["GET"])
+@require_admin
+def route_admin_fulfillment_log():
+    """GET /api/admin/fulfillment-log?limit=20 — recent fulfillment attempts."""
+    limit = min(int(request.args.get("limit", 20)), 500)
+    attempts = _load_fulfillment_log()[-limit:]
+    return jsonify({"ok": True, "attempts": attempts, "total": len(attempts)})
+
+
+@app.route("/api/admin/orders/fulfill-pending", methods=["POST"])
+@require_admin
+@limiter.limit("10 per minute")
+def route_admin_fulfill_pending():
+    """
+    POST /api/admin/orders/fulfill-pending
+    Attempts to assign an available key to every paid-but-undelivered order.
+    Returns { fulfilled, failed, skipped }.
+    """
+    orders = _load_orders()
+    fulfilled = 0
+    failed    = 0
+    skipped   = 0
+
+    for o in orders:
+        pstatus = (o.get("payment_status") or "").lower()
+        dstatus = (o.get("delivery_status") or "").lower()
+        if dstatus == "delivered":
+            skipped += 1
+            continue
+        if pstatus not in ("completed", "verified"):
+            skipped += 1
+            continue
+
+        plan = (o.get("plan") or "").lower()
+        next_key = _inv.get_next_unused(plan)
+        if not next_key:
+            failed += 1
+            continue
+
+        # Assign the key
+        _inv.assign_key(
+            key=next_key["key"],
+            order_id=o.get("order_id", ""),
+            customer_email=o.get("email", ""),
+            assigned_user=o.get("discord", ""),
+        )
+        o["license_key"] = next_key["key"]
+        o["delivery_status"] = "delivered"
+        fulfilled += 1
+
+    if fulfilled:
+        # Persist updated orders
+        tmp = ORDERS_DB.with_suffix(".tmp")
+        tmp.write_text(json.dumps(orders, indent=2, default=str), "utf-8")
+        tmp.replace(ORDERS_DB)
+        _audit("fulfill_pending", g.actor, f"{fulfilled} order(s)",
+               f"fulfilled={fulfilled} failed={failed} skipped={skipped}")
+
+    return jsonify({"ok": True, "fulfilled": fulfilled, "failed": failed, "skipped": skipped})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Coupon management
+# ─────────────────────────────────────────────────────────────────────────────
+
+COUPONS_DB = _HERE / "coupons.json"
+_coupons_lock = threading.Lock()
+
+
+def _load_coupons() -> list[dict]:
+    if COUPONS_DB.exists():
+        try:
+            data = json.loads(COUPONS_DB.read_text("utf-8"))
+            return data if isinstance(data, list) else []
+        except Exception:
+            pass
+    return []
+
+
+def _save_coupons(data: list[dict]) -> None:
+    with _coupons_lock:
+        tmp = COUPONS_DB.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, default=str), "utf-8")
+        tmp.replace(COUPONS_DB)
+
+
+@app.route("/api/admin/coupons", methods=["GET"])
+@require_admin
+def route_admin_list_coupons():
+    """GET /api/admin/coupons — list all coupons."""
+    coupons = _load_coupons()
+    return jsonify({"ok": True, "coupons": coupons, "total": len(coupons)})
+
+
+@app.route("/api/admin/coupons", methods=["POST"])
+@require_admin
+@limiter.limit("30 per minute")
+def route_admin_create_coupon():
+    """POST /api/admin/coupons { code, discount_type, discount_value, applies_to, ... }"""
+    data = request.get_json(silent=True) or {}
+    code = (data.get("code") or "").strip().upper()
+    if not code:
+        return jsonify({"ok": False, "error": "'code' is required"}), 400
+
+    coupons = _load_coupons()
+    if any(c.get("code") == code for c in coupons):
+        return jsonify({"ok": False, "error": f"Coupon '{code}' already exists"}), 409
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    record = {
+        "code":               code,
+        "discount_type":      (data.get("discount_type") or "percentage").strip(),
+        "discount_value":     float(data.get("discount_value") or 0),
+        "applies_to":         (data.get("applies_to") or "all").strip(),
+        "usage_limit":        data.get("usage_limit"),
+        "usage_per_customer": data.get("usage_per_customer"),
+        "uses":               0,
+        "start_date":         data.get("start_date") or "",
+        "expiration_date":    data.get("expiration_date") or "",
+        "active":             bool(data.get("active", True)),
+        "notes":              (data.get("notes") or "").strip()[:500],
+        "created_at":         now_iso,
+        "created_by":         g.actor,
+    }
+    coupons.append(record)
+    _save_coupons(coupons)
+    _audit("coupon_create", g.actor, code, f"type={record['discount_type']} value={record['discount_value']}")
+    return jsonify({"ok": True, "coupon": record}), 201
+
+
+@app.route("/api/admin/coupons/<code>", methods=["PATCH"])
+@require_admin
+def route_admin_update_coupon(code: str):
+    """PATCH /api/admin/coupons/<code> — update coupon fields."""
+    coupons = _load_coupons()
+    record  = next((c for c in coupons if c.get("code") == code.upper()), None)
+    if not record:
+        return jsonify({"ok": False, "error": "Coupon not found"}), 404
+
+    data    = request.get_json(silent=True) or {}
+    allowed = {"discount_type", "discount_value", "applies_to", "usage_limit",
+               "usage_per_customer", "active", "notes", "start_date",
+               "expiration_date"}
+    for k, v in data.items():
+        if k in allowed:
+            record[k] = v
+
+    _save_coupons(coupons)
+    _audit("coupon_update", g.actor, code.upper(), str({k: v for k, v in data.items() if k in allowed}))
+    return jsonify({"ok": True, "coupon": record})
+
+
+@app.route("/api/admin/coupons/<code>", methods=["DELETE"])
+@require_admin
+def route_admin_delete_coupon(code: str):
+    """DELETE /api/admin/coupons/<code>"""
+    coupons = _load_coupons()
+    new_list = [c for c in coupons if c.get("code") != code.upper()]
+    if len(new_list) == len(coupons):
+        return jsonify({"ok": False, "error": "Coupon not found"}), 404
+    _save_coupons(new_list)
+    _audit("coupon_delete", g.actor, code.upper())
+    return jsonify({"ok": True, "code": code.upper(), "deleted": True})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PayPal config  (public — used by the checkout page to initialise the SDK)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/paypal/config", methods=["GET"])
+def route_paypal_config():
+    """
+    GET /api/paypal/config
+    Returns the active PayPal client ID and environment.
+    Client secret is NEVER returned.
+    """
+    client_id = os.environ.get("PAYPAL_CLIENT_ID", "").strip()
+    env       = os.environ.get("PAYPAL_ENVIRONMENT", "").strip().lower() or "sandbox"
+
+    if client_id:
+        return jsonify({"ok": True, "configured": True,
+                        "clientId": client_id, "environment": env})
+
+    # Fall back to stored settings if env var not set
+    settings  = _load_settings()
+    client_id = settings.get("paypal_client_id", "").strip()
+    env       = settings.get("paypal_environment", "sandbox")
+    return jsonify({"ok": True, "configured": bool(client_id),
+                    "clientId": client_id, "environment": env})
 
 
 # ─────────────────────────────────────────────────────────────────────────────

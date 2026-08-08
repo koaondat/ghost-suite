@@ -10,6 +10,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('trial_limits.json', '.'),      # bundled next to the exe in dist/
+        ('ghost_updater.py',  '.'),      # auto-update helper — must sit next to GhostConfig.exe
     ],
     hiddenimports=[
         'config_utility',                # bundled alongside gui.py
