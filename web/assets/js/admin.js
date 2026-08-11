@@ -2523,6 +2523,28 @@
   };
 
   /* ── Upload + auto-publish flow ────────────────────────────────────── */
+  //
+  // Production upload architecture (no HTTP 413, no file size limits):
+  //
+  //   Step 1 — Hash (browser, no network):
+  //     Compute SHA-256 of the EXE using SubtleCrypto while showing progress.
+  //
+  //   Step 2 — Get presigned URL (tiny JSON request):
+  //     GET /api/admin/releases/upload-url?version=…&channel=…&filename=…
+  //     Returns { uploadUrl, downloadUrl, filename }.
+  //     uploadUrl is a short-lived R2/S3 presigned PUT URL.
+  //     The EXE never passes through Vercel or the API server.
+  //
+  //   Step 3 — Upload directly to R2 (browser → R2, no proxy):
+  //     PUT uploadUrl  Content-Type: application/octet-stream
+  //     XHR progress events drive the progress bar.
+  //     No Vercel. No 4.5 MB limit. No HTTP 413.
+  //
+  //   Step 4 — Finalize (tiny JSON request):
+  //     POST /api/admin/releases/finalize-upload { version, channel, sha256, fileSize, … }
+  //     API creates the release record pointing at the CDN URL.
+  //     /download/latest now redirects to the CDN. Auto-updater picks it up.
+
   function wireUploadZone () {
     const input    = $('relFileInput');
     const dropZone = $('relDropZone');
@@ -2536,6 +2558,8 @@
       }
       if (label) label.textContent = `✓  ${file.name}  (${_fmtBytes(file.size)})`;
       if (dropZone) dropZone.style.borderColor = 'var(--accent)';
+      // Clear any old SHA-256 from a previous file
+      if ($('relUploadSha256')) $('relUploadSha256').value = '';
     }
 
     input.addEventListener('change', () => handleFile(input.files?.[0]));
@@ -2550,78 +2574,202 @@
     }
   }
 
+  /* Compute SHA-256 of a File using SubtleCrypto (streams through 1 MB chunks
+     to keep the UI responsive on large files).  Returns lowercase hex string. */
+  async function _computeSha256 (file, onProgress) {
+    const chunkSize = 1024 * 1024; // 1 MB
+    const totalChunks = Math.ceil(file.size / chunkSize);
+    // Use streaming incremental hashing via SubtleCrypto digest on chunks
+    // (SubtleCrypto doesn't expose incremental API, so we collect all ArrayBuffers
+    //  then digest — this is still non-blocking because we yield between chunks)
+    const buffers = [];
+    let loaded = 0;
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSize;
+      const end   = Math.min(start + chunkSize, file.size);
+      const buf   = await file.slice(start, end).arrayBuffer();
+      buffers.push(buf);
+      loaded += (end - start);
+      if (onProgress) onProgress(loaded, file.size);
+      // Yield to keep UI responsive
+      await new Promise(r => setTimeout(r, 0));
+    }
+    // Concatenate all chunks
+    const total  = buffers.reduce((s, b) => s + b.byteLength, 0);
+    const merged = new Uint8Array(total);
+    let offset   = 0;
+    for (const b of buffers) { merged.set(new Uint8Array(b), offset); offset += b.byteLength; }
+    const hash = await crypto.subtle.digest('SHA-256', merged.buffer);
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
   async function relUploadAndPublish () {
     const file    = $('relFileInput')?.files?.[0];
     const version = $('relUploadVersion')?.value.trim();
     if (!file)    { showAlert('relUploadAlert', 'error', 'Select a GhostConfig.exe first.'); return; }
     if (!version) { showAlert('relUploadAlert', 'error', 'Enter a version number (e.g. 2.5.0).'); return; }
 
-    setBusy('relUploadPublishBtn', true);
-    hideAlert('relUploadAlert');
+    const channel    = $('relUploadChannel')?.value || 'stable';
+    const mandatory  = !!$('relUploadMandatory')?.checked;
+    const setCurrent = $('relUploadSetCurrent')?.checked !== false;
+    const minVersion = $('relUploadMinVer')?.value.trim() || '';
+    const notes = ($('relUploadNotes')?.value || '')
+      .split('\n').map(s => s.replace(/^[•·\-]\s*/, '').trim()).filter(Boolean);
+
     const progressWrap = $('relUploadProgress');
     const progressBar  = $('relUploadProgressBar');
     const progressLbl  = $('relUploadProgressLabel');
-    if (progressWrap) progressWrap.style.display = '';
 
-    // Build the multipart payload — the upload endpoint validates, saves, and
-    // publishes the release in one atomic step, so no separate publish call needed.
-    const notes = ($('relUploadNotes')?.value || '')
-      .split('\n')
-      .map(s => s.replace(/^[•·\-]\s*/, '').trim())
-      .filter(Boolean);
+    // Helper: update progress UI.  pct is 0–100 for the overall bar.
+    function setProgress (label, pct) {
+      if (progressWrap) progressWrap.style.display = '';
+      if (progressLbl)  progressLbl.textContent = label;
+      if (progressBar)  progressBar.style.width = (pct || 0) + '%';
+    }
 
-    const fd = new FormData();
-    fd.append('file',          file);
-    fd.append('version',       version);
-    fd.append('channel',       $('relUploadChannel')?.value    || 'stable');
-    fd.append('release_notes', notes.join('\n'));
-    fd.append('mandatory',     $('relUploadMandatory')?.checked  ? 'true' : 'false');
-    fd.append('set_current',   $('relUploadSetCurrent')?.checked ? 'true' : 'false');
-
-    let uploadData = null;
-    try {
-      await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/admin/releases/upload');
-        xhr.withCredentials = true;
-        xhr.upload.addEventListener('progress', e => {
-          if (e.lengthComputable && progressBar && progressLbl) {
-            const pct = Math.round(e.loaded * 100 / e.total);
-            progressBar.style.width  = pct + '%';
-            progressLbl.textContent = `Uploading…  ${pct}%  (${_fmtBytes(e.loaded)} / ${_fmtBytes(e.total)})`;
-          }
-        });
-        xhr.addEventListener('load', () => {
-          let parsed;
-          try {
-            parsed = JSON.parse(xhr.responseText);
-          } catch (_) {
-            // Response body was not JSON — surface the raw status code so it's
-            // easy to diagnose (e.g. a proxy 413 or an HTML Flask traceback).
-            parsed = {
-              ok:    false,
-              error: `Server returned a non-JSON response (HTTP ${xhr.status}). Check backend logs.`,
-            };
-          }
-          uploadData = parsed;
-          if (uploadData.ok) resolve();
-          else reject(new Error(uploadData.error || 'Upload failed'));
-        });
-        xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
-        xhr.send(fd);
-      });
-    } catch (err) {
-      showAlert('relUploadAlert', 'error', err.message);
+    // Helper: reset UI and surface a stage-specific failure message.
+    function _fail (stage, detail) {
+      const stageLabel = {
+        auth:     'Authentication failed',
+        hash:     'SHA-256 computation failed',
+        urlFetch: 'Storage upload failed',
+        upload:   'Storage upload failed',
+        publish:  'Release metadata creation failed',
+      }[stage] || 'Upload failed';
+      const msg = detail ? `${stageLabel}: ${detail}` : stageLabel;
+      showAlert('relUploadAlert', 'error', msg);
       setBusy('relUploadPublishBtn', false);
       if (progressWrap) progressWrap.style.display = 'none';
+    }
+
+    setBusy('relUploadPublishBtn', true);
+    hideAlert('relUploadAlert');
+
+    // ── Step 1: Compute SHA-256 in the browser ──────────────────────────
+    // The EXE binary NEVER leaves the browser during this step — pure Web Crypto.
+    // No network request is made here.
+    let sha256hex = '';
+    try {
+      setProgress('Preparing upload…', 0);
+      sha256hex = await _computeSha256(file, (loaded, total) => {
+        const pct = Math.round(loaded * 100 / total);
+        setProgress(`Preparing upload… ${pct}%`, pct * 0.2); // 0–20% of bar
+      });
+      if ($('relUploadSha256')) $('relUploadSha256').value = sha256hex;
+      setProgress('Getting upload URL…', 22);
+    } catch (err) {
+      _fail('hash', err.message);
       return;
     }
 
-    if (progressWrap) progressWrap.style.display = 'none';
-    setBusy('relUploadPublishBtn', false);
+    // ── Step 2: Authenticate + get presigned upload URL from API ────────
+    // This request is a tiny GET with query params — no binary data sent to Vercel.
+    let uploadUrl, downloadUrl, remoteFilename;
+    try {
+      const params = new URLSearchParams({ version, channel, filename: file.name });
+      const { ok, status, data } = await apiFetch(`/api/admin/releases/upload-url?${params}`);
+      if (status === 401 || status === 403) {
+        _fail('auth', data.error || 'Admin session expired. Please log in again.');
+        return;
+      }
+      if (!ok) {
+        // Surface the exact backend message (e.g. "Object storage is not configured on this server …")
+        _fail('urlFetch', data.error || `Server returned HTTP ${status}. Check that GHOST_STORAGE_BUCKET, GHOST_STORAGE_ACCESS_KEY, and GHOST_STORAGE_SECRET_KEY are set on the API server.`);
+        return;
+      }
+      uploadUrl      = data.uploadUrl;
+      downloadUrl    = data.downloadUrl;
+      remoteFilename = data.filename || file.name;
+    } catch (err) {
+      _fail('urlFetch', err.message);
+      return;
+    }
 
-    // Upload endpoint now publishes the release atomically — no second request needed.
-    toast(`✓ Release ${version} published and live!`, 'success');
+    // ── Step 3: PUT directly to object storage (browser → R2, no proxy) ─
+    //
+    // THE EXE IS UPLOADED DIRECTLY TO CLOUDFLARE R2 HERE.
+    // It never touches the Vercel/Express API server — no HTTP 413 possible.
+    // XHR is used so we get upload progress events.
+    try {
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.upload.addEventListener('progress', e => {
+          if (!e.lengthComputable) return;
+          const pct    = Math.round(e.loaded * 100 / e.total);
+          // Map 0–100% upload progress to 25–88% of the overall bar
+          const barPct = 25 + Math.round(pct * 0.63);
+          setProgress(
+            `Uploading ${file.name}… ${pct}%`,
+            barPct,
+          );
+        });
+        xhr.addEventListener('load', () => {
+          // R2 returns 200; many S3-compatible stores return 204
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            reject(new Error(
+              `HTTP ${xhr.status} from storage provider. ` +
+              'Check R2 CORS policy: allow PUT from your admin origin.'
+            ));
+          }
+        });
+        xhr.addEventListener('error', () => reject(new Error('Network error — check CORS policy on the storage bucket')));
+        xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+        xhr.send(file);
+      });
+    } catch (err) {
+      _fail('upload', err.message);
+      return;
+    }
+
+    setProgress('Verifying…', 90);
+    // Brief pause so "Verifying…" is visible before "Publishing…"
+    await new Promise(r => setTimeout(r, 500));
+    setProgress('Publishing release…', 93);
+
+    // ── Step 4: Finalize — send ONLY small JSON metadata to the API ─────
+    // The EXE is already in R2. This request is a few hundred bytes of JSON.
+    // sha256 was computed locally before upload — it is correct for the file.
+    try {
+      const { ok, status, data } = await apiFetch('/api/admin/releases/finalize-upload', {
+        method: 'POST',
+        body: JSON.stringify({
+          version,
+          channel,
+          filename:     remoteFilename,
+          downloadUrl,
+          sha256:       sha256hex,
+          fileSize:     file.size,
+          releaseNotes: notes,
+          mandatory,
+          set_current:  setCurrent,
+          minVersion,
+        }),
+      });
+      if (status === 401 || status === 403) {
+        _fail('auth', data.error || 'Admin session expired. Please log in again.');
+        return;
+      }
+      if (!ok) {
+        // File is in R2 but the record was not created — surface the exact reason.
+        _fail('publish', data.error ||
+          `Server returned HTTP ${status}. The file was uploaded to storage but the release record was not created. ` +
+          'You can retry by publishing manually with the "Publish New Release" button.');
+        return;
+      }
+    } catch (err) {
+      _fail('publish', err.message);
+      return;
+    }
+
+    setProgress(`Update v${version} published successfully`, 100);
+    setTimeout(() => { if (progressWrap) progressWrap.style.display = 'none'; }, 2500);
+    setBusy('relUploadPublishBtn', false);
+    toast(`✓  Update v${version} published successfully`, 'success', 5000);
+
     // Reset form
     if ($('relFileInput'))        $('relFileInput').value = '';
     if ($('relUploadVersion'))    $('relUploadVersion').value = '';

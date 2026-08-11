@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__ import annotations   
 
 import asyncio
 import datetime as dt
@@ -31,6 +31,13 @@ if not _ENV_PATH.exists():
         f"[ghostkey] .env file not found at {_ENV_PATH}\n"
         "Create it from .env.example before starting the bot."
     )
+
+
+
+
+
+
+    
 if not os.getenv("DISCORD_TOKEN", "").strip():
     raise SystemExit(
         f"[ghostkey] DISCORD_TOKEN is not set in {_ENV_PATH}\n"

@@ -151,14 +151,19 @@
   /* ── Plan label helper ─────────────────────────────────────── */
   function _planLabel (planSlug) {
     const s   = (planSlug || '').toLowerCase();
+    // Exact slug map for Phantom time-based plans
+    const exactMap = {
+      '1day': '1 Day', '7day': '7 Days', '30day': '30 Days', '90day': '90 Days',
+      trial: 'Trial', pro: 'Pro', lifetime: 'Lifetime', admin: 'Admin', basic: 'Basic',
+    };
+    if (exactMap[s]) return exactMap[s];
     // Normalise compound slugs like "ghost_pro_lifetime", "ghost_pro", "ghost_basic"
     if (s.includes('lifetime')) return 'Lifetime';
     if (s.includes('trial'))    return 'Trial';
     if (s.includes('basic'))    return 'Basic';
     if (s.includes('admin'))    return 'Admin';
     if (s.includes('pro'))      return 'Pro';
-    const map = { trial: 'Trial', pro: 'Pro', lifetime: 'Lifetime', admin: 'Admin', basic: 'Basic' };
-    return map[s] || planSlug || 'Pro';
+    return planSlug || 'Pro';
   }
 
   /* ── Build an account object from a verified backend order record ─── */
@@ -203,7 +208,13 @@
           purchaseDate:  (order.created_at || now).slice(0, 10),
           plan:          planLabel,
           planTier:      order.plan || 'pro',
-          billingPeriod: order.plan === 'lifetime' ? 'Once' : order.plan === 'trial' ? '7 days' : 'Monthly',
+          billingPeriod: order.plan === 'lifetime' ? 'Once'
+                       : order.plan === '1day'     ? '1 day'
+                       : order.plan === '7day'     ? '7 days'
+                       : order.plan === '30day'    ? '30 days'
+                       : order.plan === '90day'    ? '90 days'
+                       : order.plan === 'trial'    ? '7 days'
+                       : 'Monthly',
           amount:        order.price_usd != null ? Number(order.price_usd) : 0,
           paymentStatus: order.payment_status === 'verified' ? 'paid' : order.payment_status || 'pending',
           licenseKey:    order.license_key,
@@ -538,7 +549,7 @@
         const result = await GhostDashboard.resetActivation();
         closeModal();
         if (result.ok) {
-          toast('License activation reset. Re-enter your key to use Ghost.', 'success');
+          toast('License activation reset. Re-enter your key to use Phantom.', 'success');
         } else {
           toast('Reset failed. Please try again or contact support.', 'error');
         }
@@ -775,16 +786,16 @@
     try {
       const a    = document.createElement('a');
       a.href     = '/download/latest';
-      a.download = 'GhostConfig.exe';
+      a.download = 'Phantom.exe';
       document.body.appendChild(a);
       a.click();
       a.remove();
-      toast('Download started — GhostConfig.exe', 'success');
+      toast('Download started — Phantom.exe', 'success');
     } catch (_) {
       // Fallback: same canonical URL
       const a    = document.createElement('a');
       a.href     = '/download/latest';
-      a.download = 'GhostConfig.exe';
+      a.download = 'Phantom.exe';
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -837,7 +848,7 @@
       const desc = _el('dl-update-warning-desc');
       if (desc) desc.textContent =
         `Your installed version is below the required minimum (${releases.minimumVersion}). ` +
-        `Please download v${latest.version} to continue using Ghost.`;
+        `Please download v${latest.version} to continue using Phantom.`;
       if (warn) warn.hidden = false;
     }
 
@@ -847,7 +858,7 @@
       const text   = _el('dl-plan-notice-text');
       if (text) text.innerHTML =
         `Your <strong>${_esc(tier)}</strong> plan includes limited platform access. ` +
-        `<a href="pricing.html" style="color:var(--cyan)">Upgrade to Pro</a> to unlock all platforms and previous versions.`;
+        `<a href="product.html" style="color:var(--cyan)">Renew or upgrade</a> to unlock all platforms and previous versions.`;
       if (notice) notice.hidden = false;
     }
 
@@ -856,7 +867,7 @@
     if (latestCard) latestCard.hidden = false;
 
     const setTxt = (id, v) => { const e = _el(id); if (e) e.textContent = v; };
-    setTxt('dl-latest-name',    'Ghost ' + latest.version);
+    setTxt('dl-latest-name',    'Phantom ' + latest.version);
     setTxt('dl-latest-version', latest.version);
     setTxt('dl-release-date',   _fmtShort(latest.releaseDate));
     setTxt('dl-version-tag',    latest.version);
@@ -891,7 +902,7 @@
         const disabled = !allowed;
         const ariaLbl  = disabled
           ? `${p.name} — not available on your plan`
-          : `Download Ghost ${latest.version} for ${p.name}`;
+          : `Download Phantom ${latest.version} for ${p.name}`;
         return `
           <button
             class="dl-platform-btn${disabled ? ' dl-platform-btn--disabled' : ''}"
@@ -1350,7 +1361,7 @@
       if (avBanner) {
         avBanner.hidden = false;
         const desc = _el('upd-available-desc');
-        if (desc) desc.textContent = `Ghost ${latestVer} is available (published ${relDate}).`;
+        if (desc) desc.textContent = `Phantom ${latestVer} is available (published ${relDate}).`;
         const dlBtn = _el('upd-download-btn');
         if (dlBtn) dlBtn.href = data.downloadUrl || '/download/latest';
       }

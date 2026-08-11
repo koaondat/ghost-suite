@@ -158,7 +158,15 @@
   }
 
   /* ── Plan label ─────────────────────────────────────────────────────── */
-  var _PLAN_LABELS = { pro: 'Ghost Pro (monthly)', lifetime: 'Ghost Lifetime', trial: 'Ghost Trial (free)' };
+  var _PLAN_LABELS = {
+    pro:      'Pro (monthly)',
+    lifetime: 'Phantom Lifetime',
+    trial:    'Phantom Trial (free)',
+    '1day':   'Phantom — 1 Day',
+    '7day':   'Phantom — 7 Days',
+    '30day':  'Phantom — 30 Days',
+    '90day':  'Phantom — 90 Days',
+  };
   function _planLabel(planId, storedLabel) {
     if (storedLabel) return storedLabel;
     return _PLAN_LABELS[(planId || '').toLowerCase()] || planId || '—';
@@ -168,7 +176,7 @@
     if (!captureId) return '—';
     var raw  = captureId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
     var sufx = raw.slice(-8).padStart(8, '0');
-    return 'GHOST-INV-' + sufx;
+    return 'PHANTOM-INV-' + sufx;
   }
 
   /* ── Render order details ───────────────────────────────────────────── */
@@ -196,7 +204,7 @@
     if (subEl) {
       subEl.textContent = isFree
         ? 'Your coupon covered 100% of this purchase.'
-        : 'Thank you for purchasing Ghost.';
+        : 'Thank you for purchasing Phantom.';
     }
 
     _setText('os-order-id',   orderId);
@@ -395,7 +403,7 @@
     fresh.addEventListener('click', function() {
       var a = document.createElement('a');
       a.href     = '/download/latest';
-      a.download = 'GhostConfig.exe';
+      a.download = 'Phantom.exe';
       a.click();
       toast('✔ Download started', 'success', 2000);
     });
@@ -434,7 +442,7 @@
 
     var lines = [
       '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-      '                  GHOST — INVOICE',
+      '                 PHANTOM — INVOICE',
       '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
       '',
       'Invoice ID       : ' + invoiceId,
@@ -453,8 +461,8 @@
       'License Key      : ' + licenseKey,
       '',
       '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-      'Ghost — Windows QA Environment Configuration Utility',
-      'Support: https://discord.gg/ghost',
+      'Phantom — Premium Windows Utility',
+      'Support: https://discord.gg/your-invite',
       '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
     ];
 
@@ -463,7 +471,7 @@
     var url  = URL.createObjectURL(blob);
     var a    = document.createElement('a');
     a.href     = url;
-    a.download = 'ghost-invoice-' + (invoiceId || orderId) + '.txt';
+    a.download = 'phantom-invoice-' + (invoiceId || orderId) + '.txt';
     a.click();
     setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
   }

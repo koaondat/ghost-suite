@@ -46,6 +46,89 @@
      The backend is the authoritative source for all billing.
   ─────────────────────────────────────────────────────────── */
   const PLANS = {
+    '1day': {
+      id:        '1day',
+      name:      '1 Day',
+      tagline:   'Short-term access — perfect for trying Phantom',
+      price:     2.99,
+      currency:  'USD',
+      symbol:    '$',
+      formatted: '$2.99',
+      duration:  '1 day from activation',
+      color:     'accent',
+      features: [
+        'Full access to all Phantom features',
+        'Custom profile creation and switching',
+        'Overlay support with hotkey control',
+        'Machine GUID management and rotation',
+        'MAC address management',
+        'Automatic registry backups',
+        'Discord server access for support',
+      ],
+    },
+    '7day': {
+      id:        '7day',
+      name:      '7 Days',
+      tagline:   '7-day access — great value for a week',
+      price:     9.99,
+      currency:  'USD',
+      symbol:    '$',
+      formatted: '$9.99',
+      duration:  '7 days from activation',
+      color:     'accent',
+      features: [
+        'Full access to all Phantom features',
+        'Custom profile creation and switching',
+        'Overlay support with hotkey control',
+        'Machine GUID management and rotation',
+        'MAC address management',
+        'Automatic registry backups',
+        'Discord server access for support',
+      ],
+    },
+    '30day': {
+      id:        '30day',
+      name:      '30 Days',
+      tagline:   'Best seller — most popular access plan',
+      price:     24.99,
+      currency:  'USD',
+      symbol:    '$',
+      formatted: '$24.99',
+      duration:  '30 days from activation',
+      color:     'accent',
+      features: [
+        'Full access to all Phantom features',
+        'Custom profile creation and switching',
+        'Overlay support with hotkey control',
+        'Machine GUID management and rotation',
+        'MAC address management',
+        'Automatic registry backups',
+        'Frequent updates during your access period',
+        'Discord server access for support',
+      ],
+    },
+    '90day': {
+      id:        '90day',
+      name:      '90 Days',
+      tagline:   'Best price — maximum savings per day',
+      price:     59.99,
+      currency:  'USD',
+      symbol:    '$',
+      formatted: '$59.99',
+      duration:  '90 days from activation',
+      color:     'accent',
+      features: [
+        'Full access to all Phantom features',
+        'Custom profile creation and switching',
+        'Overlay support with hotkey control',
+        'Machine GUID management and rotation',
+        'MAC address management',
+        'Automatic registry backups',
+        'Frequent updates during your access period',
+        'Discord server access for support',
+      ],
+    },
+    // Legacy plan keys kept for backward compatibility
     pro: {
       id:        'pro',
       name:      'Pro',
@@ -57,11 +140,12 @@
       duration:  'Active while subscription is live',
       color:     'accent',
       features: [
-        'Everything in Trial',
-        'MAC address spoofing',
-        'Discord bot integration',
-        'Key generation & revocation',
-        'Audit log access',
+        'Full access to all Phantom features',
+        'Custom profile creation and switching',
+        'Overlay support with hotkey control',
+        'Machine GUID management and rotation',
+        'MAC address management',
+        'Automatic registry backups',
         'Priority Discord support',
         'All future updates',
       ],
@@ -75,21 +159,23 @@
       symbol:    '$',
       formatted: '$79 one-time',
       duration:  'Permanent — no expiry',
-      color:     'cyan',
+      color:     'accent',
       features: [
-        'Everything in Pro',
-        'Permanent license key',
+        'Full access to all Phantom features',
+        'Custom profile creation and switching',
+        'Overlay support with hotkey control',
+        'Machine GUID management and rotation',
+        'MAC address management',
+        'Automatic registry backups',
         'All future updates included',
         'No subscription, zero recurring cost',
-        'Priority Discord support',
-        'Early access to new features',
       ],
     },
   };
 
   const params      = new URLSearchParams(window.location.search);
-  const planKey     = (params.get('plan') || 'pro').toLowerCase();
-  const ACTIVE_PLAN = PLANS[planKey] || PLANS.pro;
+  const planKey     = (params.get('plan') || '30day').toLowerCase();
+  const ACTIVE_PLAN = PLANS[planKey] || PLANS['30day'];
 
   /* ── Coupon state ────────────────────────────────────────────── */
   let _appliedCoupon = null;   // null | { couponCode, discount, finalPrice, originalPrice, isFree, label }
@@ -312,7 +398,7 @@
           // no need to fetch config separately.
           const a    = document.createElement('a');
           a.href     = '/download/latest';
-          a.download = 'GhostConfig.exe';
+          a.download = 'Phantom.exe';
           document.body.appendChild(a);
           a.click();
           a.remove();
@@ -320,14 +406,14 @@
           // Hard fallback — same canonical URL
           const a    = document.createElement('a');
           a.href     = '/download/latest';
-          a.download = 'GhostConfig.exe';
+          a.download = 'Phantom.exe';
           document.body.appendChild(a);
           a.click();
           a.remove();
         } finally {
           dlBtn.disabled = false;
           dlBtn.innerHTML =
-            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download Ghost';
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download Phantom';
         }
       };
     }

@@ -21,5 +21,12 @@ python-dotenv>=1.0,<2
 # ── Production WSGI server (api.py in prod) ────────────────────
 gunicorn>=22.0,<24
 
+# ── Object storage — presigned uploads (R2 / S3) ─────────────
+# Required for the production release upload flow.
+# boto3 is the AWS SDK; it works with any S3-compatible endpoint
+# including Cloudflare R2 (set GHOST_STORAGE_ENDPOINT in .env).
+# Not required if you only use self-hosted local-disk uploads.
+boto3>=1.34,<2
+
 # ── Structured / rotating log support ─────────────────────────
 # (stdlib logging is used; no extra dep needed)

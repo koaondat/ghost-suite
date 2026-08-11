@@ -1460,24 +1460,91 @@ def route_admin_downloads_rollback():
 # Releases  (auto-update system)
 # ─────────────────────────────────────────────────────────────────────────────
 #
+# Upload flow (production — no HTTP 413, no file size limits):
+#   1. Admin browser calls GET /api/admin/releases/upload-url
+#        → receives a short-lived presigned PUT URL pointing at R2/S3
+#          *and* the final public CDN URL the EXE will live at.
+#   2. Browser computes SHA-256 locally (SubtleCrypto), then PUTs the file
+#      directly to R2 (bypasses all proxies — no Vercel, no Flask).
+#   3. Browser calls POST /api/admin/releases/finalize-upload with metadata
+#      (version, channel, sha256, fileSize, downloadUrl, releaseNotes, etc.)
+#        → API validates, creates the release record, marks it current.
+#
+# Fallback (self-hosted / local dev — no R2 configured):
+#   POST /api/admin/releases/upload  (multipart, direct to this server)
+#
 # Public endpoint (no auth required):
 #   GET  /api/releases/latest?channel=stable   → latest release metadata
+#   GET  /download/latest                      → 302 to CDN URL
 #
 # Admin endpoints (require_admin):
-#   GET  /api/admin/releases             → list all releases
-#   POST /api/admin/releases             → publish a new release
-#   GET  /api/admin/releases/<id>        → single release
-#   PATCH /api/admin/releases/<id>       → edit notes / mandatory / disabled
-#   POST /api/admin/releases/<id>/set-current  → mark as current
-#   POST /api/admin/releases/<id>/disable      → disable without deleting
-#   POST /api/admin/releases/rollback    → re-publish a previous version as current
+#   GET  /api/admin/releases                      → list all releases
+#   GET  /api/admin/releases/upload-url           → get presigned PUT URL
+#   POST /api/admin/releases/finalize-upload      → create release from CDN URL
+#   POST /api/admin/releases                      → publish release (URL only, no binary)
+#   GET  /api/admin/releases/<id>                 → single release
+#   PATCH /api/admin/releases/<id>                → edit notes / mandatory / disabled
+#   POST /api/admin/releases/<id>/set-current     → mark as current
+#   POST /api/admin/releases/<id>/disable         → disable without deleting
+#   POST /api/admin/releases/rollback             → re-publish a previous version as current
 #
-# Storage: releases.json   — list of release records, newest first
+# Storage: releases.json   — list of release records (downloadUrl = CDN URL)
+# Binary storage: Cloudflare R2 (or any S3-compatible bucket)
 # ─────────────────────────────────────────────────────────────────────────────
 
 RELEASES_DB   = _HERE / "releases.json"
-RELEASES_DIR  = _HERE / "release_files"   # stores uploaded EXE binaries
+RELEASES_DIR  = _HERE / "release_files"   # fallback: local EXE storage
 _releases_lock = threading.Lock()
+
+# ── Object storage (R2 / S3-compatible) ──────────────────────────────────────
+# Set these env vars to enable presigned-URL uploads:
+#   GHOST_STORAGE_BUCKET     — bucket name (e.g. "ghost-releases")
+#   GHOST_STORAGE_ENDPOINT   — R2 endpoint  (https://<account>.r2.cloudflarestorage.com)
+#                              or any S3-compatible URL (leave blank for AWS S3)
+#   GHOST_STORAGE_ACCESS_KEY — AWS_ACCESS_KEY_ID / R2 Access Key ID
+#   GHOST_STORAGE_SECRET_KEY — AWS_SECRET_ACCESS_KEY / R2 Secret Key
+#   GHOST_STORAGE_REGION     — AWS region (default "auto" for R2; "us-east-1" for S3)
+#   GHOST_STORAGE_CDN_BASE   — public CDN base URL, e.g. https://cdn.ghostapp.io
+#                              (if omitted the endpoint URL is used as the base)
+#   GHOST_STORAGE_PUBLIC     — set to "true" to use presigned PUT (default);
+#                              "false" for private bucket (requires signed download URLs)
+
+_STORAGE_BUCKET      = os.environ.get("GHOST_STORAGE_BUCKET", "").strip()
+_STORAGE_ENDPOINT    = os.environ.get("GHOST_STORAGE_ENDPOINT", "").strip()
+_STORAGE_ACCESS_KEY  = os.environ.get("GHOST_STORAGE_ACCESS_KEY", "").strip()
+_STORAGE_SECRET_KEY  = os.environ.get("GHOST_STORAGE_SECRET_KEY", "").strip()
+_STORAGE_REGION      = os.environ.get("GHOST_STORAGE_REGION", "auto").strip() or "auto"
+_STORAGE_CDN_BASE    = os.environ.get("GHOST_STORAGE_CDN_BASE", "").strip().rstrip("/")
+
+# Presigned URL TTL — 30 minutes; enough for any upload on a slow connection
+_PRESIGNED_TTL_SECS  = 1800
+
+
+def _storage_configured() -> bool:
+    return bool(_STORAGE_BUCKET and _STORAGE_ACCESS_KEY and _STORAGE_SECRET_KEY)
+
+
+def _get_s3_client():
+    """Return a boto3 S3 client configured for R2 / AWS S3."""
+    import boto3  # type: ignore
+    kwargs: dict = dict(
+        aws_access_key_id     = _STORAGE_ACCESS_KEY,
+        aws_secret_access_key = _STORAGE_SECRET_KEY,
+        region_name           = _STORAGE_REGION,
+    )
+    if _STORAGE_ENDPOINT:
+        kwargs["endpoint_url"] = _STORAGE_ENDPOINT
+    return boto3.client("s3", **kwargs)
+
+
+def _cdn_url(object_key: str) -> str:
+    """Return the public CDN URL for a stored object."""
+    if _STORAGE_CDN_BASE:
+        return f"{_STORAGE_CDN_BASE}/{object_key}"
+    if _STORAGE_ENDPOINT:
+        return f"{_STORAGE_ENDPOINT}/{_STORAGE_BUCKET}/{object_key}"
+    # AWS S3 virtual-hosted style
+    return f"https://{_STORAGE_BUCKET}.s3.{_STORAGE_REGION}.amazonaws.com/{object_key}"
 
 
 def _load_releases() -> list[dict]:
@@ -1678,11 +1745,211 @@ def route_admin_publish_release():
     return jsonify({"ok": True, "release": record}), 201
 
 
-# ── Admin: upload EXE ─────────────────────────────────────────────────────────
+# ── Shared validation constants ───────────────────────────────────────────────
 
 _VALID_CHANNELS = {"stable", "beta", "development"}
 _VERSION_RE     = __import__("re").compile(r"^v?\d+\.\d+(\.\d+)?([.-][\w.+-]+)?$")
 
+
+# ── Admin: get presigned upload URL (R2 / S3) ─────────────────────────────────
+
+@app.route("/api/admin/releases/upload-url", methods=["GET"])
+@require_admin
+@limiter.limit("30 per minute")
+def route_admin_release_upload_url():
+    """
+    GET /api/admin/releases/upload-url?version=2.5.0&channel=stable&filename=GhostConfig.exe
+
+    Returns a short-lived presigned PUT URL for direct browser-to-R2 upload.
+    The browser PUTs the EXE directly to R2 (never through this server or Vercel).
+    After the PUT succeeds, the browser calls POST /api/admin/releases/finalize-upload.
+
+    Requires GHOST_STORAGE_BUCKET, GHOST_STORAGE_ACCESS_KEY, GHOST_STORAGE_SECRET_KEY.
+    Returns 503 if object storage is not configured.
+    """
+    if not _storage_configured():
+        return jsonify({
+            "ok":    False,
+            "error": (
+                "Object storage is not configured on this server. "
+                "Set GHOST_STORAGE_BUCKET, GHOST_STORAGE_ACCESS_KEY, and "
+                "GHOST_STORAGE_SECRET_KEY to enable presigned uploads. "
+                "See .env.example for full documentation."
+            ),
+        }), 503
+
+    version  = (request.args.get("version") or "").strip()
+    channel  = (request.args.get("channel") or "stable").lower().strip()
+    filename = (request.args.get("filename") or "GhostConfig.exe").strip()
+
+    if not version:
+        return jsonify({"ok": False, "error": "'version' query parameter is required"}), 400
+    if not _VERSION_RE.match(version):
+        return jsonify({"ok": False, "error": f"'version' must be a valid semver string (got '{version}')"}), 400
+    if channel not in _VALID_CHANNELS:
+        return jsonify({"ok": False, "error": f"'channel' must be one of {sorted(_VALID_CHANNELS)}"}), 400
+
+    # Sanitise filename — strip path separators, enforce .exe
+    safe_name = Path(filename).name
+    if not safe_name or not safe_name.lower().endswith(".exe"):
+        safe_name = "GhostConfig.exe"
+
+    # Duplicate check — refuse to generate a URL for a version that already exists
+    releases = _load_releases()
+    existing = next((r for r in releases
+                     if r.get("version") == version
+                     and r.get("channel", "stable") == channel), None)
+    if existing:
+        return jsonify({"ok": False,
+                        "error": f"Version {version} already exists in the '{channel}' channel. "
+                                 f"Use a new version number."}), 409
+
+    # Object key: releases/<channel>/<version>/<filename>
+    object_key = f"releases/{channel}/{version}/{safe_name}"
+
+    try:
+        s3 = _get_s3_client()
+        presigned_url = s3.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket":      _STORAGE_BUCKET,
+                "Key":         object_key,
+                "ContentType": "application/octet-stream",
+            },
+            ExpiresIn=_PRESIGNED_TTL_SECS,
+        )
+    except Exception as exc:
+        log.error("generate_presigned_url failed: %s", exc, exc_info=True)
+        return jsonify({"ok": False,
+                        "error": f"Failed to generate upload URL: {exc}"}), 500
+
+    cdn = _cdn_url(object_key)
+    log.info("presigned_url_issued version=%s channel=%s key=%s actor=%s",
+             version, channel, object_key, g.actor)
+
+    return jsonify({
+        "ok":           True,
+        "uploadUrl":    presigned_url,          # PUT target — browser uploads directly here
+        "downloadUrl":  cdn,                    # final public URL stored in releases.json
+        "objectKey":    object_key,
+        "filename":     safe_name,
+        "expiresIn":    _PRESIGNED_TTL_SECS,
+        "ttlMessage":   f"Upload URL valid for {_PRESIGNED_TTL_SECS // 60} minutes",
+    })
+
+
+# ── Admin: finalize upload (create release record after R2 PUT) ───────────────
+
+@app.route("/api/admin/releases/finalize-upload", methods=["POST"])
+@require_admin
+@limiter.limit("20 per minute")
+def route_admin_release_finalize_upload():
+    """
+    POST /api/admin/releases/finalize-upload
+    {
+      "version":      "2.5.0",
+      "channel":      "stable",
+      "filename":     "GhostConfig.exe",
+      "downloadUrl":  "https://cdn.ghostapp.io/releases/stable/2.5.0/GhostConfig.exe",
+      "sha256":       "<hex — computed by browser before upload>",
+      "fileSize":     11234567,
+      "releaseNotes": ["Faster startup", "Fixed dashboard"],
+      "mandatory":    false,
+      "set_current":  true,
+      "minVersion":   ""
+    }
+
+    Called by the admin browser AFTER the direct R2 PUT succeeds.
+    Creates the release record and optionally marks it as the current version.
+    sha256 and fileSize were computed by the browser before the upload started,
+    so they are correct without server-side re-verification.
+    """
+    data = request.get_json(silent=True) or {}
+
+    version     = (data.get("version") or "").strip()
+    channel     = (data.get("channel") or "stable").lower().strip()
+    filename    = (data.get("filename") or "GhostConfig.exe").strip()
+    dl_url      = (data.get("downloadUrl") or "").strip()
+    sha256      = (data.get("sha256") or "").strip().lower()
+    file_size   = data.get("fileSize")
+    notes       = data.get("releaseNotes") or []
+    mandatory   = bool(data.get("mandatory", False))
+    set_current = bool(data.get("set_current", True))
+    min_version = (data.get("minVersion") or "").strip()
+
+    # ── Validation ────────────────────────────────────────────────────────────
+    if not version:
+        return jsonify({"ok": False, "error": "'version' is required"}), 400
+    if not _VERSION_RE.match(version):
+        return jsonify({"ok": False, "error": f"'version' must be a valid semver string (got '{version}')"}), 400
+    if channel not in _VALID_CHANNELS:
+        return jsonify({"ok": False, "error": f"'channel' must be one of {sorted(_VALID_CHANNELS)}"}), 400
+    if not dl_url:
+        return jsonify({"ok": False, "error": "'downloadUrl' is required (the CDN URL returned by upload-url)"}), 400
+    if not dl_url.lower().startswith("https://"):
+        return jsonify({"ok": False, "error": "'downloadUrl' must be an HTTPS URL"}), 400
+    if not isinstance(notes, list):
+        notes = [str(notes)]
+
+    # Duplicate check
+    releases = _load_releases()
+    existing = next((r for r in releases
+                     if r.get("version") == version
+                     and r.get("channel", "stable") == channel), None)
+    if existing:
+        return jsonify({"ok": False,
+                        "error": f"Version {version} already exists in the '{channel}' channel"}), 409
+
+    # ── Create release record ─────────────────────────────────────────────────
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    max_id  = max((r.get("id", 0) for r in releases), default=0)
+
+    record = {
+        "id":           max_id + 1,
+        "version":      version,
+        "downloadUrl":  dl_url,
+        "filename":     filename,
+        "sha256":       sha256,
+        "fileSize":     int(file_size) if file_size is not None else None,
+        "minVersion":   min_version,
+        "releaseNotes": notes,
+        "mandatory":    mandatory,
+        "channel":      channel,
+        "current":      set_current,
+        "disabled":     False,
+        "downloads":    0,
+        "released_at":  now_iso,
+        "published_by": g.actor,
+        "upload_method": "presigned_r2",
+    }
+
+    if set_current:
+        for r in releases:
+            if r.get("channel", "stable") == channel:
+                r["current"] = False
+
+    releases.append(record)
+    _save_releases(releases)
+
+    _audit("release_finalize", g.actor, version,
+           f"file={filename} size={file_size} sha256={sha256[:16] if sha256 else '?'}… "
+           f"channel={channel} current={set_current} url={dl_url[:80]}")
+    log.info("release_finalized version=%s channel=%s current=%s actor=%s url=%s",
+             version, channel, set_current, g.actor, dl_url[:80])
+
+    return jsonify({"ok": True, "release": record}), 201
+
+
+# ── Admin: direct upload EXE (self-hosted fallback — no R2 required) ──────────
+#
+# This endpoint accepts a multipart file upload and saves it to the local
+# release_files/ directory.  Use this ONLY for self-hosted deployments where
+# the Python API runs on a machine with a persistent filesystem and is not
+# behind any reverse-proxy body-size limit.
+#
+# On Vercel / Railway / Render you MUST use the presigned-URL flow above —
+# direct multipart uploads through serverless functions will be rejected with
+# HTTP 413 because the EXE exceeds the platform's request body limit.
 
 @app.route("/api/admin/releases/upload", methods=["POST"])
 @require_admin
@@ -1690,19 +1957,21 @@ _VERSION_RE     = __import__("re").compile(r"^v?\d+\.\d+(\.\d+)?([.-][\w.+-]+)?$
 def route_admin_release_upload():
     """
     POST /api/admin/releases/upload  (multipart/form-data)
-    Upload a GhostConfig.exe, validate the payload, save the binary,
-    publish a new release record, and return the release metadata.
+
+    Self-hosted fallback: upload a GhostConfig.exe, save to local disk,
+    publish the release record.
 
     Fields:
-      file         — the EXE binary (required; must end in .exe)
-      version      — semver string, e.g. "2.5.0" (required)
-      channel      — "stable" | "beta" | "development"  (default: "stable")
+      file          — the EXE binary (required; must end in .exe)
+      version       — semver string, e.g. "2.5.0" (required)
+      channel       — "stable" | "beta" | "development"  (default: "stable")
       release_notes — newline-separated changelog lines (optional)
-      mandatory    — "true" | "1" to mark as a mandatory update (optional)
-      set_current  — "false" | "0" to publish as draft (default: current)
+      mandatory     — "true" | "1" to mark as a mandatory update (optional)
+      set_current   — "false" | "0" to publish as draft (default: current)
 
-    The file is saved under release_files/<version>/<filename> and served
-    at /download/<version>/<filename>.
+    NOTE: Do NOT route this through Vercel or any other serverless function.
+    The EXE is typically 10-20 MB and will hit HTTP 413 on any platform with
+    a small request body limit.  Use the presigned-URL flow instead.
     """
     try:
         f = request.files.get("file")
@@ -1733,7 +2002,6 @@ def route_admin_release_upload():
         mandatory   = request.form.get("mandatory", "").lower() in ("true", "1", "yes")
         set_current = request.form.get("set_current", "true").lower() not in ("false", "0", "no")
 
-        # ── Duplicate version guard (same channel) ────────────────────────────
         releases = _load_releases()
         existing = next((r for r in releases
                          if r.get("version") == version
@@ -1742,7 +2010,6 @@ def route_admin_release_upload():
             return jsonify({"ok": False,
                             "error": f"Version {version} already exists in the '{channel}' channel"}), 409
 
-        # ── Save binary to disk ───────────────────────────────────────────────
         target_dir = RELEASES_DIR / version
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -1772,28 +2039,28 @@ def route_admin_release_upload():
             target_path.unlink(missing_ok=True)
             return jsonify({"ok": False, "error": "Uploaded file is empty"}), 400
 
-        sha256 = h.hexdigest()
-        dl_url = f"/download/{version}/{safe_name}"
+        sha256_hex = h.hexdigest()
+        dl_url     = f"/download/{version}/{safe_name}"
 
-        # ── Publish the release record ────────────────────────────────────────
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         max_id  = max((r.get("id", 0) for r in releases), default=0)
         record  = {
-            "id":           max_id + 1,
-            "version":      version,
-            "downloadUrl":  dl_url,
-            "filename":     safe_name,
-            "sha256":       sha256,
-            "fileSize":     size,
-            "minVersion":   "",
-            "releaseNotes": notes,
-            "mandatory":    mandatory,
-            "channel":      channel,
-            "current":      set_current,
-            "disabled":     False,
-            "downloads":    0,
-            "released_at":  now_iso,
-            "published_by": g.actor,
+            "id":            max_id + 1,
+            "version":       version,
+            "downloadUrl":   dl_url,
+            "filename":      safe_name,
+            "sha256":        sha256_hex,
+            "fileSize":      size,
+            "minVersion":    "",
+            "releaseNotes":  notes,
+            "mandatory":     mandatory,
+            "channel":       channel,
+            "current":       set_current,
+            "disabled":      False,
+            "downloads":     0,
+            "released_at":   now_iso,
+            "published_by":  g.actor,
+            "upload_method": "local_disk",
         }
 
         if set_current:
@@ -1805,15 +2072,15 @@ def route_admin_release_upload():
         _save_releases(releases)
 
         _audit("release_upload", g.actor, version,
-               f"file={safe_name} size={size} sha256={sha256[:16]}… channel={channel} current={set_current}")
+               f"file={safe_name} size={size} sha256={sha256_hex[:16]}… channel={channel} current={set_current}")
         log.info("release_upload version=%s channel=%s size=%d sha256=%s… actor=%s",
-                 version, channel, size, sha256[:16], g.actor)
+                 version, channel, size, sha256_hex[:16], g.actor)
 
         return jsonify({
             "ok":          True,
             "filename":    safe_name,
             "downloadUrl": dl_url,
-            "sha256":      sha256,
+            "sha256":      sha256_hex,
             "fileSize":    size,
             "version":     version,
             "release":     record,

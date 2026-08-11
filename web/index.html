@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ghost — Windows System Configuration Utility</title>
-  <meta name="description" content="Ghost is a premium Windows configuration utility. Manage system identities, network adapters, and licenses from one polished desktop app." />
+  <title>Phantom — Premium Windows Utility</title>
+  <meta name="description" content="Phantom is a premium Windows external utility with a clean interface, fast setup, custom profiles, and frequent updates." />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/assets/css/ghost.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/><path d='M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z' fill='white'/></svg>" />
+  <link rel="stylesheet" href="/assets/css/phantom.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23c0152a'/><path d='M16 7C11.03 7 7 11.03 7 16v9.5l3-2.5 3 2.5 3-2.5 3 2.5V16c0-4.97-4.03-9-9-9z' fill='white'/></svg>" />
 </head>
 <body>
 
@@ -20,27 +20,30 @@
   <div class="container">
     <nav class="nav-inner" aria-label="Primary navigation">
 
-      <a href="index.html" class="nav-logo" aria-label="Ghost home">
-        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
-          <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
-          <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
-          <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+      <a href="index.html" class="nav-logo" aria-label="Phantom home">
+        <svg class="nav-logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#c0152a" fill-opacity="0.15"/>
+          <path d="M16 7C11.03 7 7 11.03 7 16v9.5l3-2.5 3 2.5 3-2.5 3 2.5V16c0-4.97-4.03-9-9-9z" fill="#c0152a"/>
+          <circle cx="12.5" cy="16" r="1.5" fill="#0a0a0b"/>
+          <circle cx="19.5" cy="16" r="1.5" fill="#0a0a0b"/>
         </svg>
-        Ghost
+        PHANTOM
       </a>
 
       <ul class="nav-links" role="list">
         <li><a href="index.html" class="active">Home</a></li>
-        <li><a href="#features">Features</a></li>
-        <li><a href="pricing.html">Pricing</a></li>
-        <li><a href="#support">Support</a></li>
+        <li><a href="product.html">Product</a></li>
+        <li><a href="index.html#support">Support</a></li>
+        <li><a href="status.html">Status</a></li>
       </ul>
 
       <div class="nav-cta">
-        <a href="login.html" class="btn btn-ghost">Login</a>
-        <a href="dashboard.html" class="btn btn-ghost">Dashboard</a>
-        <a href="checkout.html" class="btn btn-primary">Get Ghost</a>
+        <a href="login.html" class="btn btn-ghost btn-sm">Login</a>
+        <a href="dashboard.html" class="btn btn-ghost btn-sm">Dashboard</a>
+        <a href="checkout.html" class="btn btn-primary btn-sm">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+          Get Access
+        </a>
       </div>
 
       <button class="nav-toggle" aria-label="Open menu" aria-expanded="false">
@@ -51,12 +54,12 @@
 
     <div class="nav-mobile" role="navigation" aria-label="Mobile navigation">
       <a href="index.html">Home</a>
-      <a href="#features">Features</a>
-      <a href="pricing.html">Pricing</a>
-      <a href="#support">Support</a>
+      <a href="product.html">Product</a>
+      <a href="index.html#support">Support</a>
+      <a href="status.html">Status</a>
       <div class="mobile-cta">
-        <a href="login.html" class="btn btn-ghost">Login</a>
-        <a href="checkout.html" class="btn btn-primary">Get Ghost</a>
+        <a href="login.html" class="btn btn-ghost btn-sm">Login</a>
+        <a href="checkout.html" class="btn btn-primary btn-sm">Get Access</a>
       </div>
     </div>
 
@@ -71,284 +74,432 @@
   <div class="container">
     <div class="hero-inner">
 
-      <!-- Copy -->
+      <!-- Left: Copy -->
       <div class="hero-copy">
-        <div class="hero-badge animate-up">
-          <span class="hero-badge-dot"></span>
-          <span id="hero-version-badge">Latest Release</span>
+        <div class="hero-rating animate-up">
+          <span class="hero-stars">★★★★★</span>
+          <span>Excellent</span>
         </div>
 
         <h1 class="animate-up delay-1">
-          Your Windows environment,<br>
-          <span>fully under control</span>
+          Built for<br>
+          <span>performance.</span>
         </h1>
 
         <p class="hero-desc animate-up delay-2">
-          Ghost is a premium desktop utility for Windows. Configure system identities, manage network adapters, and handle licenses — all from one fast, offline app.
+          Phantom is a polished Windows external utility with a clean interface,
+          fast setup, custom profiles, deep customization, and frequent updates.
         </p>
 
         <div class="hero-actions animate-up delay-2">
-          <a href="/download/latest" download="GhostConfig.exe" class="btn btn-primary">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Get Ghost
+          <a href="product.html" class="btn btn-primary btn-lg">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            View Product
           </a>
-          <a href="pricing.html" class="btn btn-secondary">View Plans</a>
+          <a href="https://discord.gg/your-invite" target="_blank" rel="noopener" class="btn btn-secondary btn-lg">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
+            Join Discord
+          </a>
         </div>
 
         <p class="hero-note animate-up delay-3">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-          Free trial available &nbsp;·&nbsp; Windows 10 / 11 &nbsp;·&nbsp; No internet required
+          <span>Windows 10 / 11</span>
+          &nbsp;·&nbsp;
+          <span>Instant Delivery</span>
+          &nbsp;·&nbsp;
+          <span>Active Updates</span>
         </p>
       </div>
 
-      <!-- App mockup -->
-      <div class="hero-visual" aria-hidden="true">
-        <div class="hero-mockup">
-          <!-- Window chrome -->
-          <div class="mockup-chrome">
-            <div class="mockup-dots">
-              <span class="card-dot dot-red"></span>
-              <span class="card-dot dot-yellow"></span>
-              <span class="card-dot dot-green"></span>
+      <!-- Right: Product card -->
+      <div class="hero-visual animate-up delay-2">
+        <div class="hero-product-card">
+          <div class="hero-card-artwork">
+            <div class="hero-card-artwork-inner">
+              <div class="hero-card-artwork-icon">
+                <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                  <path d="M16 4C9.373 4 4 9.373 4 16v13l4-3.5 4 3.5 4-3.5 4 3.5V16c0-6.627-5.373-12-12-12z" fill="currentColor" fill-opacity="0.85"/>
+                  <circle cx="11.5" cy="16" r="2" fill="#0a0a0b"/>
+                  <circle cx="20.5" cy="16" r="2" fill="#0a0a0b"/>
+                </svg>
+              </div>
+              <div class="hero-card-artwork-label">Phantom Application</div>
             </div>
-            <span class="mockup-title">Ghost — System Configuration</span>
-            <div class="mockup-win-btns">
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="1" y="4.5" width="8" height="1" fill="#8896b0"/></svg>
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="1.5" y="1.5" width="7" height="7" rx="1" stroke="#8896b0" stroke-width="1"/></svg>
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><line x1="2" y1="2" x2="8" y2="8" stroke="#8896b0" stroke-width="1.2"/><line x1="8" y1="2" x2="2" y2="8" stroke="#8896b0" stroke-width="1.2"/></svg>
+            <div class="hero-card-artwork-glow" aria-hidden="true"></div>
+          </div>
+
+          <div class="hero-card-top">
+            <span class="hero-card-name">PHANTOM</span>
+            <div class="hero-card-status">
+              <span class="hero-card-status-dot"></span>
+              Online
             </div>
           </div>
-          <!-- Sidebar -->
-          <div class="mockup-body">
-            <div class="mockup-sidebar">
-              <div class="mockup-sidebar-item active">
+
+          <div class="hero-card-meta">
+            <span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+              Windows
+            </span>
+            <span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              Instant Delivery
+            </span>
+            <span id="hero-version-badge-wrap" style="display:none">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+              <span id="hero-version-badge">v1.0</span>
+            </span>
+          </div>
+
+          <div class="hero-card-price-row">
+            <span class="hero-card-from">From</span>
+            <span class="hero-card-price"><sup>$</sup>2.99</span>
+            <span class="hero-card-period">/ day</span>
+          </div>
+
+          <div class="hero-card-rating">
+            <span class="hero-card-stars">★★★★★</span>
+            <span>Excellent rating</span>
+          </div>
+
+          <a href="product.html" class="btn btn-primary" style="width:100%;justify-content:center;">
+            Buy Now
+          </a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════ CHOOSE YOUR ACCESS -->
+<section class="access-section" id="pricing" aria-label="Choose your access">
+  <div class="container">
+    <div class="access-header">
+      <span class="section-label">Pricing</span>
+      <h2 class="section-title">Choose Your Access</h2>
+      <p class="section-sub" style="margin:0 auto">Select the duration that works for you. All access levels include every feature — no tiers, no limitations.</p>
+    </div>
+
+    <div class="access-grid">
+
+      <div class="access-card">
+        <div class="access-card-duration">1 Day</div>
+        <div class="access-card-price"><sup>$</sup>2.99</div>
+        <div class="access-card-per-day">$2.99 / day</div>
+        <a href="checkout.html?plan=1day" class="access-card-cta">Get Access</a>
+      </div>
+
+      <div class="access-card">
+        <div class="access-card-duration">7 Days</div>
+        <div class="access-card-price"><sup>$</sup>9.99</div>
+        <div class="access-card-per-day">$1.43 / day</div>
+        <a href="checkout.html?plan=7day" class="access-card-cta">Get Access</a>
+      </div>
+
+      <div class="access-card featured">
+        <div class="access-card-badge">Best Seller</div>
+        <div class="access-card-duration">30 Days</div>
+        <div class="access-card-price"><sup>$</sup>24.99</div>
+        <div class="access-card-per-day">$0.83 / day</div>
+        <a href="checkout.html?plan=30day" class="access-card-cta">Get Access</a>
+      </div>
+
+      <div class="access-card">
+        <div class="access-card-duration">90 Days</div>
+        <div class="access-card-price"><sup>$</sup>59.99</div>
+        <div class="access-card-per-day">$0.67 / day</div>
+        <a href="checkout.html?plan=90day" class="access-card-cta">Get Access</a>
+      </div>
+
+    </div>
+
+    <p style="text-align:center;color:var(--muted);font-size:0.85rem;margin-top:8px;">
+      All access includes instant delivery, active updates, and Discord support.
+    </p>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════ FEATURES -->
+<section id="features" class="features-section" aria-label="Features">
+  <div class="container">
+    <div class="features-header">
+      <span class="section-label">Why Phantom</span>
+      <h2 class="section-title">Everything you need.</h2>
+      <p class="section-sub" style="margin:0 auto">Phantom is built from the ground up to be fast, reliable, and easy to use from the first launch.</p>
+    </div>
+
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-card-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        </div>
+        <h3>Fast Setup</h3>
+        <p>Download, launch, and activate in under two minutes. No complicated installers or configuration required.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-card-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </div>
+        <h3>Frequent Updates</h3>
+        <p>Phantom receives regular updates with new features, performance improvements, and compatibility fixes.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-card-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+        </div>
+        <h3>Custom Profiles</h3>
+        <p>Save and switch between multiple configurations. Build your ideal setup once, apply it anywhere.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-card-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z" fill="currentColor" stroke="none"/></svg>
+        </div>
+        <h3>Dedicated Support</h3>
+        <p>Get help directly from the development team via our active Discord server. Fast responses, real answers.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ═══════════════════════════════════════════════ PRODUCT PREVIEW -->
+<section id="preview" class="preview-section" aria-label="Product preview">
+  <div class="container">
+    <div class="preview-header">
+      <span class="section-label">Product Preview</span>
+      <h2 class="section-title">One app. Complete control.</h2>
+      <p class="section-sub" style="margin:0 auto">Explore the Phantom interface before you buy.</p>
+    </div>
+
+    <div class="preview-thumbs" role="tablist" aria-label="Preview screens">
+      <button class="preview-thumb active" role="tab" aria-selected="true" data-tab="dashboard">Main Menu</button>
+      <button class="preview-thumb" role="tab" aria-selected="false" data-tab="overlay">Overlay</button>
+      <button class="preview-thumb" role="tab" aria-selected="false" data-tab="settings">Settings</button>
+      <button class="preview-thumb" role="tab" aria-selected="false" data-tab="profiles">Profiles</button>
+    </div>
+
+    <div class="preview-stage">
+
+      <!-- Dashboard panel -->
+      <div class="preview-panel active" data-panel="dashboard">
+        <div class="preview-window-bar">
+          <div class="preview-win-dots">
+            <span class="preview-win-dot red"></span>
+            <span class="preview-win-dot yellow"></span>
+            <span class="preview-win-dot green"></span>
+          </div>
+          <span class="preview-win-title">Phantom — Main Menu</span>
+        </div>
+        <div class="preview-content">
+          <div class="app-mockup">
+            <div class="app-sidebar">
+              <div class="app-sidebar-item active">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
                 Dashboard
               </div>
-              <div class="mockup-sidebar-item">
+              <div class="app-sidebar-item">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
                 Profiles
               </div>
-              <div class="mockup-sidebar-item">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
-                License
-              </div>
-              <div class="mockup-sidebar-item">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+              <div class="app-sidebar-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2"/></svg>
                 Settings
               </div>
+              <div class="app-sidebar-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                License
+              </div>
             </div>
-            <!-- Main panel -->
-            <div class="mockup-main">
-              <div class="mockup-header-row">
-                <span class="mockup-page-title">Dashboard</span>
-                <span class="mockup-badge-pro">PRO</span>
+            <div class="app-main">
+              <div class="app-main-title">
+                Dashboard
+                <span style="background:rgba(192,21,42,0.15);color:var(--accent);font-size:0.7rem;padding:3px 10px;border-radius:99px;font-weight:700;letter-spacing:0.08em;">ACTIVE</span>
               </div>
-              <div class="mockup-stats">
-                <div class="mockup-stat">
-                  <span class="mockup-stat-label">Machine GUID</span>
-                  <span class="mockup-stat-value" style="color:var(--cyan);font-size:0.68rem;font-family:'Fira Code',monospace">A3F2-C891-...</span>
+              <div class="app-stat-row">
+                <div class="app-stat-box">
+                  <div class="app-stat-label">Machine GUID</div>
+                  <div class="app-stat-value mono">A3F2-C891...</div>
                 </div>
-                <div class="mockup-stat">
-                  <span class="mockup-stat-label">Active Profile</span>
-                  <span class="mockup-stat-value">Profile 3</span>
+                <div class="app-stat-box">
+                  <div class="app-stat-label">Active Profile</div>
+                  <div class="app-stat-value">Profile 3</div>
                 </div>
-                <div class="mockup-stat">
-                  <span class="mockup-stat-label">License</span>
-                  <span class="mockup-stat-value" style="color:#4ade80">Active</span>
+                <div class="app-stat-box">
+                  <div class="app-stat-label">License</div>
+                  <div class="app-stat-value green">Active</div>
                 </div>
               </div>
-              <div class="mockup-actions-row">
-                <div class="mockup-action-btn">
+              <div class="app-btn-row">
+                <div class="app-btn primary">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.49"/></svg>
                   Rotate GUID
                 </div>
-                <div class="mockup-action-btn mockup-action-btn--cyan">
+                <div class="app-btn">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><circle cx="12" cy="20" r="1"/></svg>
                   Spoof MAC
                 </div>
               </div>
-              <div class="mockup-log">
-                <div class="mockup-log-row"><span class="mockup-log-time">14:03:22</span><span class="mockup-log-ok">✓</span><span>Backup created</span></div>
-                <div class="mockup-log-row"><span class="mockup-log-time">14:03:23</span><span class="mockup-log-ok">✓</span><span>GUID rotated</span></div>
-                <div class="mockup-log-row"><span class="mockup-log-time">14:03:24</span><span class="mockup-log-ok">✓</span><span>Profile saved</span></div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <!-- Float badge -->
-        <div class="hero-badge-float">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-          Works <strong>100% offline</strong>
-        </div>
-      </div>
-
-    </div>
-  </div>
-</section>
-
-
-<!-- ═══════════════════════════════════════════════ PRODUCT PREVIEW TABS -->
-<section id="preview" class="product-preview" aria-label="Product preview">
-  <div class="container">
-    <div class="preview-header">
-      <span class="section-label">Product Preview</span>
-      <h2 class="section-title">One app. Everything in one place.</h2>
-      <p class="section-sub">Switch between views to see exactly what Ghost gives you.</p>
-    </div>
-
-    <div class="preview-tabs" role="tablist" aria-label="Product views">
-      <button class="preview-tab active" role="tab" aria-selected="true" data-tab="dashboard">Dashboard</button>
-      <button class="preview-tab" role="tab" aria-selected="false" data-tab="profiles">Profiles</button>
-      <button class="preview-tab" role="tab" aria-selected="false" data-tab="license">License</button>
-      <button class="preview-tab" role="tab" aria-selected="false" data-tab="settings">Settings</button>
-    </div>
-
-    <div class="preview-panels">
-
-      <div class="preview-panel active" data-panel="dashboard">
-        <div class="preview-panel-inner">
-          <div class="preview-window-chrome">
-            <div class="mockup-dots"><span class="card-dot dot-red"></span><span class="card-dot dot-yellow"></span><span class="card-dot dot-green"></span></div>
-            <span class="mockup-title">Ghost — Dashboard</span>
-          </div>
-          <div class="preview-content preview-dashboard">
-            <div class="preview-dash-grid">
-              <div class="preview-dash-card purple">
-                <div class="preview-dash-card-label">Machine GUID</div>
-                <div class="preview-dash-card-val mono">A3F2-C891-7D4E-...</div>
-                <div class="preview-dash-card-status">
-                  <span class="status-dot green"></span> Active
-                </div>
-              </div>
-              <div class="preview-dash-card">
-                <div class="preview-dash-card-label">MAC Address</div>
-                <div class="preview-dash-card-val mono">02:A1:B2:C3:D4:E5</div>
-                <div class="preview-dash-card-status">
-                  <span class="status-dot cyan"></span> Spoofed
-                </div>
-              </div>
-              <div class="preview-dash-card">
-                <div class="preview-dash-card-label">Active Profile</div>
-                <div class="preview-dash-card-val">Profile 3</div>
-                <div class="preview-dash-card-status">
-                  <span class="status-dot green"></span> Loaded
-                </div>
-              </div>
-              <div class="preview-dash-card">
-                <div class="preview-dash-card-label">License Tier</div>
-                <div class="preview-dash-card-val" style="color:var(--accent)">Pro</div>
-                <div class="preview-dash-card-status">
-                  <span class="status-dot green"></span> Valid
-                </div>
-              </div>
-            </div>
-            <div class="preview-action-bar">
-              <button class="preview-action-btn">↺ Rotate GUID</button>
-              <button class="preview-action-btn cyan">⊕ Spoof MAC</button>
-              <button class="preview-action-btn">⊞ New Profile</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="preview-panel" data-panel="profiles">
-        <div class="preview-panel-inner">
-          <div class="preview-window-chrome">
-            <div class="mockup-dots"><span class="card-dot dot-red"></span><span class="card-dot dot-yellow"></span><span class="card-dot dot-green"></span></div>
-            <span class="mockup-title">Ghost — Profiles</span>
-          </div>
-          <div class="preview-content preview-profiles">
-            <div class="preview-profiles-list">
-              <div class="preview-profile-row active">
-                <span class="profile-icon">👤</span>
-                <div class="profile-info">
-                  <span class="profile-name">Profile 1</span>
-                  <span class="profile-meta">GUID: A3F2 · MAC: 02:A1:B2...</span>
-                </div>
-                <span class="profile-badge active">Active</span>
-              </div>
-              <div class="preview-profile-row">
-                <span class="profile-icon">👤</span>
-                <div class="profile-info">
-                  <span class="profile-name">Profile 2</span>
-                  <span class="profile-meta">GUID: C7E9 · MAC: 02:F3:A4...</span>
-                </div>
-                <span class="profile-badge">Idle</span>
-              </div>
-              <div class="preview-profile-row">
-                <span class="profile-icon">👤</span>
-                <div class="profile-info">
-                  <span class="profile-name">Profile 3</span>
-                  <span class="profile-meta">GUID: 9B12 · MAC: 02:D5:E6...</span>
-                </div>
-                <span class="profile-badge">Idle</span>
-              </div>
-              <div class="preview-profile-row add-profile">
-                <span style="color:var(--accent)">+ Add New Profile</span>
+              <div class="app-log">
+                <div class="app-log-row"><span class="app-log-time">14:03:22</span><span class="ok">✓</span><span>Backup created</span></div>
+                <div class="app-log-row"><span class="app-log-time">14:03:23</span><span class="ok">✓</span><span>GUID rotated successfully</span></div>
+                <div class="app-log-row"><span class="app-log-time">14:03:24</span><span class="ok">✓</span><span>Profile saved</span></div>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <div class="preview-panel" data-panel="license">
-        <div class="preview-panel-inner">
-          <div class="preview-window-chrome">
-            <div class="mockup-dots"><span class="card-dot dot-red"></span><span class="card-dot dot-yellow"></span><span class="card-dot dot-green"></span></div>
-            <span class="mockup-title">Ghost — License</span>
+      <!-- Overlay panel -->
+      <div class="preview-panel" data-panel="overlay">
+        <div class="preview-window-bar">
+          <div class="preview-win-dots">
+            <span class="preview-win-dot red"></span>
+            <span class="preview-win-dot yellow"></span>
+            <span class="preview-win-dot green"></span>
           </div>
-          <div class="preview-content preview-license">
-            <div class="license-status-card">
-              <div class="license-tier-badge">PRO</div>
-              <div class="license-key-display">GHOST-XXXX-XXXX-XXXX-XXXX</div>
-              <div class="license-meta-row">
-                <span class="license-meta-item"><span class="lm-label">Status</span><span class="lm-val green">Valid</span></span>
-                <span class="license-meta-item"><span class="lm-label">Tier</span><span class="lm-val purple">Pro</span></span>
-                <span class="license-meta-item"><span class="lm-label">Type</span><span class="lm-val">Lifetime</span></span>
+          <span class="preview-win-title">Phantom — Overlay</span>
+        </div>
+        <div class="preview-content">
+          <div class="app-mockup">
+            <div class="app-sidebar">
+              <div class="app-sidebar-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                Dashboard
               </div>
-              <div class="license-features-list">
-                <span class="license-feat-item">✓ MAC Address Spoofing</span>
-                <span class="license-feat-item">✓ Unlimited Profiles</span>
-                <span class="license-feat-item">✓ Priority Support</span>
-                <span class="license-feat-item">✓ Lifetime Updates</span>
+              <div class="app-sidebar-item active">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                Overlay
+              </div>
+              <div class="app-sidebar-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                Profiles
+              </div>
+            </div>
+            <div class="app-main">
+              <div class="app-main-title">Overlay Configuration</div>
+              <div class="app-stat-row">
+                <div class="app-stat-box">
+                  <div class="app-stat-label">Hotkey</div>
+                  <div class="app-stat-value">INSERT</div>
+                </div>
+                <div class="app-stat-box">
+                  <div class="app-stat-label">Opacity</div>
+                  <div class="app-stat-value">90%</div>
+                </div>
+                <div class="app-stat-box">
+                  <div class="app-stat-label">Position</div>
+                  <div class="app-stat-value">Top-Left</div>
+                </div>
+              </div>
+              <div class="app-log" style="margin-top:12px">
+                <div class="app-log-row"><span class="app-log-time">—</span><span>Overlay enabled on hotkey press</span></div>
+                <div class="app-log-row"><span class="app-log-time">—</span><span>Custom theme: Dark Red</span></div>
+                <div class="app-log-row"><span class="app-log-time">—</span><span>Minimal mode available</span></div>
               </div>
             </div>
           </div>
         </div>
       </div>
 
+      <!-- Settings panel -->
       <div class="preview-panel" data-panel="settings">
-        <div class="preview-panel-inner">
-          <div class="preview-window-chrome">
-            <div class="mockup-dots"><span class="card-dot dot-red"></span><span class="card-dot dot-yellow"></span><span class="card-dot dot-green"></span></div>
-            <span class="mockup-title">Ghost — Settings</span>
+        <div class="preview-window-bar">
+          <div class="preview-win-dots">
+            <span class="preview-win-dot red"></span>
+            <span class="preview-win-dot yellow"></span>
+            <span class="preview-win-dot green"></span>
           </div>
-          <div class="preview-content preview-settings">
-            <div class="settings-group">
-              <div class="settings-group-label">General</div>
-              <div class="settings-row">
-                <span class="settings-label">Auto-backup before changes</span>
-                <span class="settings-toggle on"></span>
+          <span class="preview-win-title">Phantom — Settings</span>
+        </div>
+        <div class="preview-content">
+          <div class="app-mockup">
+            <div class="app-sidebar">
+              <div class="app-sidebar-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                Dashboard
               </div>
-              <div class="settings-row">
-                <span class="settings-label">Launch on startup</span>
-                <span class="settings-toggle"></span>
-              </div>
-              <div class="settings-row">
-                <span class="settings-label">Dark mode</span>
-                <span class="settings-toggle on"></span>
+              <div class="app-sidebar-item active">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2"/></svg>
+                Settings
               </div>
             </div>
-            <div class="settings-group">
-              <div class="settings-group-label">Advanced</div>
-              <div class="settings-row">
-                <span class="settings-label">Verbose logging</span>
-                <span class="settings-toggle"></span>
+            <div class="app-main">
+              <div class="app-main-title">Settings</div>
+              <div style="display:flex;flex-direction:column;gap:2px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:0.82rem;color:var(--text-2)">
+                  <span>Auto-backup before changes</span>
+                  <span style="background:var(--accent);width:36px;height:20px;border-radius:99px;display:inline-block;"></span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:0.82rem;color:var(--text-2)">
+                  <span>Launch on startup</span>
+                  <span style="background:var(--surface-3);border:1px solid var(--border-2);width:36px;height:20px;border-radius:99px;display:inline-block;"></span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;font-size:0.82rem;color:var(--text-2)">
+                  <span>Dark mode</span>
+                  <span style="background:var(--accent);width:36px;height:20px;border-radius:99px;display:inline-block;"></span>
+                </div>
               </div>
-              <div class="settings-row">
-                <span class="settings-label">Auto-apply on profile switch</span>
-                <span class="settings-toggle on"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Profiles panel -->
+      <div class="preview-panel" data-panel="profiles">
+        <div class="preview-window-bar">
+          <div class="preview-win-dots">
+            <span class="preview-win-dot red"></span>
+            <span class="preview-win-dot yellow"></span>
+            <span class="preview-win-dot green"></span>
+          </div>
+          <span class="preview-win-title">Phantom — Profiles</span>
+        </div>
+        <div class="preview-content">
+          <div class="app-mockup">
+            <div class="app-sidebar">
+              <div class="app-sidebar-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                Dashboard
+              </div>
+              <div class="app-sidebar-item active">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                Profiles
+              </div>
+            </div>
+            <div class="app-main">
+              <div class="app-main-title">Saved Profiles</div>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <div style="background:rgba(192,21,42,0.08);border:1px solid rgba(192,21,42,0.2);border-radius:8px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <div style="font-size:0.85rem;font-weight:600;color:var(--text)">Profile 1</div>
+                    <div style="font-size:0.72rem;color:var(--muted)">GUID: A3F2 · MAC: 02:A1:B2...</div>
+                  </div>
+                  <span style="font-size:0.68rem;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;">Active</span>
+                </div>
+                <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <div style="font-size:0.85rem;font-weight:600;color:var(--text)">Profile 2</div>
+                    <div style="font-size:0.72rem;color:var(--muted)">GUID: C7E9 · MAC: 02:F3:A4...</div>
+                  </div>
+                  <span style="font-size:0.68rem;color:var(--muted)">Idle</span>
+                </div>
+                <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <div style="font-size:0.85rem;font-weight:600;color:var(--text)">Profile 3</div>
+                    <div style="font-size:0.72rem;color:var(--muted)">GUID: 9B12 · MAC: 02:D5:E6...</div>
+                  </div>
+                  <span style="font-size:0.68rem;color:var(--muted)">Idle</span>
+                </div>
+                <div style="padding:10px 0;font-size:0.82rem;color:var(--accent);cursor:pointer">+ Add New Profile</div>
               </div>
             </div>
           </div>
@@ -360,280 +511,145 @@
 </section>
 
 
-<!-- ═══════════════════════════════════════════════ FEATURE SECTIONS -->
-<section id="features" class="feature-sections" aria-label="Features">
+<!-- ═══════════════════════════════════════════════ REVIEWS -->
+<section id="reviews" class="reviews-section" aria-label="Customer reviews">
   <div class="container">
+    <div class="reviews-header">
+      <span class="section-label">Reviews</span>
+      <h2 class="section-title">What users are saying.</h2>
+      <p class="section-sub" style="margin:0 auto">Real feedback from real Phantom users.</p>
+    </div>
 
-    <!-- Feature 1: GUID + Profiles -->
-    <div class="feature-row">
-      <div class="feature-row-visual">
-        <div class="feat-illustration feat-illustration--guid">
-          <div class="feat-ill-card">
-            <div class="feat-ill-label">Machine GUID</div>
-            <div class="feat-ill-val mono">A3F2-C891-7D4E-B205</div>
-            <div class="feat-ill-arrow">↓ Rotate</div>
-            <div class="feat-ill-val mono new">9F17-E443-2C8A-0D61</div>
-            <div class="feat-ill-chip">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              Backup created automatically
+    <div class="reviews-grid">
+
+      <div class="review-card">
+        <div class="review-stars">★★★★★</div>
+        <p class="review-text">"Setup took less than two minutes. Interface is clean, everything works exactly as described. The profile system is a game changer for switching configurations quickly."</p>
+        <div class="review-footer">
+          <div class="review-author">
+            <div class="review-avatar">T</div>
+            <div>
+              <div class="review-name">tundra_exe</div>
+              <div class="review-date">2 weeks ago</div>
             </div>
+          </div>
+          <div class="review-verified">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Verified
           </div>
         </div>
       </div>
-      <div class="feature-row-copy">
-        <span class="section-label">System Identity</span>
-        <h2>Rotate identifiers in one click</h2>
-        <p>Change your Windows MachineGUID instantly. Ghost reads the current value, generates a new one, writes a timestamped backup, then applies the change — all without touching anything else on your system.</p>
-        <ul class="feature-row-list">
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Read and display your current GUID at any time
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Set a custom value or generate a random one
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Automatic .reg backup before every write
-          </li>
-        </ul>
-      </div>
-    </div>
 
-    <!-- Feature 2: MAC Spoofing (reversed) -->
-    <div class="feature-row feature-row--reverse">
-      <div class="feature-row-visual">
-        <div class="feat-illustration feat-illustration--mac">
-          <div class="feat-ill-card">
-            <div class="feat-ill-label">Network Adapters</div>
-            <div class="feat-adapter-row">
-              <span class="feat-adapter-icon">⊡</span>
-              <div>
-                <div class="feat-ill-adapter-name">Ethernet</div>
-                <div class="feat-ill-val mono" style="font-size:0.72rem">02:A1:B2:C3:D4:E5</div>
-              </div>
-              <span class="feat-adapter-badge cyan">Spoofed</span>
+      <div class="review-card">
+        <div class="review-stars">★★★★★</div>
+        <p class="review-text">"Exactly what I needed. Fast, responsive, and the dev team actually responds on Discord. Got support within the hour. Renewed for another 30 days immediately."</p>
+        <div class="review-footer">
+          <div class="review-author">
+            <div class="review-avatar">M</div>
+            <div>
+              <div class="review-name">m1ntz</div>
+              <div class="review-date">1 month ago</div>
             </div>
-            <div class="feat-adapter-row">
-              <span class="feat-adapter-icon">⊡</span>
-              <div>
-                <div class="feat-ill-adapter-name">Wi-Fi</div>
-                <div class="feat-ill-val mono" style="font-size:0.72rem">00:1A:2B:3C:4D:5E</div>
-              </div>
-              <span class="feat-adapter-badge">Original</span>
-            </div>
+          </div>
+          <div class="review-verified">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Verified
           </div>
         </div>
       </div>
-      <div class="feature-row-copy">
-        <span class="section-label">Network</span>
-        <h2>Manage MAC addresses across all adapters</h2>
-        <p>Ghost lists every network adapter on your machine. Select one, enter a new MAC address or randomise it, and apply instantly. Supports Ethernet and Wi-Fi — per-adapter control with no system-wide restarts.</p>
-        <ul class="feature-row-list">
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            View all adapters and their current addresses
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            One-click address randomisation
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Restore original address at any time
-          </li>
-        </ul>
-        <span class="feature-pro-tag">Pro feature</span>
-      </div>
-    </div>
 
-    <!-- Feature 3: License + Profiles -->
-    <div class="feature-row">
-      <div class="feature-row-visual">
-        <div class="feat-illustration feat-illustration--profiles">
-          <div class="feat-ill-card">
-            <div class="feat-ill-label">Saved Profiles</div>
-            <div class="feat-profile-list">
-              <div class="feat-profile-item active">
-                <span class="feat-profile-dot purple"></span>
-                <span class="feat-profile-name">Profile 1</span>
-                <span class="feat-profile-meta">3 settings</span>
-              </div>
-              <div class="feat-profile-item">
-                <span class="feat-profile-dot cyan"></span>
-                <span class="feat-profile-name">Profile 2</span>
-                <span class="feat-profile-meta">3 settings</span>
-              </div>
-              <div class="feat-profile-item">
-                <span class="feat-profile-dot"></span>
-                <span class="feat-profile-name">Profile 3</span>
-                <span class="feat-profile-meta">2 settings</span>
-              </div>
+      <div class="review-card">
+        <div class="review-stars">★★★★★</div>
+        <p class="review-text">"The overlay feature is seamless. Updates drop frequently and actually fix things. Premium feel to everything — the UI is polished in a way most tools like this aren't."</p>
+        <div class="review-footer">
+          <div class="review-author">
+            <div class="review-avatar">V</div>
+            <div>
+              <div class="review-name">void_ptr</div>
+              <div class="review-date">3 weeks ago</div>
             </div>
-            <div class="feat-ill-chip" style="margin-top:14px">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              Switch profiles instantly
-            </div>
+          </div>
+          <div class="review-verified">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Verified
           </div>
         </div>
       </div>
-      <div class="feature-row-copy">
-        <span class="section-label">Profiles &amp; Licensing</span>
-        <h2>Save configurations and switch between them</h2>
-        <p>Create named profiles that store your GUID, MAC, and preferences. Switch between them instantly — ideal when you need to test multiple configurations without manually reconfiguring each time.</p>
-        <ul class="feature-row-list">
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Save and name any configuration
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Apply an entire profile in a single action
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Licenses validated offline — no internet needed
-          </li>
-        </ul>
+
+      <div class="review-card">
+        <div class="review-stars">★★★★★</div>
+        <p class="review-text">"I've tried a lot of tools in this space. Phantom is the only one where I didn't have to fight it to work. Just launched, activated, done. Solid."</p>
+        <div class="review-footer">
+          <div class="review-author">
+            <div class="review-avatar">K</div>
+            <div>
+              <div class="review-name">kr4k3n</div>
+              <div class="review-date">1 week ago</div>
+            </div>
+          </div>
+          <div class="review-verified">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Verified
+          </div>
+        </div>
       </div>
-    </div>
 
-  </div>
-</section>
+      <div class="review-card">
+        <div class="review-stars">★★★★★</div>
+        <p class="review-text">"Great value on the 30-day plan. The feature set is complete — nothing missing, nothing bloated. Clean design, smooth experience."</p>
+        <div class="review-footer">
+          <div class="review-author">
+            <div class="review-avatar">S</div>
+            <div>
+              <div class="review-name">spectral_h</div>
+              <div class="review-date">2 months ago</div>
+            </div>
+          </div>
+          <div class="review-verified">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Verified
+          </div>
+        </div>
+      </div>
 
+      <div class="review-card">
+        <div class="review-stars">★★★★★</div>
+        <p class="review-text">"Phantom works on first launch, every time. Consistent, stable, no surprises. The Discord community is active and helpful. Wouldn't use anything else."</p>
+        <div class="review-footer">
+          <div class="review-author">
+            <div class="review-avatar">N</div>
+            <div>
+              <div class="review-name">null0x1e</div>
+              <div class="review-date">3 weeks ago</div>
+            </div>
+          </div>
+          <div class="review-verified">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+            Verified
+          </div>
+        </div>
+      </div>
 
-<!-- ═══════════════════════════════════════════════ COMPARISON TABLE -->
-<section id="pricing" class="compare-home" aria-label="Plan comparison">
-  <div class="container">
-    <div class="compare-home-header">
-      <span class="section-label">Pricing</span>
-      <h2 class="section-title">Trial vs Pro</h2>
-      <p class="section-sub">Start free and upgrade when you're ready. One payment, lifetime access.</p>
-    </div>
-
-    <div class="compare-home-wrap">
-      <table class="compare-home-table" role="table">
-        <thead>
-          <tr>
-            <th class="compare-feature-col">Feature</th>
-            <th class="compare-trial-col">Trial</th>
-            <th class="compare-pro-col">Pro <span class="compare-price-tag">$19 once</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr class="compare-group-row"><td colspan="3">System</td></tr>
-          <tr>
-            <td>GUID read &amp; display</td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-          <tr>
-            <td>GUID rotation</td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-          <tr>
-            <td>Automatic registry backups</td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-          <tr class="compare-group-row"><td colspan="3">Network</td></tr>
-          <tr>
-            <td>View network adapters</td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-          <tr>
-            <td>MAC address spoofing</td>
-            <td><span class="cmp-no" aria-label="Not included">—</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-          <tr class="compare-group-row"><td colspan="3">Profiles</td></tr>
-          <tr>
-            <td>Saved profiles</td>
-            <td><span class="cmp-val">1</span></td>
-            <td><span class="cmp-val">Unlimited</span></td>
-          </tr>
-          <tr>
-            <td>Auto-apply on switch</td>
-            <td><span class="cmp-no" aria-label="Not included">—</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-          <tr class="compare-group-row"><td colspan="3">Support &amp; Updates</td></tr>
-          <tr>
-            <td>Community Discord access</td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-          <tr>
-            <td>Priority support</td>
-            <td><span class="cmp-no" aria-label="Not included">—</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-          <tr>
-            <td>Lifetime updates</td>
-            <td><span class="cmp-no" aria-label="Not included">—</span></td>
-            <td><span class="cmp-yes" aria-label="Included">✓</span></td>
-          </tr>
-        </tbody>
-        <tfoot>
-          <tr class="compare-cta-row">
-            <td></td>
-            <td><a href="/download/latest" download="GhostConfig.exe" class="btn btn-ghost btn-sm">Download Trial</a></td>
-            <td><a href="checkout.html" class="btn btn-primary btn-sm">Get Pro — $19</a></td>
-          </tr>
-        </tfoot>
-      </table>
     </div>
   </div>
 </section>
 
 
-<!-- ═══════════════════════════════════════════════ DOWNLOAD -->
-<section id="download" class="download-section" aria-label="Download">
+<!-- ═══════════════════════════════════════════════ STATS -->
+<section class="stats-section" aria-label="Product stats">
   <div class="container">
-    <div class="download-inner">
-      <div class="download-copy">
-        <span class="section-label">Download</span>
-        <h2>Ready to get started?</h2>
-        <p>Download Ghost and have your first configuration done in under two minutes. No installation wizard, no online account required.</p>
-        <div class="download-actions">
-          <a href="/download/latest" download="GhostConfig.exe" class="btn btn-primary btn-lg">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Download Ghost
-          </a>
-          <a href="checkout.html" class="btn btn-secondary btn-lg">Get Pro — $19</a>
-        </div>
+    <div class="stats-grid">
+      <div class="stat-block">
+        <span class="stat-block-value accent">★★★★★</span>
+        <span class="stat-block-label">Customer Satisfaction — consistently top-rated by verified buyers</span>
       </div>
-      <div class="download-sysreq">
-        <div class="sysreq-card">
-          <h3>System Requirements</h3>
-          <ul class="sysreq-list">
-            <li>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-              Windows 10 (build 1909 or later) or Windows 11
-            </li>
-            <li>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-              64-bit architecture
-            </li>
-            <li>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              Administrator privileges required
-            </li>
-            <li>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-              No internet connection required
-            </li>
-          </ul>
-          <div class="sysreq-version">
-            <span>Latest:</span>
-            <span class="sysreq-ver-tag" id="sysreq-version">—</span>
-            <span>·</span>
-            <a href="/changelog" style="color:var(--accent);font-size:0.8rem">Release notes</a>
-          </div>
-        </div>
+      <div class="stat-block">
+        <span class="stat-block-value">Under 2 min</span>
+        <span class="stat-block-label">Average setup time from download to fully running</span>
+      </div>
+      <div class="stat-block">
+        <span class="stat-block-value">High</span>
+        <span class="stat-block-label">Returning customer rate — users continue renewing access</span>
       </div>
     </div>
   </div>
@@ -646,18 +662,28 @@
     <div class="faq-header">
       <span class="section-label">FAQ</span>
       <h2 class="section-title">Common questions</h2>
-      <p class="section-sub">Everything you need to know before getting started.</p>
+      <p class="section-sub" style="margin:0 auto">Everything you need to know before getting started.</p>
     </div>
 
     <ul class="faq-list" role="list">
 
       <li class="faq-item">
         <button class="faq-question" aria-expanded="false">
-          Does Ghost require an internet connection?
+          What is Phantom?
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
         <div class="faq-answer" role="region">
-          <p class="faq-answer-inner">No. Ghost runs entirely offline. License validation, GUID rotation, and all other features work without any internet access.</p>
+          <p class="faq-answer-inner">Phantom is a premium Windows external utility with a clean interface, fast setup, custom profiles, and frequent updates. It is available via time-based access plans.</p>
+        </div>
+      </li>
+
+      <li class="faq-item">
+        <button class="faq-question" aria-expanded="false">
+          How do I receive my access after purchase?
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <div class="faq-answer" role="region">
+          <p class="faq-answer-inner">After completing your purchase, your license key is delivered instantly to the email used at checkout and displayed directly on the checkout confirmation screen. Enter it in the app to activate your access.</p>
         </div>
       </li>
 
@@ -667,57 +693,47 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
         <div class="faq-answer" role="region">
-          <p class="faq-answer-inner">Ghost is tested and supported on Windows 10 (build 1909 and later) and Windows 11, 64-bit. It must be run as Administrator.</p>
+          <p class="faq-answer-inner">Phantom is tested and supported on Windows 10 (build 1909 and later) and Windows 11, 64-bit. Administrator privileges are required.</p>
         </div>
       </li>
 
       <li class="faq-item">
         <button class="faq-question" aria-expanded="false">
-          What is the difference between Trial and Pro?
+          What's the difference between the access durations?
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
         <div class="faq-answer" role="region">
-          <p class="faq-answer-inner">Trial gives you GUID rotation, registry backups, and one saved profile — completely free. Pro adds MAC address spoofing, unlimited profiles, auto-apply on profile switch, priority support, and lifetime updates for a one-time $19 payment.</p>
+          <p class="faq-answer-inner">All access durations (1 Day, 7 Days, 30 Days, 90 Days) include the exact same full feature set. The only difference is how long your access lasts. Longer durations offer better per-day value.</p>
         </div>
       </li>
 
       <li class="faq-item">
         <button class="faq-question" aria-expanded="false">
-          Can I recover if something goes wrong?
+          How do I get support if I have an issue?
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
         <div class="faq-answer" role="region">
-          <p class="faq-answer-inner">Yes. Before making any change, Ghost creates a timestamped backup file in your backups folder. You can restore it with a double-click at any time.</p>
-        </div>
-      </li>
-
-      <li class="faq-item">
-        <button class="faq-question" aria-expanded="false">
-          How do I receive my Pro license key?
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
-        <div class="faq-answer" role="region">
-          <p class="faq-answer-inner">After completing your purchase, your license key is delivered immediately to the email address used at checkout. Enter the key in Ghost's License tab to activate Pro.</p>
+          <p class="faq-answer-inner">Join our Discord server for dedicated support. The development team is active daily and responds to all support requests.</p>
         </div>
       </li>
 
     </ul>
 
     <p class="faq-cta">
-      Still have questions? <a href="#support">Ask us on Discord →</a>
+      Still have questions? <a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Ask us on Discord →</a>
     </p>
   </div>
 </section>
 
 
 <!-- ═══════════════════════════════════════════════ SUPPORT / DISCORD -->
-<section id="support" class="support" aria-label="Support">
+<section id="support" class="support-section" aria-label="Support">
   <div class="container">
-    <span class="section-label" style="display:block;text-align:center;margin-bottom:12px">Support</span>
-    <h2>Join the Ghost Discord</h2>
-    <p>Get help, report bugs, and stay up to date with every release.<br>The dev team is active daily.</p>
-    <a href="https://discord.gg/your-invite" class="btn btn-discord" target="_blank" rel="noopener noreferrer">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+    <span class="section-label" style="display:block;margin-bottom:14px">Support</span>
+    <h2>Join the Phantom Discord</h2>
+    <p>Get help, stay updated with every release, and connect with other users.<br>The dev team is active daily.</p>
+    <a href="https://discord.gg/your-invite" class="btn btn-discord btn-lg" target="_blank" rel="noopener noreferrer">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
       Join Discord Server
     </a>
   </div>
@@ -732,25 +748,25 @@
     <div class="footer-grid">
 
       <div class="footer-brand">
-        <a href="index.html" class="nav-logo" aria-label="Ghost home">
-          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
-            <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
-            <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
-            <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+        <a href="index.html" class="nav-logo" aria-label="Phantom home">
+          <svg class="nav-logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#c0152a" fill-opacity="0.15"/>
+            <path d="M16 7C11.03 7 7 11.03 7 16v9.5l3-2.5 3 2.5 3-2.5 3 2.5V16c0-4.97-4.03-9-9-9z" fill="#c0152a"/>
+            <circle cx="12.5" cy="16" r="1.5" fill="#0a0a0b"/>
+            <circle cx="19.5" cy="16" r="1.5" fill="#0a0a0b"/>
           </svg>
-          Ghost
+          PHANTOM
         </a>
-        <p>Premium Windows configuration utility. Fast, offline, and built for users who need full control.</p>
-        <div class="footer-version" id="footer-version"></div>
+        <p>Premium Windows external utility. Fast setup, custom profiles, and frequent updates.</p>
+        <div class="footer-version" id="footer-version" style="font-size:0.78rem;color:var(--muted-2);margin-top:8px"></div>
       </div>
 
       <div class="footer-col">
         <h4>Product</h4>
         <ul role="list">
-          <li><a href="#features">Features</a></li>
-          <li><a href="pricing.html">Pricing</a></li>
-          <li><a href="#download">Download</a></li>
+          <li><a href="product.html">Product Page</a></li>
+          <li><a href="index.html#pricing">Pricing</a></li>
+          <li><a href="index.html#features">Features</a></li>
           <li><a href="changelog.html">Changelog</a></li>
         </ul>
       </div>
@@ -758,7 +774,8 @@
       <div class="footer-col">
         <h4>Support</h4>
         <ul role="list">
-          <li><a href="#faq">FAQ</a></li>
+          <li><a href="index.html#faq">FAQ</a></li>
+          <li><a href="status.html">Status</a></li>
           <li><a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Discord</a></li>
         </ul>
       </div>
@@ -767,46 +784,42 @@
         <h4>Account</h4>
         <ul role="list">
           <li><a href="login.html">Login</a></li>
+          <li><a href="register.html">Register</a></li>
           <li><a href="dashboard.html">Dashboard</a></li>
-          <li><a href="checkout.html">Get Pro</a></li>
+          <li><a href="checkout.html">Get Access</a></li>
         </ul>
       </div>
 
     </div>
 
     <div class="footer-bottom">
-      <p>&copy; 2025 Ghost. All rights reserved.</p>
+      <p>&copy; 2025 Phantom. All rights reserved.</p>
       <nav class="footer-legal" aria-label="Legal">
         <a href="terms.html">Terms</a>
         <a href="privacy.html">Privacy</a>
-        <a href="#support">Support</a>
-        <a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Discord</a>
+        <a href="index.html#support">Support</a>
       </nav>
     </div>
 
   </div>
 </footer>
 
-<script src="/assets/js/ghost.js" defer></script>
+<script src="/assets/js/phantom.js" defer></script>
 <script>
-/* ── Populate dynamic version badge from /api/releases/latest ─── */
 (function () {
   fetch('/api/releases/latest')
     .then(r => r.ok ? r.json() : null)
     .then(data => {
       if (!data || !data.version) return;
       const v = 'v' + data.version.replace(/^v/, '');
-      const heroEl   = document.getElementById('hero-version-badge');
-      const sysreqEl = document.getElementById('sysreq-version');
-      const footerEl = document.getElementById('footer-version');
-      if (heroEl)   heroEl.textContent   = v + ' \u2014 Latest Release';
-      if (sysreqEl) sysreqEl.textContent = v;
-      if (footerEl) footerEl.textContent = v;
+      const badgeWrap = document.getElementById('hero-version-badge-wrap');
+      const badge = document.getElementById('hero-version-badge');
+      const footer = document.getElementById('footer-version');
+      if (badge) badge.textContent = v;
+      if (badgeWrap) badgeWrap.style.display = '';
+      if (footer) footer.textContent = v;
     })
-    .catch(() => {
-      const heroEl = document.getElementById('hero-version-badge');
-      if (heroEl) heroEl.textContent = 'Latest Release';
-    });
+    .catch(() => {});
 })();
 </script>
 </body>

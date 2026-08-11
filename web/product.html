@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phantom — Product</title>
+  <meta name="description" content="Phantom — premium Windows external utility. Fast setup, custom profiles, and frequent updates. Choose your access duration." />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="/assets/css/phantom.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23c0152a'/><path d='M16 7C11.03 7 7 11.03 7 16v9.5l3-2.5 3 2.5 3-2.5 3 2.5V16c0-4.97-4.03-9-9-9z' fill='white'/></svg>" />
+
+  <style>
+    /* ── Product page specific ────────────────────────────── */
+    .product-page { padding-top: 100px; padding-bottom: 80px; }
+
+    .product-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 60px;
+      align-items: flex-start;
+    }
+
+    /* Left: Image gallery */
+    .product-gallery {}
+    .product-main-img {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      aspect-ratio: 4/3;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    .product-main-img::before {
+      content: '';
+      position: absolute;
+      bottom: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    }
+    .product-artwork-icon {
+      width: 100px; height: 100px;
+      background: rgba(192,21,42,0.1);
+      border: 1px solid rgba(192,21,42,0.2);
+      border-radius: var(--radius-lg);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--accent);
+      margin-bottom: 16px;
+    }
+    .product-artwork-icon svg { width: 48px; height: 48px; }
+    .product-artwork-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+
+    .product-thumbnails {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .product-thumb {
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      aspect-ratio: 4/3;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: var(--transition);
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-align: center;
+      padding: 8px;
+      line-height: 1.4;
+    }
+    .product-thumb:hover { border-color: var(--border-2); }
+    .product-thumb.active { border-color: var(--accent); color: var(--accent); background: rgba(192,21,42,0.05); }
+
+    /* Right: Product info */
+    .product-info {}
+    .product-badges {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+    .product-badge {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      padding: 5px 12px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-2);
+    }
+    .product-badge.online { border-color: rgba(34,197,94,0.3); color: var(--green); }
+    .product-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    .product-title {
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      margin-bottom: 10px;
+    }
+
+    .product-rating-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+    .product-stars { color: #f59e0b; font-size: 1rem; }
+    .product-rating-text { font-size: 0.85rem; color: var(--muted); }
+
+    .product-desc {
+      font-size: 0.95rem;
+      color: var(--text-2);
+      line-height: 1.7;
+      margin-bottom: 28px;
+    }
+
+    /* Access selector */
+    .access-label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 14px;
+      display: block;
+    }
+
+    .plan-options {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    .plan-option {
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      position: relative;
+      text-align: left;
+    }
+    .plan-option:hover { border-color: var(--border-2); background: var(--surface-2); }
+    .plan-option.selected { border-color: var(--accent); background: rgba(192,21,42,0.04); }
+
+    .plan-option-badge {
+      position: absolute;
+      top: -10px; right: 12px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 99px;
+    }
+    .plan-option-duration {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .plan-option-price {
+      font-size: 1.4rem;
+      font-weight: 800;
+      color: var(--text);
+      line-height: 1;
+      margin-bottom: 2px;
+    }
+    .plan-option-price sup { font-size: 0.85rem; vertical-align: super; }
+    .plan-option-per {
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .plan-option-check {
+      position: absolute;
+      top: 12px; right: 12px;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      border: 1.5px solid var(--border-2);
+      display: flex; align-items: center; justify-content: center;
+      transition: var(--transition);
+    }
+    .plan-option.selected .plan-option-check {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .plan-option.selected .plan-option-check::after {
+      content: '';
+      display: block;
+      width: 10px; height: 6px;
+      border-left: 2px solid #fff;
+      border-bottom: 2px solid #fff;
+      transform: rotate(-45deg) translateY(-1px);
+    }
+
+    /* Qty + Buy */
+    .qty-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .qty-label { font-size: 0.82rem; color: var(--text-2); font-weight: 600; white-space: nowrap; }
+    .qty-input-wrap { display: flex; align-items: center; gap: 0; border: 1.5px solid var(--border-2); border-radius: var(--radius-sm); overflow: hidden; }
+    .qty-btn {
+      width: 36px; height: 38px;
+      background: var(--surface-2);
+      border: none;
+      color: var(--text);
+      font-size: 1.1rem;
+      cursor: pointer;
+      transition: background 0.15s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .qty-btn:hover { background: var(--surface-3); }
+    .qty-val {
+      width: 40px;
+      text-align: center;
+      background: var(--surface);
+      border: none;
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      color: var(--text);
+      font-size: 0.9rem;
+      font-weight: 600;
+      font-family: var(--font);
+      padding: 8px 0;
+    }
+
+    .product-cta-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .product-cta-row .btn { flex: 1; justify-content: center; }
+
+    /* What's included */
+    .product-meta-tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0;
+    }
+    .product-meta-tab {
+      padding: 11px 18px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: var(--transition);
+    }
+    .product-meta-tab:hover { color: var(--text); }
+    .product-meta-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .product-meta-panels {}
+    .product-meta-panel { display: none; padding: 20px 0; }
+    .product-meta-panel.active { display: block; }
+
+    .included-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+    .included-list li {
+      display: flex; align-items: flex-start; gap: 10px;
+      font-size: 0.875rem; color: var(--text-2); line-height: 1.5;
+    }
+    .included-list li::before {
+      content: '✓';
+      color: var(--green);
+      font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .setup-steps { display: flex; flex-direction: column; gap: 14px; }
+    .setup-step { display: flex; align-items: flex-start; gap: 14px; }
+    .setup-step-num {
+      width: 28px; height: 28px;
+      background: rgba(192,21,42,0.12);
+      border: 1px solid rgba(192,21,42,0.2);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem; font-weight: 700; color: var(--accent);
+      flex-shrink: 0;
+    }
+    .setup-step-text { font-size: 0.875rem; color: var(--text-2); line-height: 1.5; }
+    .setup-step-text strong { color: var(--text); display: block; margin-bottom: 2px; }
+
+    .req-list { display: flex; flex-direction: column; gap: 10px; }
+    .req-item {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 0.875rem; color: var(--text-2);
+    }
+    .req-item svg { color: var(--muted); flex-shrink: 0; }
+
+    .faq-inline { display: flex; flex-direction: column; }
+
+    @media (max-width: 900px) {
+      .product-layout { grid-template-columns: 1fr; gap: 40px; }
+      .product-page { padding-top: 90px; }
+    }
+    @media (max-width: 500px) {
+      .plan-options { grid-template-columns: 1fr 1fr; }
+      .product-thumbnails { grid-template-columns: repeat(4, 1fr); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAVIGATION -->
+<header class="nav" role="banner">
+  <div class="container">
+    <nav class="nav-inner" aria-label="Primary navigation">
+      <a href="index.html" class="nav-logo" aria-label="Phantom home">
+        <svg class="nav-logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#c0152a" fill-opacity="0.15"/>
+          <path d="M16 7C11.03 7 7 11.03 7 16v9.5l3-2.5 3 2.5 3-2.5 3 2.5V16c0-4.97-4.03-9-9-9z" fill="#c0152a"/>
+          <circle cx="12.5" cy="16" r="1.5" fill="#0a0a0b"/>
+          <circle cx="19.5" cy="16" r="1.5" fill="#0a0a0b"/>
+        </svg>
+        PHANTOM
+      </a>
+      <ul class="nav-links" role="list">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="product.html" class="active">Product</a></li>
+        <li><a href="index.html#support">Support</a></li>
+        <li><a href="status.html">Status</a></li>
+      </ul>
+      <div class="nav-cta">
+        <a href="login.html" class="btn btn-ghost btn-sm">Login</a>
+        <a href="dashboard.html" class="btn btn-ghost btn-sm">Dashboard</a>
+        <a href="checkout.html" class="btn btn-primary btn-sm">Get Access</a>
+      </div>
+      <button class="nav-toggle" aria-label="Open menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+    </nav>
+    <div class="nav-mobile" role="navigation" aria-label="Mobile navigation">
+      <a href="index.html">Home</a>
+      <a href="product.html">Product</a>
+      <a href="index.html#support">Support</a>
+      <a href="status.html">Status</a>
+      <div class="mobile-cta">
+        <a href="login.html" class="btn btn-ghost btn-sm">Login</a>
+        <a href="checkout.html" class="btn btn-primary btn-sm">Get Access</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+<div class="product-page">
+  <div class="container">
+
+    <!-- Breadcrumb -->
+    <nav aria-label="Breadcrumb" style="margin-bottom:32px;font-size:0.82rem;color:var(--muted);display:flex;align-items:center;gap:8px;">
+      <a href="index.html" style="color:var(--muted)">Home</a>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+      <span style="color:var(--text-2)">Product</span>
+    </nav>
+
+    <div class="product-layout">
+
+      <!-- ── LEFT: Gallery ───────────────────────────────────── -->
+      <div class="product-gallery">
+        <div class="product-main-img" id="product-main-img">
+          <div style="text-align:center">
+            <div class="product-artwork-icon" style="margin:0 auto 12px">
+              <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                <path d="M16 4C9.373 4 4 9.373 4 16v13l4-3.5 4 3.5 4-3.5 4 3.5V16c0-6.627-5.373-12-12-12z" fill="currentColor" fill-opacity="0.85"/>
+                <circle cx="11.5" cy="16" r="2" fill="#0a0a0b"/>
+                <circle cx="20.5" cy="16" r="2" fill="#0a0a0b"/>
+              </svg>
+            </div>
+            <div class="product-artwork-label" id="gallery-label">Main Menu</div>
+          </div>
+          <div style="position:absolute;bottom:-40px;left:50%;transform:translateX(-50%);width:200px;height:100px;background:radial-gradient(ellipse,rgba(192,21,42,0.18) 0%,transparent 70%);pointer-events:none"></div>
+        </div>
+
+        <div class="product-thumbnails">
+          <div class="product-thumb active" data-label="Main Menu">
+            <span>Main<br>Menu</span>
+          </div>
+          <div class="product-thumb" data-label="Overlay">
+            <span>Overlay</span>
+          </div>
+          <div class="product-thumb" data-label="Settings">
+            <span>Settings</span>
+          </div>
+          <div class="product-thumb" data-label="Profiles">
+            <span>Profiles</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── RIGHT: Product info ─────────────────────────────── -->
+      <div class="product-info">
+        <div class="product-badges">
+          <div class="product-badge online">
+            <span class="product-badge-dot"></span>
+            Online
+          </div>
+          <div class="product-badge">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            Windows
+          </div>
+          <div class="product-badge">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Instant Delivery
+          </div>
+          <div class="product-badge">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Active Updates
+          </div>
+        </div>
+
+        <h1 class="product-title">PHANTOM</h1>
+
+        <div class="product-rating-row">
+          <span class="product-stars">★★★★★</span>
+          <span class="product-rating-text">Excellent — verified buyers</span>
+        </div>
+
+        <p class="product-desc">
+          A polished Windows external utility with a clean interface, fast setup,
+          custom profiles, deep customization, and frequent updates. Choose your access
+          duration — all plans include the full feature set.
+        </p>
+
+        <!-- Choose Your Access -->
+        <span class="access-label">Choose Your Access</span>
+
+        <div class="plan-options" id="plan-options">
+          <div class="plan-option" data-plan="1day" data-price="2.99">
+            <div class="plan-option-check"></div>
+            <div class="plan-option-duration">1 Day</div>
+            <div class="plan-option-price"><sup>$</sup>2.99</div>
+            <div class="plan-option-per">$2.99 / day</div>
+          </div>
+          <div class="plan-option" data-plan="7day" data-price="9.99">
+            <div class="plan-option-check"></div>
+            <div class="plan-option-duration">7 Days</div>
+            <div class="plan-option-price"><sup>$</sup>9.99</div>
+            <div class="plan-option-per">$1.43 / day</div>
+          </div>
+          <div class="plan-option selected" data-plan="30day" data-price="24.99">
+            <div class="plan-option-badge">Best Seller</div>
+            <div class="plan-option-check"></div>
+            <div class="plan-option-duration">30 Days</div>
+            <div class="plan-option-price"><sup>$</sup>24.99</div>
+            <div class="plan-option-per">$0.83 / day</div>
+          </div>
+          <div class="plan-option" data-plan="90day" data-price="59.99">
+            <div class="plan-option-check"></div>
+            <div class="plan-option-duration">90 Days</div>
+            <div class="plan-option-price"><sup>$</sup>59.99</div>
+            <div class="plan-option-per">$0.67 / day</div>
+          </div>
+        </div>
+
+        <!-- Quantity -->
+        <div class="qty-row">
+          <span class="qty-label">Quantity</span>
+          <div class="qty-input-wrap">
+            <button class="qty-btn" id="qty-minus" aria-label="Decrease quantity">−</button>
+            <input class="qty-val" id="qty-val" type="number" value="1" min="1" max="10" readonly aria-label="Quantity" />
+            <button class="qty-btn" id="qty-plus" aria-label="Increase quantity">+</button>
+          </div>
+        </div>
+
+        <!-- CTA buttons -->
+        <div class="product-cta-row">
+          <a href="checkout.html" id="buy-now-btn" class="btn btn-primary btn-lg">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+            Buy Now
+          </a>
+          <a href="checkout.html" id="add-cart-btn" class="btn btn-secondary btn-lg">
+            Add to Cart
+          </a>
+        </div>
+
+        <!-- Trust row -->
+        <div style="display:flex;gap:18px;flex-wrap:wrap;padding:14px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:24px;">
+          <span style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:6px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Secure checkout
+          </span>
+          <span style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:6px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Instant delivery
+          </span>
+          <span style="font-size:0.78rem;color:var(--muted);display:flex;align-items:center;gap:6px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z" fill="currentColor" stroke="none"/></svg>
+            Discord support
+          </span>
+        </div>
+
+        <!-- Tabs: included / setup / requirements / faq / support -->
+        <div class="product-meta-tabs" role="tablist">
+          <button class="product-meta-tab active" role="tab" aria-selected="true" data-meta="included">What's Included</button>
+          <button class="product-meta-tab" role="tab" aria-selected="false" data-meta="setup">Setup</button>
+          <button class="product-meta-tab" role="tab" aria-selected="false" data-meta="requirements">Requirements</button>
+          <button class="product-meta-tab" role="tab" aria-selected="false" data-meta="faq">FAQ</button>
+        </div>
+
+        <div class="product-meta-panels">
+
+          <div class="product-meta-panel active" data-panel="included">
+            <ul class="included-list">
+              <li>Full access to all Phantom features — no limits by tier</li>
+              <li>Custom profile creation and instant switching</li>
+              <li>Overlay support with configurable hotkey and positioning</li>
+              <li>Machine GUID management and rotation</li>
+              <li>MAC address management across all adapters</li>
+              <li>Automatic registry backups before every change</li>
+              <li>Frequent automatic updates during your access period</li>
+              <li>Discord server access for support and announcements</li>
+            </ul>
+          </div>
+
+          <div class="product-meta-panel" data-panel="setup">
+            <div class="setup-steps">
+              <div class="setup-step">
+                <div class="setup-step-num">1</div>
+                <div class="setup-step-text"><strong>Complete your purchase</strong>Your license key is shown immediately after payment.</div>
+              </div>
+              <div class="setup-step">
+                <div class="setup-step-num">2</div>
+                <div class="setup-step-text"><strong>Download Phantom</strong>Download the latest release from your dashboard.</div>
+              </div>
+              <div class="setup-step">
+                <div class="setup-step-num">3</div>
+                <div class="setup-step-text"><strong>Extract and launch</strong>Extract the archive and run Phantom as Administrator.</div>
+              </div>
+              <div class="setup-step">
+                <div class="setup-step-num">4</div>
+                <div class="setup-step-text"><strong>Activate</strong>Enter your license key and press Activate. You're ready.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="product-meta-panel" data-panel="requirements">
+            <div class="req-list">
+              <div class="req-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+                Windows 10 (build 1909+) or Windows 11
+              </div>
+              <div class="req-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+                64-bit architecture required
+              </div>
+              <div class="req-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Administrator privileges required
+              </div>
+              <div class="req-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+                Internet required for activation only
+              </div>
+            </div>
+          </div>
+
+          <div class="product-meta-panel faq-inline" data-panel="faq">
+            <div style="display:flex;flex-direction:column;">
+              <div style="padding:14px 0;border-bottom:1px solid var(--border);">
+                <div style="font-size:0.875rem;font-weight:600;color:var(--text);margin-bottom:6px;">Do all plans include the same features?</div>
+                <div style="font-size:0.85rem;color:var(--muted);line-height:1.65;">Yes. Every access duration (1 Day, 7 Days, 30 Days, 90 Days) includes the full Phantom feature set. The only difference is how long your access lasts.</div>
+              </div>
+              <div style="padding:14px 0;border-bottom:1px solid var(--border);">
+                <div style="font-size:0.875rem;font-weight:600;color:var(--text);margin-bottom:6px;">When does my access start?</div>
+                <div style="font-size:0.85rem;color:var(--muted);line-height:1.65;">Access starts from the moment you activate your license key in the Phantom application.</div>
+              </div>
+              <div style="padding:14px 0;">
+                <div style="font-size:0.875rem;font-weight:600;color:var(--text);margin-bottom:6px;">How do I get support?</div>
+                <div style="font-size:0.85rem;color:var(--muted);line-height:1.65;">Join our Discord server for dedicated support. The team is active daily and responds to all requests.</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</main>
+
+<!-- FOOTER -->
+<footer class="footer" role="contentinfo">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="index.html" class="nav-logo" aria-label="Phantom home">
+          <svg class="nav-logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#c0152a" fill-opacity="0.15"/>
+            <path d="M16 7C11.03 7 7 11.03 7 16v9.5l3-2.5 3 2.5 3-2.5 3 2.5V16c0-4.97-4.03-9-9-9z" fill="#c0152a"/>
+            <circle cx="12.5" cy="16" r="1.5" fill="#0a0a0b"/>
+            <circle cx="19.5" cy="16" r="1.5" fill="#0a0a0b"/>
+          </svg>
+          PHANTOM
+        </a>
+        <p>Premium Windows external utility. Fast setup, custom profiles, and frequent updates.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul role="list">
+          <li><a href="product.html">Product Page</a></li>
+          <li><a href="index.html#pricing">Pricing</a></li>
+          <li><a href="index.html#features">Features</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Support</h4>
+        <ul role="list">
+          <li><a href="index.html#faq">FAQ</a></li>
+          <li><a href="status.html">Status</a></li>
+          <li><a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Discord</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Account</h4>
+        <ul role="list">
+          <li><a href="login.html">Login</a></li>
+          <li><a href="register.html">Register</a></li>
+          <li><a href="dashboard.html">Dashboard</a></li>
+          <li><a href="checkout.html">Get Access</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>&copy; 2025 Phantom. All rights reserved.</p>
+      <nav class="footer-legal" aria-label="Legal">
+        <a href="terms.html">Terms</a>
+        <a href="privacy.html">Privacy</a>
+      </nav>
+    </div>
+  </div>
+</footer>
+
+<script src="/assets/js/phantom.js" defer></script>
+<script>
+(function () {
+  // Plan selection
+  const options = document.querySelectorAll('.plan-option');
+  const buyNow  = document.getElementById('buy-now-btn');
+  const addCart = document.getElementById('add-cart-btn');
+
+  function getSelected() {
+    return document.querySelector('.plan-option.selected');
+  }
+
+  function updateLinks() {
+    const sel = getSelected();
+    if (!sel) return;
+    const plan = sel.dataset.plan;
+    if (buyNow)  buyNow.href  = `checkout.html?plan=${plan}`;
+    if (addCart) addCart.href = `checkout.html?plan=${plan}`;
+  }
+
+  options.forEach(opt => {
+    opt.addEventListener('click', () => {
+      options.forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+      updateLinks();
+    });
+  });
+
+  updateLinks();
+
+  // Quantity
+  const qtyVal   = document.getElementById('qty-val');
+  const qtyMinus = document.getElementById('qty-minus');
+  const qtyPlus  = document.getElementById('qty-plus');
+  if (qtyVal && qtyMinus && qtyPlus) {
+    qtyMinus.addEventListener('click', () => {
+      const v = parseInt(qtyVal.value, 10);
+      if (v > 1) qtyVal.value = v - 1;
+    });
+    qtyPlus.addEventListener('click', () => {
+      const v = parseInt(qtyVal.value, 10);
+      if (v < 10) qtyVal.value = v + 1;
+    });
+  }
+
+  // Gallery thumbnails
+  const thumbs  = document.querySelectorAll('.product-thumb');
+  const gallery = document.getElementById('gallery-label');
+  thumbs.forEach(t => {
+    t.addEventListener('click', () => {
+      thumbs.forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      if (gallery) gallery.textContent = t.dataset.label || '';
+    });
+  });
+
+  // Meta tabs
+  const metaTabs   = document.querySelectorAll('.product-meta-tab');
+  const metaPanels = document.querySelectorAll('.product-meta-panel');
+  metaTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.meta;
+      metaTabs.forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected','false'); });
+      metaPanels.forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      tab.setAttribute('aria-selected','true');
+      const panel = document.querySelector(`.product-meta-panel[data-panel="${target}"]`);
+      if (panel) panel.classList.add('active');
+    });
+  });
+
+  // Pre-select plan from URL query
+  const params = new URLSearchParams(window.location.search);
+  const planFromUrl = params.get('plan');
+  if (planFromUrl) {
+    const match = document.querySelector(`.plan-option[data-plan="${planFromUrl}"]`);
+    if (match) {
+      options.forEach(o => o.classList.remove('selected'));
+      match.classList.add('selected');
+      updateLinks();
+    }
+  }
+})();
+</script>
+</body>
+</html>

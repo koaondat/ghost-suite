@@ -223,11 +223,11 @@
     else if (password !== confirmPassword)
       errors.confirm = 'Passwords do not match.';
 
-    if (licenseKey) {
+    if (!licenseKey || !licenseKey.trim()) {
+      errors.license = 'License key is required to register.';
+    } else {
       const trimmed = licenseKey.trim();
-      if (!trimmed) {
-        errors.license = 'License key cannot be blank.';
-      } else if (typeof LicenseFormat !== 'undefined' && !LicenseFormat.isValidLicenseFormat(trimmed)) {
+      if (typeof LicenseFormat !== 'undefined' && !LicenseFormat.isValidLicenseFormat(trimmed)) {
         // Format pre-check: flag obviously wrong formats before the round-trip.
         // Expected: GHOST-XXXX-XXXX-XXXX-XXXX (4 groups of 4 alphanumeric chars).
         errors.license = 'License key format is invalid. Expected: GHOST-XXXX-XXXX-XXXX-XXXX';

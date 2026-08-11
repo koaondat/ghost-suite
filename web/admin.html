@@ -1067,8 +1067,13 @@
         <!-- ── Upload New Release ── -->
         <div class="admin-card" style="margin-bottom:20px">
           <div class="admin-card-header">
-            <h2 class="admin-card-title">Upload New Release</h2>
-            <span style="font-size:11px;color:var(--muted)">Upload GhostConfig.exe · SHA-256 auto-computed</span>
+            <h2 class="admin-card-title">Publish New Release</h2>
+            <span style="font-size:11px;color:var(--muted)">EXE uploads directly to CDN — SHA-256 computed in browser · Never HTTP 413</span>
+          </div>
+          <!-- Upload flow explanation (shown once, subtle) -->
+          <div style="background:var(--surface-2);border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:var(--muted);line-height:1.7">
+            <strong style="color:var(--text-2)">How it works:</strong>
+            &nbsp;① SHA-256 hashed in browser &rarr; ② Upload URL fetched from API &rarr; ③ EXE sent directly to CDN (no proxy, no size limit) &rarr; ④ Release metadata saved.
           </div>
           <div id="relUploadAlert" class="admin-alert" style="display:none;margin-bottom:12px"></div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -1097,8 +1102,8 @@
               <input type="text" id="relUploadMinVer" class="form-input" placeholder="e.g. 2.3.0" />
             </div>
             <div class="form-group">
-              <label class="form-label">SHA-256 Hash <span style="color:var(--muted);font-weight:400">(auto-filled after upload)</span></label>
-              <input type="text" id="relUploadSha256" class="form-input" placeholder="Auto-computed on upload" style="font-family:monospace;font-size:11px" readonly />
+              <label class="form-label">SHA-256 <span style="color:var(--muted);font-weight:400">(computed in browser before upload)</span></label>
+              <input type="text" id="relUploadSha256" class="form-input" placeholder="Auto-computed on Publish Update" style="font-family:monospace;font-size:11px" readonly />
             </div>
             <div class="form-group" style="grid-column:1/-1">
               <label class="form-label">Release Notes <span style="color:var(--muted);font-weight:400">(one bullet per line)</span></label>
@@ -1111,15 +1116,15 @@
               </label>
               <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
                 <input type="checkbox" id="relUploadSetCurrent" checked style="width:16px;height:16px;accent-color:var(--accent)" />
-                <span class="form-label" style="margin:0">Set as Current (live to clients)</span>
+                <span class="form-label" style="margin:0">Set as Current (live to clients immediately)</span>
               </label>
             </div>
           </div>
-          <!-- Upload progress -->
+          <!-- Upload progress (4-step) -->
           <div id="relUploadProgress" style="display:none;margin-top:14px">
-            <p id="relUploadProgressLabel" style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Uploading…</p>
-            <div style="height:6px;background:var(--surface-3);border-radius:3px;overflow:hidden">
-              <div id="relUploadProgressBar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
+            <p id="relUploadProgressLabel" style="font-size:12px;color:var(--muted);margin:0 0 6px 0">Starting…</p>
+            <div style="height:8px;background:var(--surface-3);border-radius:4px;overflow:hidden">
+              <div id="relUploadProgressBar" style="height:100%;width:0%;background:var(--accent);transition:width .3s ease"></div>
             </div>
           </div>
           <div style="margin-top:14px;display:flex;gap:8px">

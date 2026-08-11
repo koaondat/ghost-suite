@@ -3,14 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Checkout — Ghost</title>
-  <meta name="description" content="Complete your Ghost purchase securely. Pro or Lifetime — pay once, own it." />
+  <title>Checkout — Phantom</title>
+  <meta name="description" content="Complete your Phantom purchase securely. Choose your access duration and pay via PayPal." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
 
   <link rel="stylesheet" href="/assets/css/ghost.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/><text y='24' x='4' font-size='22' font-family='sans-serif'>👻</text></svg>" />
+  <link rel="stylesheet" href="/assets/css/phantom.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23c0152a'/><path d='M16 7C11.03 7 7 11.03 7 16v9.5l3-2.5 3 2.5 3-2.5 3 2.5V16c0-4.97-4.03-9-9-9z' fill='white'/></svg>" />
 </head>
 <body>
 
@@ -20,22 +21,21 @@
 <header class="nav" role="banner">
   <div class="container">
     <nav class="nav-inner" aria-label="Primary navigation">
-      <a href="index.html" class="nav-logo" aria-label="Ghost home">
+      <a href="index.html" class="nav-logo" aria-label="Phantom home">
         <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
-          <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
-          <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
-          <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+          <rect width="32" height="32" rx="8" fill="#c0152a" fill-opacity="0.15"/>
+          <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#c0152a"/>
+          <circle cx="12.5" cy="15.5" r="1.5" fill="#0a0a0b"/>
+          <circle cx="19.5" cy="15.5" r="1.5" fill="#0a0a0b"/>
         </svg>
-        Ghost
+        PHANTOM
       </a>
 
       <ul class="nav-links" role="list">
         <li><a href="index.html">Home</a></li>
-        <li><a href="index.html#features">Features</a></li>
-        <li><a href="pricing.html">Pricing</a></li>
-        <li><a href="index.html#faq">FAQ</a></li>
+        <li><a href="product.html">Product</a></li>
         <li><a href="index.html#support">Support</a></li>
+        <li><a href="status.html">Status</a></li>
       </ul>
 
       <div class="nav-cta">
@@ -51,7 +51,7 @@
     <div class="nav-mobile" role="navigation" aria-label="Mobile navigation">
       <a href="index.html">Home</a>
       <a href="index.html#features">Features</a>
-      <a href="pricing.html">Pricing</a>
+      <a href="product.html">Product</a>
       <a href="index.html#faq">FAQ</a>
       <a href="index.html#support">Support</a>
       <div class="mobile-cta">
@@ -74,7 +74,7 @@
 
     <!-- ── BREADCRUMB ──────────────────────────────────────── -->
     <nav class="co-breadcrumb" aria-label="Breadcrumb">
-      <a href="pricing.html">Pricing</a>
+      <a href="product.html">Product</a>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
       <span aria-current="page">Checkout</span>
     </nav>
@@ -482,20 +482,20 @@
 
         <!-- ── Download section ── -->
         <div class="co-confirm-section" id="co-download-section" hidden>
-          <h3 class="co-confirm-section-title">Download Ghost</h3>
+          <h3 class="co-confirm-section-title">Download Phantom</h3>
           <div class="co-dl-card">
             <div class="co-dl-info">
               <div class="co-dl-icon">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
               </div>
               <div>
-                <div class="co-dl-name">Ghost for Windows</div>
+                <div class="co-dl-name">Phantom for Windows</div>
                 <div class="co-dl-meta">Latest stable release &bull; Windows 10/11</div>
               </div>
             </div>
             <button class="btn btn-primary co-download-ghost-btn" id="success-download-btn" type="button" disabled>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Download Ghost
+              Download Phantom
             </button>
           </div>
         </div>
@@ -506,7 +506,7 @@
           <ol class="co-setup-steps-new" id="co-setup-steps" role="list">
           <li class="co-setup-step">
             <span class="co-setup-step-num">1</span>
-            <div><strong>Download Ghost</strong><br><span>Click the Download Ghost button above.</span></div>
+            <div><strong>Download Phantom</strong><br><span>Click the Download Phantom button above.</span></div>
           </li>
           <li class="co-setup-step">
             <span class="co-setup-step-num">2</span>
@@ -514,7 +514,7 @@
           </li>
           <li class="co-setup-step">
             <span class="co-setup-step-num">3</span>
-            <div><strong>Launch Ghost</strong><br><span>Run the Ghost executable as Administrator.</span></div>
+            <div><strong>Launch Phantom</strong><br><span>Run the Phantom executable as Administrator.</span></div>
           </li>
           <li class="co-setup-step">
             <span class="co-setup-step-num">4</span>
@@ -522,7 +522,7 @@
           </li>
           <li class="co-setup-step">
             <span class="co-setup-step-num">5</span>
-            <div><strong>Press Activate</strong><br><span>Ghost will verify your key and unlock all features.</span></div>
+            <div><strong>Press Activate</strong><br><span>Phantom will verify your key and unlock all features.</span></div>
           </li>
         </ol>
         </div>
@@ -618,7 +618,7 @@
         <p>No charge was made. Your order has been cancelled and nothing has been processed. You can return to the checkout form and try again whenever you're ready.</p>
         <div class="co-success-actions">
           <button class="btn btn-primary" id="cancelled-retry-btn">Try again</button>
-          <a href="pricing.html" class="btn btn-ghost">← Back to Pricing</a>
+          <a href="product.html" class="btn btn-ghost">← Back to Product</a>
         </div>
       </div>
     </div>
@@ -653,29 +653,28 @@
   <div class="container">
     <div class="footer-grid">
       <div class="footer-brand">
-        <a href="index.html" class="nav-logo" aria-label="Ghost home">
+        <a href="index.html" class="nav-logo" aria-label="Phantom home">
           <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <rect width="32" height="32" rx="8" fill="#a855f7" fill-opacity="0.18"/>
-            <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#a855f7"/>
-            <circle cx="12.5" cy="15.5" r="1.5" fill="#0f1117"/>
-            <circle cx="19.5" cy="15.5" r="1.5" fill="#0f1117"/>
+            <rect width="32" height="32" rx="8" fill="#c0152a" fill-opacity="0.15"/>
+            <path d="M16 6C10.477 6 6 10.477 6 16v9l2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2 2.5-2 2.5 2v-9c0-5.523-4.477-10-10-10z" fill="#c0152a"/>
+            <circle cx="12.5" cy="15.5" r="1.5" fill="#0a0a0b"/>
+            <circle cx="19.5" cy="15.5" r="1.5" fill="#0a0a0b"/>
           </svg>
-          Ghost
+          PHANTOM
         </a>
-        <p>Windows QA environment configuration utility. Offline, fast, and designed for engineers who move quickly.</p>
+        <p>Premium Windows external utility. Fast setup and frequent updates.</p>
       </div>
       <div class="footer-col">
         <h4>Product</h4>
         <ul role="list">
-          <li><a href="index.html#features">Features</a></li>
-          <li><a href="pricing.html">Pricing</a></li>
-          <li><a href="index.html#download">Download</a></li>
+          <li><a href="product.html">Product</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
         </ul>
       </div>
       <div class="footer-col">
         <h4>Resources</h4>
         <ul role="list">
-          <li><a href="index.html#faq">FAQ</a></li>
+          
           <li><a href="https://discord.gg/your-invite" target="_blank" rel="noopener">Discord</a></li>
         </ul>
       </div>
@@ -684,12 +683,12 @@
         <ul role="list">
           <li><a href="login.html">Login</a></li>
           <li><a href="dashboard.html">Dashboard</a></li>
-          <li><a href="pricing.html">Pricing</a></li>
+          <li><a href="product.html">Product</a></li>
         </ul>
       </div>
     </div>
     <div class="footer-bottom">
-      <p>&copy; 2025 Ghost. All rights reserved.</p>
+      <p>&copy; 2025 Phantom. All rights reserved.</p>
       <nav class="footer-legal" aria-label="Legal">
         <a href="terms.html">Terms of Service</a>
         <a href="privacy.html">Privacy Policy</a>
@@ -698,7 +697,7 @@
   </div>
 </footer>
 
-<script src="/assets/js/ghost.js" defer></script>
+<script src="/assets/js/phantom.js" defer></script>
 <script src="/assets/js/checkout.js" defer></script>
 </body>
 </html>
