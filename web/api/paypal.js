@@ -665,7 +665,22 @@ async function captureOrder (req, res) {
     return res.status(status).json(payload);
   } catch (err) {
     rejectCapture(err);
-    return res.status(500).json({ ok: false, message: 'Internal error during capture.', stage: 'capture' });
+    // Log the full error server-side for diagnosis while returning a safe
+    // customer-facing message that does not expose internal details.
+    console.error(
+      '[ghost/paypal] CAPTURE UNHANDLED ERROR orderID=%s plan=%s email=%s\n' +
+      '  name:    %s\n' +
+      '  message: %s\n' +
+      '  stack:\n%s',
+      orderID, planId, email,
+      err.name, err.message, err.stack || '(no stack)',
+    );
+    return res.status(500).json({
+      ok:      false,
+      message: 'Payment capture failed. Your card has not been charged. Please try again or contact support.',
+      stage:   'capture',
+      orderId: orderID,
+    });
   } finally {
     setTimeout(() => _captureInFlight.delete(orderID), 60_000);
   }
@@ -673,6 +688,17 @@ async function captureOrder (req, res) {
 
 
 async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
+  console.log(
+    '[ghost/paypal] _doCaptureOrder START orderID=%s plan=%s email=%s env=%s',
+    orderID, planId, email, PAYPAL_ENV,
+  );
+  console.log(
+    '[ghost/paypal] _doCaptureOrder config clientId=%s hasSecret=%s apiBase=%s',
+    PAYPAL_CLIENT_ID ? PAYPAL_CLIENT_ID.slice(0, 8) + '…' : '(MISSING)',
+    PAYPAL_CLIENT_SECRET ? 'yes' : '(MISSING)',
+    PAYPAL_API_BASE,
+  );
+
   // ── Step 1: Capture via PayPal ────────────────────────────────────────────
   let capture;
   try {

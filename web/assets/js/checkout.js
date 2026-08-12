@@ -499,10 +499,20 @@
     ['failed-retry-btn', 'cancelled-retry-btn'].forEach(id => {
       document.getElementById(id)?.addEventListener('click', () => {
         showState('idle');
-        _hide('co-payment-section');
+        // Only fully reset PayPal state if it was never successfully rendered.
+        // If buttons are already present (window.paypal exists), keep _paypalRendered=true
+        // so that the payment section is restored as-is rather than re-initialized,
+        // which prevents both the false "not configured" banner and duplicate buttons.
+        if (!window.paypal) {
+          _paypalRendered = false;
+          _paypalSdkPromise = null;
+          _hide('co-payment-section');
+        } else {
+          // PayPal SDK is loaded — keep payment section visible and buttons intact
+          _show('co-payment-section');
+        }
         _hide('co-free-checkout-section');
-        _paypalRendered = false;
-        _paypalSdkPromise = null;
+        _hide('co-payment-unconfigured');
         hideAlert();
         _show('co-submit-btn-wrap');
         const form = document.getElementById('checkout-form');
@@ -819,6 +829,12 @@
 
   /* ── Render the PayPal Buttons ─────────────────────────────────── */
   function _renderPayPalButtons (paypalSdk) {
+    // Clear any previously-rendered buttons before mounting.
+    // This prevents duplicate buttons when the section is re-entered
+    // (e.g., after a cancelled/failed payment the user clicks "Try again").
+    const container = document.getElementById('paypal-button-container');
+    if (container) container.innerHTML = '';
+
     paypalSdk.Buttons({
       style: {
         layout: 'vertical',
@@ -935,10 +951,18 @@
      Called once, after Step 1 validation passes.
   ─────────────────────────────────────────────────────────────── */
   async function _revealPaymentSection (email, discord) {
-    if (_paypalRendered) return;
-
-    // Snap the validated values so createOrder/capture always uses them
+    // Always update captured vals — even if already rendered, the user may have
+    // changed email/discord between attempts (e.g., after a failed payment).
     _capturedVals = { email, discord };
+
+    if (_paypalRendered) {
+      // PayPal buttons already rendered — just make sure the section is visible
+      // and the submit button is hidden. No need to re-initialize.
+      _hide('co-submit-btn-wrap');
+      _show('co-payment-section');
+      _hide('co-payment-unconfigured');
+      return;
+    }
 
     // ── Free Redemption Mode: coupon covers 100% — skip PayPal entirely ─────
     if (_appliedCoupon && _appliedCoupon.isFree) {

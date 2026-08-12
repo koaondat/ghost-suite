@@ -1187,9 +1187,19 @@ app.post('/api/admin/orders/fulfill-pending', _requireAdminSession, async (req, 
 
 // ── Customer Licenses — sold keys from inventory ──────────────────────────────
 app.get('/api/admin/customer-licenses', _requireAdminSession, async (req, res) => {
-  const inventory = await _redisGet('ghost:inventory') || [];
-  const sold = inventory.filter(k => ['sold', 'activated'].includes(k.status));
-  return res.json({ ok: true, licenses: sold, total: sold.length });
+  try {
+    const raw = await _redisGet('ghost:inventory');
+    // Defensive: guard against non-array (null, string, object) from Redis
+    const inventory = Array.isArray(raw) ? raw : [];
+    if (!Array.isArray(raw) && raw != null) {
+      console.warn('[ghost/admin] customer-licenses: inventory is not an array typeof=%s — coercing to []', typeof raw);
+    }
+    const sold = inventory.filter(k => ['sold', 'activated'].includes(k.status));
+    return res.json({ ok: true, licenses: sold, total: sold.length });
+  } catch (err) {
+    console.error('[ghost/admin] customer-licenses error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load sold licenses. Check server logs.' });
+  }
 });
 
 // ── Customers endpoints ───────────────────────────────────────────────────────

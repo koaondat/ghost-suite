@@ -385,6 +385,7 @@
   /* ── Key Inventory ─────────────────────────────────────────────────── */
   async function loadInventory (filter = {}) {
     const tb = $('inventoryTbody');
+    if (!tb) return;
     // Skeleton loader
     tb.innerHTML = Array(5).fill('<tr>' + Array(12).fill('<td><div class="skel-cell"></div></td>').join('') + '</tr>').join('');
     try {
@@ -399,16 +400,26 @@
       // __all__ → no status param (server returns everything)
       if (filter.plan)   params.set('plan',   filter.plan);
       if (filter.search) params.set('search', filter.search);
-      const { ok, data } = await apiFetch(`/api/admin/inventory?${params}`);
-      if (!ok) throw new Error(data.error || 'Failed to load inventory');
+      const { ok, data, status } = await apiFetch(`/api/admin/inventory?${params}`);
+      if (!ok) {
+        const msg = data.error || `Failed to load inventory (HTTP ${status}).`;
+        tb.innerHTML = `<tr><td colspan="12" class="admin-table-empty" style="color:#f87171">${esc(msg)}</td></tr>`;
+        return;
+      }
 
       // Normalize: always guarantee an array regardless of what the server sent
       const items = Array.isArray(data.items) ? data.items : [];
 
       _allInventory = items;
+      if (!items.length) {
+        tb.innerHTML = '<tr><td colspan="12" class="admin-table-empty">No keys found for this filter.</td></tr>';
+        const pg = $('invPagination');
+        if (pg) pg.innerHTML = '';
+        return;
+      }
       renderInventory(_allInventory, 1);
     } catch (err) {
-      tb.innerHTML = `<tr><td colspan="12" class="admin-table-empty" style="color:#f87171">${esc(err.message)}</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="12" class="admin-table-empty" style="color:#f87171">Error: ${esc(err.message || 'Network failure loading inventory.')}</td></tr>`;
     }
   }
 
@@ -893,12 +904,16 @@
     if (!tb) return;
     tb.innerHTML = '<tr><td colspan="10" class="admin-table-empty">Loading…</td></tr>';
     try {
-      const { ok, data } = await apiFetch('/api/admin/customer-licenses');
-      if (!ok) throw new Error(data.error || 'Failed to load customer licenses');
+      const { ok, data, status } = await apiFetch('/api/admin/customer-licenses');
+      if (!ok) {
+        const msg = data.error || `Failed to load sold licenses (HTTP ${status}).`;
+        tb.innerHTML = `<tr><td colspan="10" class="admin-table-empty" style="color:#f87171">${esc(msg)}</td></tr>`;
+        return;
+      }
       _allCustomerLicenses = Array.isArray(data.licenses) ? data.licenses : [];
       applyClFilter();
     } catch (err) {
-      tb.innerHTML = `<tr><td colspan="10" class="admin-table-empty" style="color:#f87171">${esc(err.message)}</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="10" class="admin-table-empty" style="color:#f87171">Error: ${esc(err.message || 'Network failure loading sold licenses.')}</td></tr>`;
     }
   }
 
@@ -1613,14 +1628,14 @@
   let _genFilteredKeys = [];
   let _genPage       = 1;
 
-  // Plan label lookup
+  // Plan label lookup — must match the canonical plan slugs in PLAN_CATALOGUE (paypal.js / server.js).
+  // Do NOT add non-canonical slugs here; they would create disconnected sold-key records.
   const _GEN_PLAN_LABELS = {
     day:      '1 Day',
     '3days':  '3 Days',
     week:     '1 Week',
     month:    '1 Month',
     '3months':'3 Months',
-    custom:   'Custom',
   };
 
   function _genInputs () {
