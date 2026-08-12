@@ -22,36 +22,73 @@
 
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
+/* ── Duration → expiry-days mapping ─────────────────────────────────────── */
+const DURATION_DAYS = {
+  day:      1,
+  '3days':  3,
+  week:     7,
+  month:    30,
+  '3months': 90,
+};
+
+/* ── Plan normalisation (must match paypal.js / server.js) ──────────────── */
+function _normalizePlan (plan) {
+  if (!plan) return '';
+  const aliases = {
+    day: 'day', '1day': 'day', '1 day': 'day',
+    '3days': '3days', '3 days': '3days',
+    week: 'week', '7day': 'week', '7days': 'week', '7 days': 'week',
+    month: 'month', '30day': 'month', '30days': 'month', '30 days': 'month',
+    '3months': '3months', '90day': '3months', '90days': '3months', '90 days': '3months',
+    pro: 'month', monthly: 'month', lifetime: '3months', trial: 'day',
+  };
+  return aliases[String(plan).trim().toLowerCase()] || String(plan).trim().toLowerCase();
+}
+
 /* ── Authoritative server-side plan catalogue ───────────────────────────────
    NEVER trust plan name, price, or mode sent by the frontend.
    All values here are the single source of truth.
-   'trial' is a free plan — Stripe Checkout is skipped; key is issued directly.
 ─────────────────────────────────────────────────────────────────────────── */
 const PLAN_CATALOGUE = {
-  trial: {
-    id:         'trial',
-    label:      'Ghost Trial (free)',
-    priceUsd:   0,
-    mode:       'free',      // special: no Stripe session needed
-    tier:       'TRIAL',
-    expiryDays: 7,
-  },
-  pro: {
-    id:         'pro',
-    label:      'Ghost Pro (monthly)',
-    priceUsd:   7,
-    mode:       'subscription',
-    tier:       'PRO',
-    expiryDays: 30,
-    recurring:  { interval: 'month' },
-  },
-  lifetime: {
-    id:         'lifetime',
-    label:      'Ghost Lifetime',
-    priceUsd:   79,
+  day: {
+    id:         'day',
+    label:      'Phantom 1 Day',
+    priceUsd:   2.99,
     mode:       'payment',
     tier:       'PRO',
-    expiryDays: 0,           // 0 = never expires
+    expiryDays: 1,
+  },
+  '3days': {
+    id:         '3days',
+    label:      'Phantom 3 Days',
+    priceUsd:   5.99,
+    mode:       'payment',
+    tier:       'PRO',
+    expiryDays: 3,
+  },
+  week: {
+    id:         'week',
+    label:      'Phantom 1 Week',
+    priceUsd:   9.99,
+    mode:       'payment',
+    tier:       'PRO',
+    expiryDays: 7,
+  },
+  month: {
+    id:         'month',
+    label:      'Phantom 1 Month',
+    priceUsd:   24.99,
+    mode:       'payment',
+    tier:       'PRO',
+    expiryDays: 30,
+  },
+  '3months': {
+    id:         '3months',
+    label:      'Phantom 3 Months',
+    priceUsd:   59.99,
+    mode:       'payment',
+    tier:       'PRO',
+    expiryDays: 90,
   },
 };
 
@@ -68,9 +105,9 @@ async function createSession (req, res) {
   const { plan: planRaw, email, discord, coupon } = req.body || {};
 
   /* ── Input validation ────────────────────────────────────────────────── */
-  const planId = (planRaw || '').trim().toLowerCase();
+  const planId = _normalizePlan((planRaw || '').trim().toLowerCase());
   if (!PLAN_CATALOGUE[planId]) {
-    return res.status(400).json({ ok: false, message: 'Invalid plan.' });
+    return res.status(400).json({ ok: false, message: 'Invalid plan. Choose: day, 3days, week, month, or 3months.' });
   }
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ ok: false, message: 'A valid email address is required.' });
@@ -81,56 +118,6 @@ async function createSession (req, res) {
 
   const plan = PLAN_CATALOGUE[planId];
 
-  /* ── Free trial: bypass Stripe and issue key directly from Redis ─────── */
-  if (plan.mode === 'free') {
-    try {
-      // Import fulfillOrder from paypal.js — it reads ghost:inventory directly
-      const { fulfillOrder } = require('./paypal');
-      const orderId = 'GHOST-TRIAL-' + Date.now().toString(36).toUpperCase();
-
-      // Write a minimal order record so fulfillOrder can find it
-      const _REDIS_URL   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
-      const _REDIS_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || '');
-
-      if (_REDIS_URL && _REDIS_TOKEN) {
-        const { default: fetch } = await import('node-fetch');
-        const orderRecord = {
-          order_id:        orderId,
-          plan:            planId,
-          plan_label:      plan.label,
-          tier:            plan.tier,
-          email:           email.trim(),
-          discord:         discord.trim(),
-          price_usd:       0,
-          currency:        'USD',
-          created_at:      new Date().toISOString(),
-          payment_status:  'completed',
-          payment_verified: true,
-          delivery_status: 'pending',
-          license_key:     null,
-          license_status:  'pending',
-        };
-        const pipeline = [
-          ['SET', `ghost:order:${orderId}`, JSON.stringify(orderRecord)],
-          ['ZADD', 'ghost:orders:index', String(Math.floor(Date.now() / 1000)), orderId],
-        ];
-        await fetch(`${_REDIS_URL}/pipeline`, {
-          method:  'POST',
-          headers: { Authorization: `Bearer ${_REDIS_TOKEN}`, 'Content-Type': 'application/json' },
-          body:    JSON.stringify(pipeline),
-        }).catch(() => {});
-      }
-
-      const result = await fulfillOrder(orderId);
-      if (!result.ok) {
-        return res.status(503).json({ ok: false, message: 'No trial keys available at this time.' });
-      }
-      return res.json({ ok: true, free: true, orderId, key: result.licenseKey, tier: plan.tier });
-    } catch (err) {
-      console.error('[ghost/checkout] free-trial fulfillment error:', err);
-      return res.status(500).json({ ok: false, message: 'Trial activation failed.' });
-    }
-  }
 
   /* ── Resolve Stripe discount coupon ─────────────────────────────────── */
   let stripeCouponId;
@@ -210,9 +197,9 @@ async function validateCoupon (req, res) {
   if (!code || typeof code !== 'string') {
     return res.status(400).json({ ok: false, message: 'Coupon code is required.' });
   }
-  const planId = (planRaw || '').trim().toLowerCase();
+  const planId = _normalizePlan((planRaw || '').trim().toLowerCase());
   if (!PLAN_CATALOGUE[planId]) {
-    return res.status(400).json({ ok: false, message: 'Invalid plan.' });
+    return res.status(400).json({ ok: false, message: 'Invalid plan. Choose: day, 3days, week, month, or 3months.' });
   }
 
   try {

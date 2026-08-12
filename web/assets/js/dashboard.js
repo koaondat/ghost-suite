@@ -150,33 +150,60 @@
 
   /* ── Plan label helper ─────────────────────────────────────── */
   function _planLabel (planSlug) {
-    const s   = (planSlug || '').toLowerCase();
-    // Exact slug map for Phantom time-based plans
+    const s = (planSlug || '').toLowerCase();
+    // Canonical duration-based slugs
     const exactMap = {
-      '1day': '1 Day', '7day': '7 Days', '30day': '30 Days', '90day': '90 Days',
-      trial: 'Trial', pro: 'Pro', lifetime: 'Lifetime', admin: 'Admin', basic: 'Basic',
+      day:      '1 Day',
+      '3days':  '3 Days',
+      week:     '1 Week',
+      month:    '1 Month',
+      '3months':'3 Months',
+      // legacy aliases
+      '1day':   '1 Day',
+      '7day':   '1 Week',
+      '30day':  '1 Month',
+      '90day':  '3 Months',
+      trial:    '1 Day (Trial)',
+      pro:      '1 Month',
+      lifetime: '3 Months',
+      admin:    'Admin',
+      basic:    'Basic',
     };
     if (exactMap[s]) return exactMap[s];
-    // Normalise compound slugs like "ghost_pro_lifetime", "ghost_pro", "ghost_basic"
-    if (s.includes('lifetime')) return 'Lifetime';
-    if (s.includes('trial'))    return 'Trial';
-    if (s.includes('basic'))    return 'Basic';
+    if (s.includes('3month') || s.includes('90day')) return '3 Months';
+    if (s.includes('month')  || s.includes('30day')) return '1 Month';
+    if (s.includes('week')   || s.includes('7day'))  return '1 Week';
+    if (s.includes('3day'))  return '3 Days';
+    if (s.includes('day'))   return '1 Day';
+    if (s.includes('lifetime')) return '3 Months';
+    if (s.includes('trial'))    return '1 Day (Trial)';
     if (s.includes('admin'))    return 'Admin';
-    if (s.includes('pro'))      return 'Pro';
-    return planSlug || 'Pro';
+    if (s.includes('pro'))      return '1 Month';
+    return planSlug || '1 Month';
+  }
+
+  /* ── Duration-slug → days mapping ──────────────────────────────── */
+  function _planDays (planSlug) {
+    const map = { day: 1, '1day': 1, '3days': 3, week: 7, '7day': 7,
+                  month: 30, '30day': 30, '3months': 90, '90day': 90,
+                  trial: 1, pro: 30, lifetime: 90 };
+    return map[(planSlug || '').toLowerCase()] || 30;
   }
 
   /* ── Build an account object from a verified backend order record ─── */
   function _accountFromOrder (order) {
     const planLabel = _planLabel(order.plan);
     const now       = new Date().toISOString().slice(0, 10);
-    const expires   = order.plan === 'lifetime'
-      ? null
-      : order.plan === 'trial'
-        ? new Date(Date.now() + 7  * 86_400_000).toISOString().slice(0, 10)
-        : new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    // Use expires_at from order if available, else compute from plan duration
+    const expires   = order.expires_at
+      ? order.expires_at.slice(0, 10)
+      : (() => {
+          const days = _planDays(order.plan || order.duration || 'month');
+          return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+        })();
 
     const orderId = order.order_id || order.stripe_session_id || '#GH-NEW';
+    const planSlug = order.plan || order.duration || 'month';
     return {
       username:    order.discord    || 'customer',
       email:       order.email      || '',
@@ -184,7 +211,9 @@
       license: {
         key:         order.license_key,
         tier:        planLabel,
-        status:      order.payment_status === 'verified' ? 'active' : order.payment_status || 'pending',
+        duration:    planSlug,
+        status:      order.license_status === 'active' || order.payment_status === 'verified'
+                       ? 'active' : order.payment_status || 'pending',
         activatedAt: (order.created_at || now).slice(0, 10),
         expiresAt:   expires,
         seatsUsed:   1,
@@ -195,7 +224,7 @@
         {
           color: 'green',
           title: 'License purchased & activated',
-          desc:  planLabel + ' plan · key delivered automatically',
+          desc:  planLabel + ' · key generated automatically',
           time:  new Date(order.created_at || now).toLocaleString('en-US', {
             month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
           }),
@@ -207,18 +236,14 @@
           orderId:       orderId,
           purchaseDate:  (order.created_at || now).slice(0, 10),
           plan:          planLabel,
-          planTier:      order.plan || 'pro',
-          billingPeriod: order.plan === 'lifetime' ? 'Once'
-                       : order.plan === '1day'     ? '1 day'
-                       : order.plan === '7day'     ? '7 days'
-                       : order.plan === '30day'    ? '30 days'
-                       : order.plan === '90day'    ? '90 days'
-                       : order.plan === 'trial'    ? '7 days'
-                       : 'Monthly',
+          planTier:      planSlug,
+          billingPeriod: planLabel,
+          expiresAt:     expires,
           amount:        order.price_usd != null ? Number(order.price_usd) : 0,
-          paymentStatus: order.payment_status === 'verified' ? 'paid' : order.payment_status || 'pending',
+          paymentStatus: order.license_status === 'active' || order.payment_status === 'verified'
+                           ? 'paid' : order.payment_status || 'pending',
           licenseKey:    order.license_key,
-          licenseStatus: order.payment_status === 'verified' ? 'active' : 'pending',
+          licenseStatus: order.license_status || (order.license_key ? 'active' : 'pending'),
           receiptToken:  `rcpt:${orderId.replace(/^#/, '')}`,
         },
       ],

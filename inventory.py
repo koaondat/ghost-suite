@@ -44,24 +44,40 @@ VALID_STATUSES = {'available', 'reserved', 'sold', 'activated', 'revoked', 'expi
 
 # ── Plan normalisation ────────────────────────────────────────────────────────
 # All of these must resolve to the same canonical slug used by the checkout.
-# Canonical values: 'pro', 'lifetime', 'trial'
+# Canonical values: 'day', '3days', 'week', 'month', '3months'
 _PLAN_ALIASES: dict[str, str] = {
-    # pro variants
-    "pro":                  "pro",
-    "monthly":              "pro",
-    "ghost_pro_monthly":    "pro",
-    "ghost pro monthly":    "pro",
-    "ghost pro (monthly)":  "pro",
-    "ghost_pro":            "pro",
-    "ghost pro":            "pro",
-    # lifetime variants
-    "lifetime":             "lifetime",
-    "ghost_lifetime":       "lifetime",
-    "ghost lifetime":       "lifetime",
-    # trial variants
-    "trial":                "trial",
-    "ghost_trial":          "trial",
-    "ghost trial":          "trial",
+    # Duration-based slugs (primary)
+    "day":           "day",
+    "1day":          "day",
+    "1 day":         "day",
+    "3days":         "3days",
+    "3 days":        "3days",
+    "week":          "week",
+    "7day":          "week",
+    "7days":         "week",
+    "7 days":        "week",
+    "month":         "month",
+    "30day":         "month",
+    "30days":        "month",
+    "30 days":       "month",
+    "3months":       "3months",
+    "90day":         "3months",
+    "90days":        "3months",
+    "90 days":       "3months",
+    # Legacy plan names — map to nearest duration for backward compat
+    "pro":                  "month",
+    "monthly":              "month",
+    "ghost_pro_monthly":    "month",
+    "ghost pro monthly":    "month",
+    "ghost pro (monthly)":  "month",
+    "ghost_pro":            "month",
+    "ghost pro":            "month",
+    "lifetime":             "3months",
+    "ghost_lifetime":       "3months",
+    "ghost lifetime":       "3months",
+    "trial":                "day",
+    "ghost_trial":          "day",
+    "ghost trial":          "day",
 }
 
 

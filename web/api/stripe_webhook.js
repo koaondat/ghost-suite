@@ -48,12 +48,79 @@ const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const _REDIS_URL   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/\/$/, '');
 const _REDIS_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || '');
 
+/* ── Duration → expiry-days mapping ─────────────────────────────────────── */
+const DURATION_DAYS = { day: 1, '3days': 3, week: 7, month: 30, '3months': 90 };
+
 /* ── Plan catalogue ──────────────────────────────────────────────────────── */
 const PLAN_TIER = {
-  trial:    { tier: 'TRIAL', expiryDays: 7  },
-  pro:      { tier: 'PRO',   expiryDays: 30 },
-  lifetime: { tier: 'PRO',   expiryDays: 0  },
+  day:      { tier: 'PRO', expiryDays: 1  },
+  '3days':  { tier: 'PRO', expiryDays: 3  },
+  week:     { tier: 'PRO', expiryDays: 7  },
+  month:    { tier: 'PRO', expiryDays: 30 },
+  '3months':{ tier: 'PRO', expiryDays: 90 },
+  // Legacy aliases kept for backward compatibility
+  pro:      { tier: 'PRO', expiryDays: 30 },
+  lifetime: { tier: 'PRO', expiryDays: 90 },
+  trial:    { tier: 'PRO', expiryDays: 1  },
 };
+
+/* ── Normalize plan slug (must match paypal.js) ─────────────────────────── */
+function _normalizePlan (plan) {
+  if (!plan) return '';
+  const aliases = {
+    day: 'day', '1day': 'day',
+    '3days': '3days',
+    week: 'week', '7day': 'week', '7days': 'week',
+    month: 'month', '30day': 'month', '30days': 'month',
+    '3months': '3months', '90day': '3months', '90days': '3months',
+    pro: 'month', monthly: 'month', lifetime: '3months', trial: 'day',
+  };
+  return aliases[String(plan).trim().toLowerCase()] || String(plan).trim().toLowerCase();
+}
+
+/* ── Generate a license key (GHOST-XXXX-XXXX-XXXX-XXXX) ─────────────────── */
+function _generateLicenseKey () {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const seg   = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return `GHOST-${seg()}-${seg()}-${seg()}-${seg()}`;
+}
+
+/* ── Compute expiration ISO date from plan ───────────────────────────────── */
+function _computeExpiry (planId) {
+  const days = DURATION_DAYS[planId];
+  if (!days) return null;
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+}
+
+/* ── Save generated key to ghost:inventory ───────────────────────────────── */
+async function _saveKeyToInventory (keyRecord) {
+  if (!_REDIS_URL || !_REDIS_TOKEN) return false;
+  const { default: fetch } = await import('node-fetch');
+  try {
+    // Read current inventory
+    const invKey = encodeURIComponent('ghost:inventory');
+    const getRes = await fetch(`${_REDIS_URL}/GET/${invKey}`, {
+      headers: { Authorization: `Bearer ${_REDIS_TOKEN}` },
+    });
+    let inventory = [];
+    if (getRes.ok) {
+      const body = await getRes.json().catch(() => null);
+      const raw = body?.result;
+      inventory = Array.isArray(raw) ? raw
+        : (typeof raw === 'string' ? JSON.parse(raw) : []);
+    }
+    inventory.push(keyRecord);
+    // Write back
+    const setRes = await fetch(`${_REDIS_URL}/SET/ghost:inventory`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${_REDIS_TOKEN}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify(JSON.stringify(inventory)),
+    });
+    return setRes.ok;
+  } catch (_) { return false; }
+}
 
 /* ── Redis helpers ───────────────────────────────────────────────────────── */
 async function _redisSaveOrder (orderId, record) {
@@ -128,11 +195,12 @@ function _logWebhookError (event, reason, detail = '') {
 async function handleSessionCompleted (session) {
   _logWebhookEvent({ type: 'checkout.session.completed', id: session.id, livemode: session.livemode });
 
-  const meta    = session.metadata || {};
-  const planId  = (meta.plan    || '').toLowerCase();
-  const discord = (meta.discord || '').trim();
-  const email   = session.customer_email || session.customer_details?.email || '';
-  const orderId = session.id;  // Stripe session ID = unique order ID
+  const meta          = session.metadata || {};
+  const rawPlan       = (meta.plan    || '').toLowerCase();
+  const planId        = _normalizePlan(rawPlan);
+  const discord       = (meta.discord || '').trim();
+  const email         = session.customer_email || session.customer_details?.email || '';
+  const orderId       = session.id;  // Stripe session ID = unique order ID
 
   if (!planId || !PLAN_TIER[planId]) {
     _logWebhookError({ type: 'checkout.session.completed', id: session.id }, 'unknown_plan', planId);
@@ -143,49 +211,70 @@ async function handleSessionCompleted (session) {
     return;
   }
 
+  // ── Idempotency: check if already fulfilled ────────────────────────────
+  const existingOrder = await _redisGetOrder(orderId).catch(() => null);
+  if (existingOrder && existingOrder.license_key && existingOrder.delivery_status === 'delivered') {
+    _logWebhookEvent({ type: 'checkout.session.completed', id: session.id, livemode: session.livemode },
+      { idempotent: true, key_issued: '[present]' });
+    return;
+  }
+
   const amountTotal = session.amount_total != null
     ? session.amount_total / 100
-    : planId === 'lifetime' ? 79 : planId === 'trial' ? 0 : 7;
+    : 0;
 
-  const planMeta = PLAN_TIER[planId];
+  const planMeta  = PLAN_TIER[planId];
+  const now       = new Date().toISOString();
+  const expiresAt = _computeExpiry(planId);
 
-  // Write order to Redis so fulfillOrder can find it
+  // ── Auto-generate a brand-new license key server-side ──────────────────
+  const generatedKey = _generateLicenseKey();
+
+  // ── Save generated key to inventory ────────────────────────────────────
+  await _saveKeyToInventory({
+    key:             generatedKey,
+    plan:            planId,
+    duration:        planId,
+    status:          'sold',
+    customer:        email,
+    customer_email:  email,
+    assigned_user:   discord,
+    order_id:        orderId,
+    purchase_date:   now,
+    created_date:    now,
+    added_at:        now,
+    expiration:      expiresAt,
+    expires_at:      expiresAt,
+    payment_id:      orderId,
+    notes:           `Stripe auto-generated — order: ${orderId}`,
+    hwid:            '',
+  }).catch(() => {});
+
+  // ── Persist completed order with license key ────────────────────────────
   await _redisSaveOrder(orderId, {
     order_id:          orderId,
     stripe_session_id: session.id,
     plan:              planId,
-    plan_label:        planId === 'lifetime' ? 'Ghost Lifetime'
-                     : planId === 'pro'      ? 'Ghost Pro (monthly)'
-                     : 'Ghost Trial (free)',
-    tier:              planMeta.tier,
+    duration:          planId,
+    plan_label:        planMeta ? `Phantom ${planId}` : planId,
+    tier:              planMeta ? planMeta.tier : 'PRO',
     email,
     discord,
     price_usd:         amountTotal,
     currency:          'USD',
-    created_at:        new Date().toISOString(),
+    created_at:        now,
     payment_status:    'completed',
     payment_verified:  true,
-    delivery_status:   'pending',
-    license_key:       null,
-    license_status:    'pending',
+    delivery_status:   'delivered',
+    license_key:       generatedKey,
+    license_status:    'active',
+    status:            'completed',
+    fulfilled_at:      now,
+    expires_at:        expiresAt,
   }).catch(() => {});
 
-  try {
-    // fulfillOrder is the single fulfillment path — reads ghost:inventory directly
-    const { fulfillOrder } = require('./paypal');
-    const result = await fulfillOrder(orderId);
-
-    if (!result.ok) {
-      _logWebhookError({ type: 'checkout.session.completed', id: session.id },
-        'fulfillment_failed', result.reason);
-    } else {
-      _logWebhookEvent({ type: 'checkout.session.completed', id: session.id, livemode: session.livemode },
-        { key_issued: '[present]', plan: planId });
-    }
-  } catch (err) {
-    _logWebhookError({ type: 'checkout.session.completed', id: session.id },
-      'fulfillment_exception', err.message);
-  }
+  _logWebhookEvent({ type: 'checkout.session.completed', id: session.id, livemode: session.livemode },
+    { key_issued: '[present]', plan: planId, expiresAt });
 }
 
 

@@ -341,6 +341,7 @@ class TestLicenseDelivery:
         assert r1["key"] == r2["key"], "Duplicate payment produced a different key"
 
     def test_free_trial_token_accepted(self):
+        """FREE_TRIAL token is valid; 'trial' maps to 'day' duration → tier=PRO."""
         import license_delivery as ld
         result = ld.confirm_payment_and_deliver(
             order_id      = "GHOST-TRIAL-XYZ",
@@ -351,7 +352,9 @@ class TestLicenseDelivery:
             price_usd     = 0,
         )
         assert result["ok"] is True
-        assert result["tier"] == "TRIAL"
+        # 'trial' normalizes to 'day', which has tier=PRO in the duration catalogue
+        assert result["tier"] == "PRO"
+        assert result["key"] is not None
 
     def test_invalid_payment_token_rejected(self):
         import license_delivery as ld
@@ -407,20 +410,28 @@ class TestLicenseDelivery:
         order = ld.get_order("nonexistent_order_id")
         assert order is None
 
-    def test_lifetime_plan_key_never_expires(self):
-        import license_delivery as ld, keygen
+    def test_lifetime_plan_key_has_90day_expiry(self):
+        """'lifetime' maps to '3months' (90 days) — check expires_at is set."""
+        import license_delivery as ld
+        from datetime import datetime, timezone
         result = ld.confirm_payment_and_deliver(
             order_id      = "cs_lifetime_test",
             payment_token = "stripe:pi_lifetime",
             plan          = "lifetime",
             email         = "lifetime@example.com",
             discord       = "lifetimer",
-            price_usd     = 79.0,
+            price_usd     = 59.99,
         )
         assert result["ok"] is True
-        meta = keygen.validate_key(result["key"])
-        assert meta["valid"] is True
-        assert meta["expiry"] is None
+        assert result["key"] is not None
+        # 'lifetime' now maps to '3months' = 90 days; verify expires_at is ~90 days out
+        order = ld.get_order("cs_lifetime_test")
+        assert order is not None
+        exp_str = order.get("expires_at")
+        assert exp_str is not None, "expires_at must be set for 3months plan"
+        exp_date = datetime.fromisoformat(exp_str)
+        delta = (exp_date - datetime.now(timezone.utc)).days
+        assert 88 <= delta <= 90, f"Expected ~90 days, got {delta}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -571,19 +571,38 @@ app.get('/api/admin/stats', _requireAdminSession, async (req, res) => {
  * Canonical values: 'pro', 'lifetime', 'trial'
  */
 const _PLAN_ALIASES = {
-  pro:                 'pro',
-  monthly:             'pro',
-  ghost_pro_monthly:   'pro',
-  'ghost pro monthly': 'pro',
-  'ghost pro (monthly)': 'pro',
-  ghost_pro:           'pro',
-  'ghost pro':         'pro',
-  lifetime:            'lifetime',
-  ghost_lifetime:      'lifetime',
-  'ghost lifetime':    'lifetime',
-  trial:               'trial',
-  ghost_trial:         'trial',
-  'ghost trial':       'trial',
+  // New duration-based slugs
+  day:           'day',
+  '1day':        'day',
+  '1 day':       'day',
+  '3days':       '3days',
+  '3 days':      '3days',
+  week:          'week',
+  '7day':        'week',
+  '7days':       'week',
+  '7 days':      'week',
+  month:         'month',
+  '30day':       'month',
+  '30days':      'month',
+  '30 days':     'month',
+  '3months':     '3months',
+  '90day':       '3months',
+  '90days':      '3months',
+  '90 days':     '3months',
+  // Legacy slugs — map to closest equivalent for backward compat
+  pro:           'month',
+  monthly:       'month',
+  ghost_pro_monthly: 'month',
+  'ghost pro monthly': 'month',
+  'ghost pro (monthly)': 'month',
+  ghost_pro:     'month',
+  'ghost pro':   'month',
+  lifetime:      '3months',
+  ghost_lifetime:'3months',
+  'ghost lifetime':'3months',
+  trial:         'day',
+  ghost_trial:   'day',
+  'ghost trial': 'day',
 };
 
 function _normalizePlan (plan) {
@@ -797,7 +816,7 @@ app.post('/api/admin/inventory/generate', _requireAdminSession, async (req, res)
 
   try {
     const {
-      plan       = 'pro',
+      plan       = 'month',
       quantity   = 100,
       prefix     = 'GHOST',
       format     = 'seg4x4',

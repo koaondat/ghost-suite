@@ -44,10 +44,11 @@
   /* ── Plan catalogue ─────────────────────────────────────────
      Used ONLY for display (labels, features, price strings).
      The backend is the authoritative source for all billing.
-  ─────────────────────────────────────────────────────────── */
+     Plan IDs match the backend canonical slugs exactly.
+   ─────────────────────────────────────────────────────────── */
   const PLANS = {
-    '1day': {
-      id:        '1day',
+    day: {
+      id:        'day',
       name:      '1 Day',
       tagline:   'Short-term access — perfect for trying Phantom',
       price:     2.99,
@@ -66,9 +67,29 @@
         'Discord server access for support',
       ],
     },
-    '7day': {
-      id:        '7day',
-      name:      '7 Days',
+    '3days': {
+      id:        '3days',
+      name:      '3 Days',
+      tagline:   '3-day access — solid short-term value',
+      price:     5.99,
+      currency:  'USD',
+      symbol:    '$',
+      formatted: '$5.99',
+      duration:  '3 days from activation',
+      color:     'accent',
+      features: [
+        'Full access to all Phantom features',
+        'Custom profile creation and switching',
+        'Overlay support with hotkey control',
+        'Machine GUID management and rotation',
+        'MAC address management',
+        'Automatic registry backups',
+        'Discord server access for support',
+      ],
+    },
+    week: {
+      id:        'week',
+      name:      '1 Week',
       tagline:   '7-day access — great value for a week',
       price:     9.99,
       currency:  'USD',
@@ -86,9 +107,9 @@
         'Discord server access for support',
       ],
     },
-    '30day': {
-      id:        '30day',
-      name:      '30 Days',
+    month: {
+      id:        'month',
+      name:      '1 Month',
       tagline:   'Best seller — most popular access plan',
       price:     24.99,
       currency:  'USD',
@@ -107,9 +128,9 @@
         'Discord server access for support',
       ],
     },
-    '90day': {
-      id:        '90day',
-      name:      '90 Days',
+    '3months': {
+      id:        '3months',
+      name:      '3 Months',
       tagline:   'Best price — maximum savings per day',
       price:     59.99,
       currency:  'USD',
@@ -128,54 +149,26 @@
         'Discord server access for support',
       ],
     },
-    // Legacy plan keys kept for backward compatibility
-    pro: {
-      id:        'pro',
-      name:      'Pro',
-      tagline:   'Monthly subscription',
-      price:     7,
-      currency:  'USD',
-      symbol:    '$',
-      formatted: '$7 / month',
-      duration:  'Active while subscription is live',
-      color:     'accent',
-      features: [
-        'Full access to all Phantom features',
-        'Custom profile creation and switching',
-        'Overlay support with hotkey control',
-        'Machine GUID management and rotation',
-        'MAC address management',
-        'Automatic registry backups',
-        'Priority Discord support',
-        'All future updates',
-      ],
-    },
-    lifetime: {
-      id:        'lifetime',
-      name:      'Lifetime',
-      tagline:   'One-time payment — never pay again',
-      price:     79,
-      currency:  'USD',
-      symbol:    '$',
-      formatted: '$79 one-time',
-      duration:  'Permanent — no expiry',
-      color:     'accent',
-      features: [
-        'Full access to all Phantom features',
-        'Custom profile creation and switching',
-        'Overlay support with hotkey control',
-        'Machine GUID management and rotation',
-        'MAC address management',
-        'Automatic registry backups',
-        'All future updates included',
-        'No subscription, zero recurring cost',
-      ],
-    },
   };
 
+  /* ── Plan key normalisation (mirrors backend _normalizePlan) ─── */
+  function _normalizePlanKey (raw) {
+    const aliases = {
+      '1day': 'day', day: 'day',
+      '3days': '3days',
+      '7day': 'week', week: 'week',
+      '30day': 'month', month: 'month',
+      '90day': '3months', '3months': '3months',
+      // legacy fallbacks
+      pro: 'month', lifetime: '3months', trial: 'day',
+    };
+    const k = (raw || '').trim().toLowerCase();
+    return aliases[k] || k;
+  }
+
   const params      = new URLSearchParams(window.location.search);
-  const planKey     = (params.get('plan') || '30day').toLowerCase();
-  const ACTIVE_PLAN = PLANS[planKey] || PLANS['30day'];
+  const planKey     = _normalizePlanKey(params.get('plan') || 'month');
+  const ACTIVE_PLAN = PLANS[planKey] || PLANS['month'];
 
   /* ── Coupon state ────────────────────────────────────────────── */
   let _appliedCoupon = null;   // null | { couponCode, discount, finalPrice, originalPrice, isFree, label }

@@ -150,21 +150,51 @@ async function _redisSetInventory (inventory) {
 }
 
 
+/* ── Duration → expiry-days mapping ─────────────────────────────────────── */
+const DURATION_DAYS = {
+  day:      1,
+  '3days':  3,
+  week:     7,
+  month:    30,
+  '3months': 90,
+};
+
 /* ── Plan catalogue ──────────────────────────────────────────────────────── */
 const PLAN_CATALOGUE = {
-  pro: {
-    id:         'pro',
-    label:      'Ghost Pro (monthly)',
-    priceUsd:   '7.00',
+  day: {
+    id:         'day',
+    label:      'Phantom 1 Day',
+    priceUsd:   '2.99',
+    tier:       'PRO',
+    expiryDays: 1,
+  },
+  '3days': {
+    id:         '3days',
+    label:      'Phantom 3 Days',
+    priceUsd:   '5.99',
+    tier:       'PRO',
+    expiryDays: 3,
+  },
+  week: {
+    id:         'week',
+    label:      'Phantom 1 Week',
+    priceUsd:   '9.99',
+    tier:       'PRO',
+    expiryDays: 7,
+  },
+  month: {
+    id:         'month',
+    label:      'Phantom 1 Month',
+    priceUsd:   '24.99',
     tier:       'PRO',
     expiryDays: 30,
   },
-  lifetime: {
-    id:         'lifetime',
-    label:      'Ghost Lifetime',
-    priceUsd:   '79.00',
+  '3months': {
+    id:         '3months',
+    label:      'Phantom 3 Months',
+    priceUsd:   '59.99',
     tier:       'PRO',
-    expiryDays: 0,
+    expiryDays: 90,
   },
 };
 
@@ -175,22 +205,62 @@ const PLAN_CATALOGUE = {
 function _normalizePlan (plan) {
   if (!plan) return '';
   const aliases = {
-    pro:                     'pro',
-    monthly:                 'pro',
-    ghost_pro_monthly:       'pro',
-    'ghost pro monthly':     'pro',
-    'ghost pro (monthly)':   'pro',
-    ghost_pro:               'pro',
-    'ghost pro':             'pro',
-    lifetime:                'lifetime',
-    ghost_lifetime:          'lifetime',
-    'ghost lifetime':        'lifetime',
-    trial:                   'trial',
-    ghost_trial:             'trial',
-    'ghost trial':           'trial',
+    // New duration-based slugs
+    day:           'day',
+    '1day':        'day',
+    '1 day':       'day',
+    '3days':       '3days',
+    '3 days':      '3days',
+    week:          'week',
+    '7day':        'week',
+    '7days':       'week',
+    '7 days':      'week',
+    month:         'month',
+    '30day':       'month',
+    '30days':      'month',
+    '30 days':     'month',
+    '3months':     '3months',
+    '90day':       '3months',
+    '90days':      '3months',
+    '90 days':     '3months',
+    // Legacy slugs — map to closest equivalent for backward compat
+    pro:           'month',
+    monthly:       'month',
+    ghost_pro_monthly: 'month',
+    'ghost pro monthly': 'month',
+    'ghost pro (monthly)': 'month',
+    ghost_pro:     'month',
+    'ghost pro':   'month',
+    lifetime:      '3months',
+    ghost_lifetime:'3months',
+    'ghost lifetime':'3months',
+    trial:         'day',
+    ghost_trial:   'day',
+    'ghost trial': 'day',
   };
   const key = String(plan).trim().toLowerCase();
   return aliases[key] || key;
+}
+
+/**
+ * Generate a license key string in GHOST-XXXX-XXXX-XXXX-XXXX format.
+ */
+function _generateLicenseKey () {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const seg   = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return `GHOST-${seg()}-${seg()}-${seg()}-${seg()}`;
+}
+
+/**
+ * Compute the expiration ISO date for a given plan.
+ * Returns null for plans with 0 expiryDays (permanent — not currently in catalogue).
+ */
+function _computeExpiry (planId) {
+  const days = DURATION_DAYS[planId];
+  if (!days) return null;
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
 }
 
 
@@ -329,70 +399,58 @@ async function fulfillOrder (orderId) {
   const canonicalPlan = _normalizePlan(rawPlan);
   console.log('[fulfill] order_plan=%s (normalized=%s)', rawPlan, canonicalPlan);
 
-  // ── Load inventory ───────────────────────────────────────────────────────
-  const inventory = await _redisGetInventory();
-  console.log('[fulfill] inventory_total=%d', inventory.length);
+  const now      = new Date().toISOString();
+  const expiresAt = _computeExpiry(canonicalPlan);
 
-  const available = inventory.filter(k => (k.status || '').toLowerCase() === 'available');
-  console.log('[fulfill] available_total=%d', available.length);
+  // ── Auto-generate a brand-new license key ────────────────────────────────
+  // Keys are generated on demand after payment verification — no pre-stocked
+  // inventory is needed. The generated key is saved into ghost:inventory so
+  // the admin panel shows it alongside any manually-created keys.
+  const generatedKey = _generateLicenseKey();
+  console.log('[fulfill] generated_key=[present] plan=%s expiresAt=%s', canonicalPlan, expiresAt);
 
-  const matching = available.filter(k => _normalizePlan(k.plan || k.tier || '') === canonicalPlan);
-  console.log('[fulfill] matching_available=%d', matching.length);
-
-  if (matching.length === 0) {
-    console.warn('[fulfill] no_matching_inventory order=%s plan=%s', orderId, canonicalPlan);
-    // Mark order as out-of-stock so admin sees it clearly
-    await _redisSaveOrder(orderId, {
-      ...order,
-      delivery_status: 'out_of_stock',
-      failure_reason:  'no_matching_inventory',
-    }).catch(() => {});
-    return { ok: false, deliveryStatus: 'out_of_stock', reason: 'no_matching_inventory' };
-  }
-
-  // ── Assign the first matching key ────────────────────────────────────────
-  const selectedKey = matching[0];
-  console.log('[fulfill] selected=true');
-
-  const now = new Date().toISOString();
-
-  // Update the inventory record in-place
-  const keyIdx = inventory.findIndex(k => k.key === selectedKey.key);
-  if (keyIdx === -1) {
-    // Extremely unlikely race — treat as out-of-stock
-    console.error('[fulfill] key_not_found_in_inventory order=%s key=[redacted]', orderId);
-    return { ok: false, deliveryStatus: 'out_of_stock', reason: 'no_matching_inventory' };
-  }
-
-  inventory[keyIdx] = {
-    ...inventory[keyIdx],
-    status:            'sold',
-    customer:          order.email || '',
-    customer_email:    order.email || '',
-    discord_username:  order.discord || '',
-    order_id:          orderId,
-    purchase_date:     now,
+  // ── Persist generated key to inventory so admin panel shows it ───────────
+  const inventory = await _redisGetInventory().catch(() => []);
+  const keyRecord = {
+    key:             generatedKey,
+    plan:            canonicalPlan,
+    duration:        canonicalPlan,
+    status:          'sold',
+    customer:        order.email || '',
+    customer_email:  order.email || '',
+    assigned_user:   order.discord || '',
+    discord_username: order.discord || '',
+    order_id:        orderId,
+    purchase_date:   now,
+    created_date:    now,
+    added_at:        now,
+    expiration:      expiresAt,
+    expires_at:      expiresAt,
+    payment_id:      orderId,
+    notes:           `Auto-generated on purchase — order: ${orderId}`,
+    hwid:            '',
   };
-
-  // ── Save inventory ───────────────────────────────────────────────────────
-  const inventorySaved = await _redisSetInventory(inventory);
-  console.log('[fulfill] license_saved=%s', String(inventorySaved));
+  const updatedInventory = [...inventory, keyRecord];
+  const inventorySaved = await _redisSetInventory(updatedInventory);
+  console.log('[fulfill] key_saved_to_inventory=%s', String(inventorySaved));
 
   // ── Update order ─────────────────────────────────────────────────────────
   const updatedOrder = {
     ...order,
-    license_key:     selectedKey.key,
+    license_key:     generatedKey,
     license_status:  'active',
     delivery_status: 'delivered',
     status:          'completed',
     fulfilled_at:    now,
+    expires_at:      expiresAt,
+    duration:        canonicalPlan,
   };
 
   const orderSaved = await _redisSaveOrder(orderId, updatedOrder);
   console.log('[fulfill] order_saved=%s', String(orderSaved));
   console.log('[fulfill] final_status=delivered');
 
-  return { ok: true, licenseKey: selectedKey.key, deliveryStatus: 'delivered' };
+  return { ok: true, licenseKey: generatedKey, deliveryStatus: 'delivered' };
 }
 
 
@@ -413,7 +471,7 @@ async function createOrder (req, res) {
   const plan   = PLAN_CATALOGUE[planId];
 
   if (!plan) {
-    return res.status(400).json({ ok: false, message: 'Invalid plan. Choose: pro or lifetime.', stage: 'create-order' });
+    return res.status(400).json({ ok: false, message: 'Invalid plan. Choose: day, 3days, week, month, or 3months.', stage: 'create-order' });
   }
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ ok: false, message: 'A valid email address is required.', stage: 'create-order' });
@@ -530,10 +588,10 @@ async function captureOrder (req, res) {
   if (!orderID) {
     return res.status(400).json({ ok: false, message: 'orderID is required.', stage: 'validate' });
   }
-  const planId = (planRaw || '').trim().toLowerCase();
+  const planId = _normalizePlan((planRaw || '').trim().toLowerCase());
   const plan   = PLAN_CATALOGUE[planId];
   if (!plan) {
-    return res.status(400).json({ ok: false, message: 'Invalid plan.', stage: 'validate' });
+    return res.status(400).json({ ok: false, message: 'Invalid plan. Choose: day, 3days, week, month, or 3months.', stage: 'validate' });
   }
 
   // ── Idempotency: check Redis directly ────────────────────────────────────

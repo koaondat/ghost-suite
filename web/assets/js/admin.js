@@ -493,7 +493,7 @@
     const k = JSON.parse(jsonStr);
     $('editKeyValue').value        = k.key;
     $('editKeyStatus').value       = k.status || 'available';
-    $('editKeyPlan').value         = k.plan   || 'pro';
+    $('editKeyPlan').value         = k.plan   || 'month';
     $('editKeyCustomer').value     = k.customer || '';
     $('editKeyHwid').value         = k.hwid    || '';
     $('editKeyNotes').value        = k.notes   || '';
@@ -1509,11 +1509,18 @@
 
   function planBadge (plan) {
     const map = {
-      pro:      ['cyan',   'Pro'],
-      lifetime: ['purple', 'Lifetime'],
-      trial:    ['muted',  'Trial'],
+      day:      ['muted',  '1 Day'],
+      '3days':  ['muted',  '3 Days'],
+      week:     ['cyan',   '1 Week'],
+      month:    ['cyan',   '1 Month'],
+      '3months':['purple', '3 Months'],
+      // legacy
+      pro:      ['cyan',   '1 Month'],
+      lifetime: ['purple', '3 Months'],
+      trial:    ['muted',  '1 Day'],
     };
-    const [cls, label] = map[(plan || '').toLowerCase()] || ['muted', plan || '—'];
+    const key = (plan || '').toLowerCase();
+    const [cls, label] = map[key] || ['muted', plan || '—'];
     return `<span class="badge badge--${cls}">${label}</span>`;
   }
 
@@ -1608,11 +1615,12 @@
 
   // Plan label lookup
   const _GEN_PLAN_LABELS = {
-    ghost_trial:        'Ghost Trial',
-    ghost_pro_monthly:  'Ghost Pro (Monthly)',
-    ghost_pro_lifetime: 'Ghost Pro (Lifetime)',
-    ghost_beta:         'Ghost Beta',
-    custom:             'Custom',
+    day:      '1 Day',
+    '3days':  '3 Days',
+    week:     '1 Week',
+    month:    '1 Month',
+    '3months':'3 Months',
+    custom:   'Custom',
   };
 
   function _genInputs () {
@@ -1805,7 +1813,7 @@
   function _genDownloadCSV () {
     if (!_genLastKeys.length) { toast('No keys to download.', 'warning'); return; }
     const rows = ['License Key,Plan,Status,Created'];
-    const plan = $('genPlan')?.value || 'ghost_pro_monthly';
+    const plan = $('genPlan')?.value || 'month';
     const now  = new Date().toISOString();
     _genLastKeys.forEach(k => {
       rows.push(`${k},${plan},available,${now}`);
@@ -1928,9 +1936,10 @@
         : c.discount_type === 'percentage'
           ? `${c.discount_value}%`
           : `$${parseFloat(c.discount_value).toFixed(2)}`;
+      const _planMap = { day:'1 Day','3days':'3 Days',week:'1 Week',month:'1 Month','3months':'3 Months',
+                         pro:'1 Month',lifetime:'3 Months',trial:'1 Day' };
       const planLabel = c.applies_to === 'all' ? 'All Plans'
-        : c.applies_to === 'pro' ? 'Pro'
-        : c.applies_to === 'lifetime' ? 'Lifetime' : esc(c.applies_to);
+        : (_planMap[c.applies_to] || esc(c.applies_to));
       const uses      = c.uses || 0;
       const limit     = c.usage_limit != null ? c.usage_limit : null;
       const remaining = limit != null ? (limit - uses) : '∞';
