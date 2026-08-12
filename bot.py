@@ -1,20 +1,50 @@
 from __future__ import annotations
 
+# ── Load .env FIRST — before any import that reads os.environ at module level ─
+# api_client.py snapshots GHOST_API_URL and GHOST_ADMIN_API_KEY into constants
+# the moment it is imported.  load_dotenv() must run before that import.
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+_ENV_PATH = Path(__file__).resolve().parent / ".env"
+
+# Abort early if the file is missing — nothing else will work.
+if not _ENV_PATH.exists():
+    raise SystemExit(
+        f"[ghostkey] .env file not found at {_ENV_PATH}\n"
+        "Create it from .env.example before starting the bot."
+    )
+
+# Unset any inherited OS-level value so it cannot shadow the .env file.
+os.environ.pop("DISCORD_TOKEN", None)
+os.environ.pop("GHOST_API_URL", None)
+os.environ.pop("GHOST_ADMIN_API_KEY", None)
+
+# override=True ensures .env values win over any stale inherited env vars.
+load_dotenv(dotenv_path=_ENV_PATH, override=True)
+
+# ── Startup guard — verify critical vars are now present ─────────────────────
+if not os.getenv("DISCORD_TOKEN", "").strip():
+    raise SystemExit(
+        f"[ghostkey] DISCORD_TOKEN is not set in {_ENV_PATH}\n"
+        "Add your bot token and restart."
+    )
+
+# ── Now safe to import modules that read os.environ at module level ───────────
 import asyncio
 import datetime as dt
 import io
 import json
 import logging
-import os
 import re
 import time
-from pathlib import Path
 from typing import Literal
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from dotenv import load_dotenv
 
 import api_client as api
 from permissions import (
@@ -24,32 +54,25 @@ from permissions import (
     require,
 )
 
-_ENV_PATH = Path(__file__).with_name(".env")
-
-# Unset any inherited OS-level value so it cannot shadow the .env file.
-os.environ.pop("DISCORD_TOKEN", None)
-
-load_dotenv(dotenv_path=_ENV_PATH, override=True)
-
-# ── .env startup guard ────────────────────────────────────────────────────────
-if not _ENV_PATH.exists():
-    raise SystemExit(
-        f"[ghostkey] .env file not found at {_ENV_PATH}\n"
-        "Create it from .env.example before starting the bot."
-    )
-
-if not os.getenv("DISCORD_TOKEN", "").strip():
-    raise SystemExit(
-        f"[ghostkey] DISCORD_TOKEN is not set in {_ENV_PATH}\n"
-        "Add your bot token and restart."
-    )
-
 BASE_DIR  = Path(__file__).resolve().parent
 AUDIT_LOG = BASE_DIR / "discord_audit_log.json"
 BUYER_ROLE_LOG = BASE_DIR / "buyer_role_log.json"
 
 TOKEN    = os.getenv("DISCORD_TOKEN", "").strip()
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
+
+# ── Startup env-var verification (presence only — never prints secret values) ─
+_startup_checks = {
+    "DISCORD_TOKEN":      bool(TOKEN),
+    "GHOST_API_URL":      bool(os.getenv("GHOST_API_URL", "").strip()),
+    "GHOST_ADMIN_API_KEY": bool(os.getenv("GHOST_ADMIN_API_KEY", "").strip()),
+}
+# Logging is not yet configured here, so use print for this one-time check.
+for _var, _present in _startup_checks.items():
+    print(f"[ghostkey] {_var}: {'SET' if _present else 'MISSING'}")
+_missing = [v for v, ok in _startup_checks.items() if not ok]
+if _missing:
+    print(f"[ghostkey] WARNING: {', '.join(_missing)} not found in {_ENV_PATH}")
 
 # DISCORD_GUILD_ID — used by the web server for guild join; GUILD_ID is used by the
 # bot for command sync.  If DISCORD_GUILD_ID is set, prefer it for role validation.
@@ -1089,7 +1112,7 @@ if __name__ == "__main__":
             "No role or user IDs configured. Set at least one of "
             "ADMIN_USER_IDS, ADMIN_ROLE_IDS, or BOT_ADMIN_ROLE_ID in .env before starting the bot."
         )
-    if not api.ADMIN_KEY:
+    if not api._admin_key():
         raise SystemExit("GHOST_ADMIN_API_KEY is missing. Add it to .env before starting the bot.")
-    logger.info("Starting GhostKey bot — API: %s", api.API_BASE)
+    logger.info("Starting GhostKey bot — API: %s", api._api_base())
     bot.run(TOKEN, log_handler=None, reconnect=True)

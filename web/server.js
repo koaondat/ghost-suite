@@ -123,6 +123,33 @@ function _requireAdminSession (req, res, next) {
   return res.status(401).json({ ok: false, error: 'Admin session required. Please log in.' });
 }
 
+// ── Bot / server-to-server middleware ─────────────────────────────────────────
+// Accepts EITHER the HttpOnly admin cookie (browser admin panel) OR the
+// X-Admin-Key request header (Discord bot / server-to-server callers).
+// The two bot-facing Discord endpoints use this instead of _requireAdminSession
+// because the bot cannot set a browser cookie — it uses the API key header.
+// GHOST_ADMIN_API_KEY is read fresh on every call (Vercel cold-start safe).
+function _requireAdminKeyOrSession (req, res, next) {
+  // 1. Cookie path — same as _requireAdminSession
+  const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
+  if (cookieToken && _verifyAdminSession(cookieToken)) return next();
+
+  // 2. API-key path — X-Admin-Key header (bot / machine callers)
+  const serverKey = (process.env.GHOST_ADMIN_API_KEY || '').trim();
+  if (serverKey) {
+    const clientKey = (req.headers['x-admin-key'] || '').trim();
+    if (clientKey) {
+      let match = false;
+      try {
+        match = crypto.timingSafeEqual(Buffer.from(clientKey), Buffer.from(serverKey));
+      } catch (_) { /* length mismatch = wrong key */ }
+      if (match) return next();
+    }
+  }
+
+  return res.status(401).json({ ok: false, error: 'Admin session or API key required.' });
+}
+
 // ── Web-root path ─────────────────────────────────────────────────────────────
 const WEB_ROOT = __dirname;
 
@@ -2786,11 +2813,13 @@ app.post('/api/auth/logout', (req, res) => {
 //   • The backend decides guild = DISCORD_GUILD_ID and role = CUSTOMER_ROLE_ID from
 //     trusted env vars — browsers cannot supply arbitrary IDs to receive a role.
 
-const _DISCORD_CLIENT_ID     = (process.env.DISCORD_CLIENT_ID     || '').trim();
-const _DISCORD_CLIENT_SECRET = (process.env.DISCORD_CLIENT_SECRET || '').trim();
-const _DISCORD_REDIRECT_URI  = (process.env.DISCORD_REDIRECT_URI  || '').trim();
-const _DISCORD_BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN || '').trim();
-const _DISCORD_GUILD_ID  = (process.env.DISCORD_GUILD_ID  || '').trim();
+// Discord env vars are read lazily on each call so that Vercel cold-starts
+// (where env vars may arrive after module init) never capture empty strings.
+function _discordClientId ()     { return (process.env.DISCORD_CLIENT_ID     || '').trim(); }
+function _discordClientSecret () { return (process.env.DISCORD_CLIENT_SECRET || '').trim(); }
+function _discordRedirectUri ()  { return (process.env.DISCORD_REDIRECT_URI  || '').trim(); }
+function _discordBotToken ()     { return (process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN || '').trim(); }
+function _discordGuildId ()      { return (process.env.DISCORD_GUILD_ID  || '').trim(); }
 
 /**
  * Add a Discord user to the configured guild using their OAuth access token
@@ -2798,8 +2827,10 @@ const _DISCORD_GUILD_ID  = (process.env.DISCORD_GUILD_ID  || '').trim();
  * Returns { ok, already_member, error? }.
  */
 async function _discordAddToGuild (discordUserId, oauthAccessToken) {
-  if (!_DISCORD_BOT_TOKEN || !_DISCORD_GUILD_ID) {
-    console.warn('[discord/guild] DISCORD_BOT_TOKEN or DISCORD_GUILD_ID not set — skipping guild join');
+  const botToken = _discordBotToken();
+  const guildId  = _discordGuildId();
+  if (!botToken || !guildId) {
+    console.warn('[discord/guild] step=guild_join status=skipped reason=bot_not_configured — DISCORD_BOT_TOKEN or DISCORD_GUILD_ID not set');
     return { ok: false, error: 'bot_not_configured' };
   }
   try {
@@ -2807,24 +2838,39 @@ async function _discordAddToGuild (discordUserId, oauthAccessToken) {
     // Only the OAuth access_token is needed — roles are assigned by the bot task separately.
     const joinBody = { access_token: oauthAccessToken };
     const res = await fetch(
-      `https://discord.com/api/v10/guilds/${_DISCORD_GUILD_ID}/members/${discordUserId}`,
+      `https://discord.com/api/v10/guilds/${guildId}/members/${discordUserId}`,
       {
         method:  'PUT',
         headers: {
-          Authorization:  `Bot ${_DISCORD_BOT_TOKEN}`,
+          Authorization:  `Bot ${botToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(joinBody),
       },
     );
     // 201 = added, 204 = already a member — both are success
-    if (res.status === 201) return { ok: true, already_member: false };
-    if (res.status === 204) return { ok: true, already_member: true };
-    const text = await res.text().catch(() => '');
-    console.error('[discord/guild] add member failed status=%d body=%s', res.status, text.slice(0, 200));
-    return { ok: false, error: `discord_api_${res.status}` };
+    if (res.status === 201) {
+      console.log('[discord/guild] step=guild_join status=201 result=added discord_id=%s', discordUserId);
+      return { ok: true, already_member: false };
+    }
+    if (res.status === 204) {
+      console.log('[discord/guild] step=guild_join status=204 result=already_member discord_id=%s', discordUserId);
+      return { ok: true, already_member: true };
+    }
+    // Parse Discord error body for actionable diagnostics — never log tokens
+    let discordCode = null, discordMsg = null;
+    try {
+      const errBody = await res.json();
+      discordCode = errBody.code  ?? null;
+      discordMsg  = errBody.message ?? null;
+    } catch (_) { /* non-fatal parse failure */ }
+    console.error(
+      '[discord/guild] step=guild_join status=%d discord_error_code=%s discord_error_message=%s discord_id=%s',
+      res.status, discordCode, discordMsg, discordUserId,
+    );
+    return { ok: false, error: `discord_api_${res.status}`, discord_code: discordCode, discord_message: discordMsg };
   } catch (err) {
-    console.error('[discord/guild] add member exception:', err.message);
+    console.error('[discord/guild] step=guild_join status=exception error=%s', err.message);
     return { ok: false, error: err.message };
   }
 }
@@ -2833,8 +2879,29 @@ async function _discordAddToGuild (discordUserId, oauthAccessToken) {
 // Requires: Authorization: Bearer <customer-token>  OR  ?_t=<token>
 // Returns:  302 redirect to Discord authorization URL
 app.get('/auth/discord', _requireCustomerSession, async (req, res) => {
-  if (!_DISCORD_CLIENT_ID || !_DISCORD_CLIENT_SECRET || !_DISCORD_REDIRECT_URI) {
+  const _clientId     = _discordClientId();
+  const _redirectUri  = _discordRedirectUri();
+  const _clientSecret = _discordClientSecret();
+
+  if (!_clientId || !_clientSecret || !_redirectUri) {
+    const missing = [
+      !_clientId     && 'DISCORD_CLIENT_ID',
+      !_clientSecret && 'DISCORD_CLIENT_SECRET',
+      !_redirectUri  && 'DISCORD_REDIRECT_URI',
+    ].filter(Boolean).join(', ');
+    console.error('[discord/oauth] step=init status=misconfigured missing_vars=%s', missing);
     return res.status(503).json({ ok: false, error: 'Discord OAuth is not configured on this server.' });
+  }
+
+  // Warn if redirect URI doesn't match expected value — catches env var mismatches early
+  const _expectedRedirectUri = 'https://ghost-suite-wp4n.vercel.app/auth/discord/callback';
+  if (_redirectUri !== _expectedRedirectUri) {
+    console.warn(
+      '[discord/oauth] step=init WARNING redirect_uri_mismatch configured=%s expected=%s',
+      _redirectUri, _expectedRedirectUri,
+    );
+  } else {
+    console.log('[discord/oauth] step=init redirect_uri_ok=%s', _redirectUri);
   }
 
   const userId = req.customerClaims.sub;
@@ -2860,13 +2927,16 @@ app.get('/auth/discord', _requireCustomerSession, async (req, res) => {
   }
 
   // Scopes: identify (get user ID/username) + guilds.join (add to server silently)
-  const scopes = _DISCORD_BOT_TOKEN && _DISCORD_GUILD_ID
+  // Always request guilds.join when bot creds are configured; required for server add at callback time.
+  const scopes = _discordBotToken() && _discordGuildId()
     ? 'identify guilds.join'
     : 'identify';
 
+  console.log('[discord/oauth] step=init userId=%s scopes=%s redirect_uri=%s', req.customerClaims.sub, scopes, _redirectUri);
+
   const params = new URLSearchParams({
-    client_id:     _DISCORD_CLIENT_ID,
-    redirect_uri:  _DISCORD_REDIRECT_URI,
+    client_id:     _clientId,
+    redirect_uri:  _redirectUri,
     response_type: 'code',
     scope:         scopes,
     state,
@@ -2885,26 +2955,31 @@ const _discordStateMap = new Map();
 app.get('/auth/discord/callback', async (req, res) => {
   const { code, state: stateParam, error: oauthError } = req.query;
 
-  // User denied authorization on Discord
+  // Step 1: OAuth denial / cancellation
   if (oauthError) {
-    console.log('[discord/oauth] user denied authorization: %s', oauthError);
+    console.log('[discord/oauth] step=1_oauth_state status=denied oauth_error=%s', oauthError);
     return res.redirect('/dashboard?discord=cancelled');
   }
 
   if (!code || !stateParam) {
+    console.warn('[discord/oauth] step=1_oauth_state status=missing_params has_code=%s has_state=%s', Boolean(code), Boolean(stateParam));
     return res.redirect('/dashboard?discord=error&reason=missing_params');
   }
+
+  console.log('[discord/oauth] step=2_code_received code_prefix=%s', String(code).slice(0, 6) + '…');
 
   // ── Decode + verify state ────────────────────────────────────────────────────
   let statePayload;
   try {
     statePayload = JSON.parse(Buffer.from(stateParam, 'base64url').toString('utf8'));
   } catch (_) {
+    console.warn('[discord/oauth] step=1_oauth_state status=invalid_state reason=base64_decode_failed');
     return res.redirect('/dashboard?discord=error&reason=invalid_state');
   }
 
   const { userId, nonce } = statePayload || {};
   if (!userId || !nonce) {
+    console.warn('[discord/oauth] step=1_oauth_state status=invalid_state reason=missing_userid_or_nonce');
     return res.redirect('/dashboard?discord=error&reason=invalid_state');
   }
 
@@ -2924,38 +2999,52 @@ app.get('/auth/discord/callback', async (req, res) => {
       _discordStateMap.delete(userId);
     }
   } catch (err) {
-    console.error('[discord/oauth] state verification error:', err.message);
+    console.error('[discord/oauth] step=1_oauth_state status=state_lookup_error error=%s', err.message);
     return res.redirect('/dashboard?discord=error&reason=state_error');
   }
 
   if (!storedNonce || storedNonce !== nonce) {
-    console.warn('[discord/oauth] state mismatch userId=%s — possible CSRF attempt', userId);
+    console.warn('[discord/oauth] step=1_oauth_state status=state_mismatch userId=%s has_stored=%s — possible CSRF or expired session', userId, Boolean(storedNonce));
     return res.redirect('/dashboard?discord=error&reason=state_mismatch');
   }
 
+  console.log('[discord/oauth] step=1_oauth_state status=ok userId=%s', userId);
+
   // ── Exchange authorization code for access token ─────────────────────────────
-  let accessToken;
+  const _callbackRedirectUri = _discordRedirectUri();
+  console.log('[discord/oauth] step=3_token_exchange redirect_uri=%s', _callbackRedirectUri);
+
+  let accessToken, tokenScopes;
   try {
     const { default: fetch } = await import('node-fetch');
     const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        client_id:     _DISCORD_CLIENT_ID,
-        client_secret: _DISCORD_CLIENT_SECRET,
+        client_id:     _discordClientId(),
+        client_secret: _discordClientSecret(),
         grant_type:    'authorization_code',
         code,
-        redirect_uri:  _DISCORD_REDIRECT_URI,
+        redirect_uri:  _callbackRedirectUri,
       }).toString(),
     });
     const tokenData = await tokenRes.json().catch(() => ({}));
     if (!tokenRes.ok || !tokenData.access_token) {
-      console.error('[discord/oauth] token exchange failed status=%d error=%s', tokenRes.status, tokenData.error);
+      // Log Discord's exact error — never log client_secret, access_token, refresh_token
+      console.error(
+        '[discord/oauth] step=3_token_exchange status=%d discord_error=%s discord_error_description=%s redirect_uri_used=%s',
+        tokenRes.status,
+        tokenData.error || 'unknown',
+        tokenData.error_description || 'none',
+        _callbackRedirectUri,
+      );
       return res.redirect('/dashboard?discord=error&reason=token_exchange');
     }
-    accessToken = tokenData.access_token;
+    accessToken  = tokenData.access_token;
+    tokenScopes  = tokenData.scope || '';
+    console.log('[discord/oauth] step=3_token_exchange status=%d scopes_granted=%s', tokenRes.status, tokenScopes);
   } catch (err) {
-    console.error('[discord/oauth] token exchange exception:', err.message);
+    console.error('[discord/oauth] step=3_token_exchange status=exception error=%s', err.message);
     return res.redirect('/dashboard?discord=error&reason=token_exchange');
   }
 
@@ -2970,11 +3059,17 @@ app.get('/auth/discord/callback', async (req, res) => {
     });
     discordUser = await userRes.json().catch(() => null);
     if (!userRes.ok || !discordUser || !discordUser.id) {
-      console.error('[discord/oauth] fetch user failed status=%d', userRes.status);
+      const discordErrCode = discordUser?.code ?? null;
+      const discordErrMsg  = discordUser?.message ?? null;
+      console.error(
+        '[discord/oauth] step=4_fetch_user status=%d discord_error_code=%s discord_error_message=%s',
+        userRes.status, discordErrCode, discordErrMsg,
+      );
       return res.redirect('/dashboard?discord=error&reason=fetch_user');
     }
+    console.log('[discord/oauth] step=4_fetch_user status=ok discord_id=%s', discordUser.id);
   } catch (err) {
-    console.error('[discord/oauth] fetch user exception:', err.message);
+    console.error('[discord/oauth] step=4_fetch_user status=exception error=%s', err.message);
     return res.redirect('/dashboard?discord=error&reason=fetch_user');
   }
 
@@ -2990,11 +3085,20 @@ app.get('/auth/discord/callback', async (req, res) => {
   // Uses the customer's OAuth access token (proof they authorized guilds.join)
   // combined with the bot token (required by Discord's PUT /guilds/:id/members API).
   // 201 = added to server, 204 = already a member — both are success.
+  // If guild join fails: account link is STILL saved — not discarded.
+  const hasGuildsJoinScope = tokenScopes.includes('guilds.join');
+  if (!hasGuildsJoinScope) {
+    console.warn('[discord/oauth] step=6_guild_join status=skipped reason=scope_not_granted scopes_granted=%s', tokenScopes);
+  }
   const guildJoin = await _discordAddToGuild(discordId, accessToken);
   const serverJoined = guildJoin.ok;
   if (!guildJoin.ok) {
-    console.warn('[discord/oauth] guild join failed discord_id=%s error=%s — continuing',
-      discordId, guildJoin.error);
+    console.warn(
+      '[discord/oauth] step=6_guild_join status=failed discord_id=%s error=%s discord_error_code=%s discord_error_message=%s — account link will still be saved',
+      discordId, guildJoin.error, guildJoin.discord_code ?? null, guildJoin.discord_message ?? null,
+    );
+  } else {
+    console.log('[discord/oauth] step=6_guild_join status=ok already_member=%s discord_id=%s', guildJoin.already_member, discordId);
   }
 
   // ── Persist to Phantom user account ──────────────────────────────────────────
@@ -3058,20 +3162,28 @@ app.get('/auth/discord/callback', async (req, res) => {
 
     const saved = await _redisSet('ghost:users', users);
     if (!saved) {
-      console.error('[discord/oauth] failed to save user userId=%s', userId);
+      console.error('[discord/oauth] step=5_account_link status=save_failed userId=%s', userId);
       return res.redirect('/dashboard?discord=error&reason=save_failed');
     }
 
     console.log(
-      '[discord/oauth] linked discord_id=%s username=%s userId=%s server_joined=%s role_pending=%s',
+      '[discord/oauth] step=5_account_link status=ok discord_id=%s username=%s userId=%s server_joined=%s role_pending=%s',
       discordId, discordUsername, userId, serverJoined, users[idx].discord_role_pending,
     );
 
   } catch (err) {
-    console.error('[discord/oauth] persist error:', err.message);
+    console.error('[discord/oauth] step=5_account_link status=exception error=%s', err.message);
     return res.redirect('/dashboard?discord=error&reason=save_failed');
   }
 
+  // Guild join result determines sub-state but NEVER blocks the link itself
+  if (!serverJoined) {
+    // Linked but not in server — surface partial success state
+    console.log('[discord/oauth] step=7_guild_result status=not_joined discord_id=%s — redirecting with partial success', discordId);
+    return res.redirect('/dashboard?discord=linked&server=pending');
+  }
+
+  console.log('[discord/oauth] step=7_guild_result status=joined discord_id=%s', discordId);
   return res.redirect('/dashboard?discord=linked');
 });
 
@@ -3182,13 +3294,13 @@ app.post('/api/account/discord/retry-sync', _requireCustomerSession, async (req,
     let serverJoined = Boolean(user.discord_server_joined);
     let joinAttempted = false;
 
-    if (!serverJoined && _DISCORD_BOT_TOKEN && _DISCORD_GUILD_ID) {
+    if (!serverJoined && _discordBotToken() && _discordGuildId()) {
       // Try a bot-only member check (GET) to see if they joined since last sync
       try {
         const { default: fetch } = await import('node-fetch');
         const checkRes = await fetch(
-          `https://discord.com/api/v10/guilds/${_DISCORD_GUILD_ID}/members/${discordId}`,
-          { headers: { Authorization: `Bot ${_DISCORD_BOT_TOKEN}` } },
+          `https://discord.com/api/v10/guilds/${_discordGuildId()}/members/${discordId}`,
+          { headers: { Authorization: `Bot ${_discordBotToken()}` } },
         );
         if (checkRes.status === 200) {
           serverJoined = true;
@@ -3262,7 +3374,7 @@ app.post('/api/account/discord/retry-sync', _requireCustomerSession, async (req,
 //   2. discord_role_granted is not true
 //   3. The customer's Phantom account has a linked discord_user_id  OR
 //      the order's own discord_role_pending flag is set (legacy fallback)
-app.get('/api/admin/pending-customer-roles', _requireAdminSession, async (req, res) => {
+app.get('/api/admin/pending-customer-roles', _requireAdminKeyOrSession, async (req, res) => {
   if (!_redisConfigured()) return res.json({ ok: true, orders: [] });
 
   try {
@@ -3319,7 +3431,7 @@ app.get('/api/admin/pending-customer-roles', _requireAdminSession, async (req, r
 // Called by the Discord bot after successfully granting CUSTOMER_ROLE_ID.
 // Marks the order so it won't appear in the pending list again.
 // Also clears discord_role_pending on the user account.
-app.post('/api/admin/orders/:orderId/role-granted', _requireAdminSession, async (req, res) => {
+app.post('/api/admin/orders/:orderId/role-granted', _requireAdminKeyOrSession, async (req, res) => {
   const { orderId } = req.params;
   try {
     let orderEmail = null;

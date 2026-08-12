@@ -914,28 +914,35 @@
     const result = params.get('discord');
     if (!result) return;
 
-    // Remove the param from the URL cleanly without reloading
+    // Remove the params from the URL cleanly without reloading
     const clean = new URL(window.location.href);
     clean.searchParams.delete('discord');
     clean.searchParams.delete('reason');
+    clean.searchParams.delete('server');
     window.history.replaceState({}, '', clean.toString());
 
     if (result === 'linked') {
-      toast('Discord account linked successfully!', 'success');
+      const server = params.get('server') || '';
+      if (server === 'pending') {
+        // Account linked but guild join failed — partial success
+        toast('Discord: Linked — Server: Not Joined. Use Retry Sync to join the server.', 'info');
+      } else {
+        toast('Discord account linked successfully!', 'success');
+      }
     } else if (result === 'cancelled') {
       toast('Discord authorization was cancelled.', 'info');
     } else if (result === 'error') {
       const reason = params.get('reason') || '';
       const msgs = {
         already_linked_to_other: 'That Discord account is already linked to another Phantom account.',
-        state_mismatch:          'Security check failed. Please try linking again.',
-        state_error:             'Security check failed. Please try linking again.',
-        invalid_state:           'Security check failed. Please try linking again.',
-        missing_params:          'Authorization was not completed. Please try again.',
-        token_exchange:          'Could not complete Discord authorization. Please try again.',
+        state_mismatch:          'Discord authorization expired. Please try linking again.',
+        state_error:             'Discord authorization expired. Please try linking again.',
+        invalid_state:           'Discord authorization expired. Please try linking again.',
+        missing_params:          'Discord authorization was not completed. Please try again.',
+        token_exchange:          'Discord authorization failed. Check that your redirect URI is configured correctly, then try again.',
         fetch_user:              'Could not retrieve your Discord account. Please try again.',
-        save_failed:             'Could not save Discord link. Please try again.',
-        user_not_found:          'Account not found. Please log in again.',
+        save_failed:             'Discord account identified but could not save the link. Please try again.',
+        user_not_found:          'Session expired. Please log in again.',
       };
       toast(msgs[reason] || 'Discord linking failed. Please try again.', 'error');
     }

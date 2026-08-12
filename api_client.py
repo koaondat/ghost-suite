@@ -18,23 +18,32 @@ import aiohttp
 
 log = logging.getLogger("ghost.api_client")
 
-# GHOST_API_URL must be set to the deployed API URL.
-# Falling back to localhost is only valid for local dev — the bot cannot reach
-# a localhost address on any hosted platform.
-_api_url_raw = os.environ.get("GHOST_API_URL", "").strip()
-if not _api_url_raw:
-    log.warning(
-        "GHOST_API_URL is not set.  The bot cannot reach the Ghost API.  "
-        "Set GHOST_API_URL to the deployed URL of api.py (e.g. https://api.yourdomain.com)."
-    )
-API_BASE  = _api_url_raw.rstrip("/") if _api_url_raw else "http://localhost:5056"
-ADMIN_KEY = os.environ.get("GHOST_ADMIN_API_KEY", "").strip()
+# API_BASE and ADMIN_KEY are read lazily (on first call) so that load_dotenv()
+# in bot.py has already populated os.environ before these values are captured.
+# Reading them at module import time caused them to be empty when bot.py imported
+# api_client before calling load_dotenv().
+
+def _api_base() -> str:
+    """Return the Ghost API base URL, reading from env each call."""
+    raw = os.environ.get("GHOST_API_URL", "").strip()
+    if not raw:
+        log.warning(
+            "GHOST_API_URL is not set.  The bot cannot reach the Ghost API.  "
+            "Set GHOST_API_URL to the deployed URL of api.py (e.g. https://api.yourdomain.com)."
+        )
+        return "http://localhost:5056"
+    return raw.rstrip("/")
+
+
+def _admin_key() -> str:
+    """Return the Ghost admin API key, reading from env each call."""
+    return os.environ.get("GHOST_ADMIN_API_KEY", "").strip()
 
 
 def _admin_headers() -> dict[str, str]:
     return {
         "Content-Type": "application/json",
-        "X-Admin-Key":  ADMIN_KEY,
+        "X-Admin-Key":  _admin_key(),
     }
 
 
@@ -50,7 +59,7 @@ async def _request(method: str, path: str, **kwargs) -> dict:
     Make an async HTTP request to the shared API.
     Raises APIError if the response indicates failure.
     """
-    url = f"{API_BASE}{path}"
+    url = f"{_api_base()}{path}"
     async with aiohttp.ClientSession() as session:
         async with session.request(method, url, **kwargs) as resp:
             try:
