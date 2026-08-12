@@ -51,6 +51,14 @@ BUYER_ROLE_LOG = BASE_DIR / "buyer_role_log.json"
 TOKEN    = os.getenv("DISCORD_TOKEN", "").strip()
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 
+# DISCORD_GUILD_ID — used by the web server for guild join; GUILD_ID is used by the
+# bot for command sync.  If DISCORD_GUILD_ID is set, prefer it for role validation.
+_DISCORD_GUILD_ID_STR = os.getenv("DISCORD_GUILD_ID", "").strip()
+_OAUTH_GUILD_ID = int(_DISCORD_GUILD_ID_STR) if _DISCORD_GUILD_ID_STR.isdigit() else GUILD_ID
+
+# Effective guild ID for startup validation: prefer DISCORD_GUILD_ID over GUILD_ID.
+_EFFECTIVE_GUILD_ID = _OAUTH_GUILD_ID or GUILD_ID
+
 # Legacy role/user ID sets — kept for backward compatibility.
 ADMIN_ROLE_IDS = {
     int(value.strip())
@@ -196,9 +204,14 @@ _BOT_START_TIME = time.time()
 # ── Role hierarchy validation ─────────────────────────────────────────────────
 async def validate_role_config(guild: discord.Guild) -> None:
     """
-    Validate that every configured role ID exists in the guild and that the
-    bot's own role is positioned above CUSTOMER_ROLE_ID in the hierarchy.
+    Validate that:
+      1. Every configured role ID exists in the guild.
+      2. The bot is in the guild.
+      3. The bot has Manage Roles permission.
+      4. The bot's highest role is above CUSTOMER_ROLE_ID.
+      5. DISCORD_GUILD_ID (OAuth server) matches this guild.
     Logs a clear error for each misconfiguration — does NOT crash the bot.
+    Never logs TOKEN, BOT_TOKEN, or CLIENT_SECRET.
     """
     role_ids = get_role_ids()
     env_names = {
@@ -210,6 +223,44 @@ async def validate_role_config(guild: discord.Guild) -> None:
     }
     guild_role_ids = {r.id for r in guild.roles}
 
+    # ── Check 1: DISCORD_GUILD_ID env var matches the guild we connected to ──
+    if _DISCORD_GUILD_ID_STR:
+        if str(guild.id) != _DISCORD_GUILD_ID_STR:
+            logger.error(
+                "Startup: DISCORD_GUILD_ID=%s does not match connected guild '%s' (id=%d). "
+                "Customers added via OAuth will be added to guild %s, "
+                "but this bot is running in guild %d. "
+                "Set DISCORD_GUILD_ID and GUILD_ID to the same server ID.",
+                _DISCORD_GUILD_ID_STR, guild.name, guild.id,
+                _DISCORD_GUILD_ID_STR, guild.id,
+            )
+        else:
+            logger.info(
+                "Startup: DISCORD_GUILD_ID=%s matches guild '%s' ✓",
+                _DISCORD_GUILD_ID_STR, guild.name,
+            )
+    else:
+        logger.warning(
+            "Startup: DISCORD_GUILD_ID is not set in .env — "
+            "the web server cannot auto-add customers to your Discord server. "
+            "Set DISCORD_GUILD_ID to your server's numeric ID."
+        )
+
+    # ── Check 2: Bot has Manage Roles permission ─────────────────────────────
+    me = guild.me
+    if me:
+        guild_perms = guild.me.guild_permissions
+        if not guild_perms.manage_roles:
+            logger.error(
+                "Startup: Bot does NOT have 'Manage Roles' permission in guild '%s'. "
+                "  → Cannot assign CUSTOMER_ROLE_ID to members. "
+                "  → Fix: Go to Discord Server Settings → Roles → Bot role → enable 'Manage Roles'.",
+                guild.name,
+            )
+        else:
+            logger.info("Startup: Bot has Manage Roles permission in '%s' ✓", guild.name)
+
+    # ── Check 3: Each role ID present in guild ───────────────────────────────
     for key, env_var in env_names.items():
         rid = role_ids.get(key)
         if rid is None:
@@ -223,10 +274,9 @@ async def validate_role_config(guild: discord.Guild) -> None:
         else:
             logger.info("Role config: %s=%d ✓  (%s)", env_var, rid, env_var)
 
-    # Bot hierarchy check for CUSTOMER_ROLE_ID
+    # ── Check 4: Bot role is above CUSTOMER_ROLE_ID in hierarchy ────────────
     customer_rid = role_ids.get("customer")
     if customer_rid and customer_rid in guild_role_ids:
-        me = guild.me
         customer_role = guild.get_role(customer_rid)
         if customer_role and me:
             bot_top = me.top_role.position
@@ -274,14 +324,21 @@ bot = GhostKeyBot(command_prefix="!", intents=intents)
 async def on_ready() -> None:
     logger.info("Logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
     await bot.change_presence(activity=discord.Game(name="GHOST license management"))
-    if GUILD_ID:
-        guild = bot.get_guild(GUILD_ID)
+
+    # Use _EFFECTIVE_GUILD_ID (prefers DISCORD_GUILD_ID over GUILD_ID) for validation.
+    effective_id = _EFFECTIVE_GUILD_ID
+    if effective_id:
+        guild = bot.get_guild(effective_id)
         if guild:
             await validate_role_config(guild)
         else:
-            logger.warning("GUILD_ID=%d not found in bot's guild list — role validation skipped.", GUILD_ID)
+            logger.warning(
+                "Guild ID=%d not found in bot's guild list — role validation skipped. "
+                "Ensure the bot is installed in that server.",
+                effective_id,
+            )
     else:
-        logger.info("GUILD_ID not set — role validation will run against the first available guild.")
+        logger.info("Neither DISCORD_GUILD_ID nor GUILD_ID is set — role validation will run against the first available guild.")
         if bot.guilds:
             await validate_role_config(bot.guilds[0])
 
@@ -318,7 +375,7 @@ async def customer_role_task() -> None:
     if not customer_rid:
         return   # CUSTOMER_ROLE_ID not configured — silently skip
 
-    guild = bot.get_guild(GUILD_ID) if GUILD_ID else (bot.guilds[0] if bot.guilds else None)
+    guild = bot.get_guild(_EFFECTIVE_GUILD_ID) if _EFFECTIVE_GUILD_ID else (bot.guilds[0] if bot.guilds else None)
     if not guild:
         return
 

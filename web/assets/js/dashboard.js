@@ -751,23 +751,110 @@
       notLinkedEl.hidden = true;
       linkedEl.hidden    = false;
 
-      // Username
-      const usernameEl = _el('discord-linked-username');
-      if (usernameEl) usernameEl.textContent = discord.username ? '@' + discord.username.replace(/^@/, '') : '—';
+      // ── Tile 1: Discord ──────────────────────────────────────────────
+      const dstUsername = _el('dst-discord-username');
+      if (dstUsername) {
+        dstUsername.textContent = discord.username
+          ? '@' + discord.username.replace(/^@/, '')
+          : '—';
+      }
 
-      // Masked Discord ID: show ********XXXX (last 4 digits)
+      // ── Tile 2: Server ───────────────────────────────────────────────
+      const serverStatusEl = _el('dst-server-status');
+      const serverHintEl   = _el('dst-server-hint');
+      if (serverStatusEl) {
+        if (discord.server_joined) {
+          serverStatusEl.textContent  = '✓ Joined';
+          serverStatusEl.style.color  = '#4ade80';
+          if (serverHintEl) serverHintEl.textContent = '';
+        } else {
+          serverStatusEl.textContent  = 'Not Joined';
+          serverStatusEl.style.color  = '#f87171';
+          if (serverHintEl) serverHintEl.textContent = 'Use Retry Sync below';
+        }
+      }
+
+      // ── Tile 3: Customer Access ──────────────────────────────────────
+      const roleStatusEl = _el('dst-role-status');
+      const roleHintEl   = _el('dst-role-hint');
+      if (roleStatusEl) {
+        if (discord.role_assigned) {
+          roleStatusEl.textContent = '✓ Active';
+          roleStatusEl.style.color = '#4ade80';
+          if (roleHintEl) roleHintEl.textContent = '';
+        } else if (discord.role_pending) {
+          roleStatusEl.textContent = 'Pending';
+          roleStatusEl.style.color = '#fbbf24';
+          if (roleHintEl) roleHintEl.textContent = 'Assigning within 2 min';
+        } else if (discord.eligible) {
+          roleStatusEl.textContent = 'Pending';
+          roleStatusEl.style.color = '#fbbf24';
+          if (roleHintEl) roleHintEl.textContent = 'Role queued';
+        } else {
+          roleStatusEl.textContent = 'Not Eligible';
+          roleStatusEl.style.color = 'var(--muted)';
+          if (roleHintEl) roleHintEl.textContent = 'No qualifying purchase';
+        }
+      }
+
+      // ── Detail rows ──────────────────────────────────────────────────
+      // Masked Discord ID: show ●●●●●●●●XXXX
       const idEl = _el('discord-linked-id');
       if (idEl) {
         const id   = String(discord.user_id || '');
-        const mask = id.length > 4 ? '●●●●●●●●' + id.slice(-4) : id;
+        const mask = id.length > 4 ? '●●●●●●●●' + id.slice(-4) : id || '—';
         idEl.textContent = mask;
       }
 
-      // Pending role badge
-      const pendingRow = _el('discord-pending-row');
-      if (pendingRow) pendingRow.hidden = !discord.role_pending;
+      // Linked since
+      const sinceEl = _el('discord-linked-since');
+      if (sinceEl && discord.linked_at) {
+        try {
+          sinceEl.textContent = new Date(discord.linked_at).toLocaleDateString('en-US',
+            { year: 'numeric', month: 'short', day: 'numeric' });
+        } catch (_) { sinceEl.textContent = '—'; }
+      }
 
-      // Unlink button
+      // ── Retry Sync button ─────────────────────────────────────────────
+      const retryBtn = _el('db-discord-retry-btn');
+      if (retryBtn) {
+        const freshRetry = retryBtn.cloneNode(true);
+        retryBtn.parentNode.replaceChild(freshRetry, retryBtn);
+        freshRetry.addEventListener('click', async function () {
+          freshRetry.disabled    = true;
+          const orig = freshRetry.textContent;
+          freshRetry.textContent = 'Syncing…';
+          try {
+            const token = localStorage.getItem('ghost_token') || '';
+            const r = await fetch('/api/account/discord/retry-sync', {
+              method:  'POST',
+              headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+            });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok && d.ok) {
+              toast(d.message || 'Discord sync complete.', 'success');
+              // Refresh the tiles in-place without a full reload
+              const updatedDiscord = {
+                ...discord,
+                server_joined: d.server_joined,
+                role_pending:  d.role_pending,
+                role_assigned: d.role_assigned,
+                eligible:      d.eligible,
+              };
+              renderDiscord({ discord: updatedDiscord });
+            } else {
+              toast(d.error || 'Sync failed. Please try again.', 'error');
+            }
+          } catch (_) {
+            toast('Network error. Please try again.', 'error');
+          } finally {
+            freshRetry.disabled    = false;
+            freshRetry.textContent = orig;
+          }
+        });
+      }
+
+      // ── Unlink button ─────────────────────────────────────────────────
       const unlinkBtn = _el('db-discord-unlink-btn');
       if (unlinkBtn) {
         const fresh = unlinkBtn.cloneNode(true);
@@ -785,7 +872,6 @@
             const d = await r.json().catch(() => ({}));
             if (r.ok && d.ok) {
               toast('Discord unlinked.', 'success');
-              // Toggle back to not-linked view without full reload
               linkedEl.hidden    = true;
               notLinkedEl.hidden = false;
             } else {
@@ -813,10 +899,6 @@
         fresh.addEventListener('click', function () {
           const token = localStorage.getItem('ghost_token') || '';
           // Pass token as URL param so the server can identify the customer.
-          // The server will read it and redirect to Discord.
-          // We use a temporary anchor approach: the GET /auth/discord endpoint
-          // reads the Authorization header, but since this is a browser navigation
-          // we carry the token in a query param (server strips it immediately).
           // SECURITY: the server only uses this token to set up the state nonce;
           //           the Discord ID is always fetched from Discord API server-side.
           const url = '/auth/discord?_t=' + encodeURIComponent(token);
@@ -847,8 +929,13 @@
       const msgs = {
         already_linked_to_other: 'That Discord account is already linked to another Phantom account.',
         state_mismatch:          'Security check failed. Please try linking again.',
+        state_error:             'Security check failed. Please try linking again.',
+        invalid_state:           'Security check failed. Please try linking again.',
+        missing_params:          'Authorization was not completed. Please try again.',
         token_exchange:          'Could not complete Discord authorization. Please try again.',
+        fetch_user:              'Could not retrieve your Discord account. Please try again.',
         save_failed:             'Could not save Discord link. Please try again.',
+        user_not_found:          'Account not found. Please log in again.',
       };
       toast(msgs[reason] || 'Discord linking failed. Please try again.', 'error');
     }

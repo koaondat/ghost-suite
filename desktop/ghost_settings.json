@@ -1,0 +1,21 @@
+{
+  "launch_on_startup": false,
+  "start_minimized": false,
+  "minimize_to_tray": true,
+  "auto_update_check": true,
+  "confirm_before_close": true,
+  "theme": "dark",
+  "accent": "blue",
+  "interface_scale": 100,
+  "animations": true,
+  "reduced_motion": true,
+  "update_channel": "stable",
+  "spoof_system": true,
+  "spoof_storage": true,
+  "spoof_network": true,
+  "spoof_windows": true,
+  "cleanup_temp": true,
+  "randomize_every_run": true,
+  "create_backup": true,
+  "verify_after_spoof": true
+}

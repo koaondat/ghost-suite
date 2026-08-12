@@ -2661,18 +2661,28 @@ async function _serveDashboard (req, res) {
     // ── Discord linking state ─────────────────────────────────────────────────
     const discord = user.discord_user_id
       ? {
-          linked:      true,
-          user_id:     user.discord_user_id,
-          username:    user.discord_username || null,
-          linked_at:   user.discord_linked_at || null,
-          role_pending: Boolean(user.discord_role_pending),
+          linked:           true,
+          user_id:          user.discord_user_id,
+          username:         user.discord_username || null,
+          linked_at:        user.discord_linked_at || null,
+          server_joined:    Boolean(user.discord_server_joined),
+          server_joined_at: user.discord_server_joined_at || null,
+          role_assigned:    Boolean(user.discord_role_assigned),
+          role_assigned_at: user.discord_role_assigned_at || null,
+          role_pending:     Boolean(user.discord_role_pending),
+          eligible:         Boolean(user.discord_role_assigned || user.discord_role_pending),
         }
       : {
-          linked:      false,
-          user_id:     null,
-          username:    null,
-          linked_at:   null,
-          role_pending: Boolean(user.discord_role_pending),
+          linked:           false,
+          user_id:          null,
+          username:         null,
+          linked_at:        null,
+          server_joined:    false,
+          server_joined_at: null,
+          role_assigned:    false,
+          role_assigned_at: null,
+          role_pending:     Boolean(user.discord_role_pending),
+          eligible:         false,
         };
 
     const payload = {
@@ -2750,28 +2760,77 @@ app.post('/api/auth/logout', (req, res) => {
 // DISCORD_CLIENT_ID     — from Discord Developer Portal → OAuth2
 // DISCORD_CLIENT_SECRET — server-side ONLY, never logged or returned to browser
 // DISCORD_REDIRECT_URI  — must match exactly in the Developer Portal
+// DISCORD_GUILD_ID      — numeric server ID (user is auto-added via guilds.join)
+// DISCORD_BOT_TOKEN     — bot token used server-side to add members and assign roles
+//
+// Scopes:
+//   identify    — fetch Discord user ID + username
+//   guilds.join — add the user to DISCORD_GUILD_ID without a separate prompt
 //
 // Flow:
-//   1. GET  /auth/discord         — redirect customer to Discord authorization
-//   2. GET  /auth/discord/callback — Discord redirects here; exchange code → token → user
-//   3. POST /api/account/discord/unlink — remove Discord link (license unaffected)
-//   4. GET  /api/account/discord/status — return current link state
+//   1. GET  /auth/discord           — redirect customer to Discord authorization
+//   2. GET  /auth/discord/callback  — Discord redirects here; exchange code, fetch user,
+//                                     add to guild, check purchases, save all state
+//   3. POST /api/account/discord/unlink     — remove Discord link (license unaffected)
+//   4. GET  /api/account/discord/status     — return current link state
+//   5. POST /api/account/discord/retry-sync — retry guild join + role assignment
 //
 // Security:
 //   • Customer must be logged in (Bearer token) before initiating OAuth.
 //   • A per-request cryptographic state token is issued and verified on callback
 //     to prevent CSRF.  State maps userId → nonce in Redis (30-min TTL).
-//   • DISCORD_CLIENT_SECRET never leaves the server.
+//   • DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN never leave the server.
 //   • Discord ID comes only from the Discord API response — never from the browser.
 //   • One Discord account silently overwriting another is prevented: if the Discord
 //     ID is already linked to a *different* Phantom account the link is refused.
+//   • The backend decides guild = DISCORD_GUILD_ID and role = CUSTOMER_ROLE_ID from
+//     trusted env vars — browsers cannot supply arbitrary IDs to receive a role.
 
 const _DISCORD_CLIENT_ID     = (process.env.DISCORD_CLIENT_ID     || '').trim();
 const _DISCORD_CLIENT_SECRET = (process.env.DISCORD_CLIENT_SECRET || '').trim();
 const _DISCORD_REDIRECT_URI  = (process.env.DISCORD_REDIRECT_URI  || '').trim();
+const _DISCORD_BOT_TOKEN = (process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN || '').trim();
+const _DISCORD_GUILD_ID  = (process.env.DISCORD_GUILD_ID  || '').trim();
+
+/**
+ * Add a Discord user to the configured guild using their OAuth access token
+ * combined with the bot token.  Silently succeeds if already a member.
+ * Returns { ok, already_member, error? }.
+ */
+async function _discordAddToGuild (discordUserId, oauthAccessToken) {
+  if (!_DISCORD_BOT_TOKEN || !_DISCORD_GUILD_ID) {
+    console.warn('[discord/guild] DISCORD_BOT_TOKEN or DISCORD_GUILD_ID not set — skipping guild join');
+    return { ok: false, error: 'bot_not_configured' };
+  }
+  try {
+    const { default: fetch } = await import('node-fetch');
+    // Only the OAuth access_token is needed — roles are assigned by the bot task separately.
+    const joinBody = { access_token: oauthAccessToken };
+    const res = await fetch(
+      `https://discord.com/api/v10/guilds/${_DISCORD_GUILD_ID}/members/${discordUserId}`,
+      {
+        method:  'PUT',
+        headers: {
+          Authorization:  `Bot ${_DISCORD_BOT_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(joinBody),
+      },
+    );
+    // 201 = added, 204 = already a member — both are success
+    if (res.status === 201) return { ok: true, already_member: false };
+    if (res.status === 204) return { ok: true, already_member: true };
+    const text = await res.text().catch(() => '');
+    console.error('[discord/guild] add member failed status=%d body=%s', res.status, text.slice(0, 200));
+    return { ok: false, error: `discord_api_${res.status}` };
+  } catch (err) {
+    console.error('[discord/guild] add member exception:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
 
 // ── GET /auth/discord — initiate OAuth2 flow ──────────────────────────────────
-// Requires: Authorization: Bearer <customer-token>
+// Requires: Authorization: Bearer <customer-token>  OR  ?_t=<token>
 // Returns:  302 redirect to Discord authorization URL
 app.get('/auth/discord', _requireCustomerSession, async (req, res) => {
   if (!_DISCORD_CLIENT_ID || !_DISCORD_CLIENT_SECRET || !_DISCORD_REDIRECT_URI) {
@@ -2781,7 +2840,7 @@ app.get('/auth/discord', _requireCustomerSession, async (req, res) => {
   const userId = req.customerClaims.sub;
 
   // Generate a cryptographically random state value and persist it (30 min TTL)
-  // Format: <userId>:<nonce> — lets us recover the userId on callback without
+  // Format: { userId, nonce } — lets us recover the userId on callback without
   // relying on the browser to send it back (which would be forgeable).
   const nonce = crypto.randomBytes(32).toString('hex');
   const state = Buffer.from(JSON.stringify({ userId, nonce })).toString('base64url');
@@ -2800,11 +2859,16 @@ app.get('/auth/discord', _requireCustomerSession, async (req, res) => {
     return res.status(500).json({ ok: false, error: 'Failed to initiate Discord linking. Please try again.' });
   }
 
+  // Scopes: identify (get user ID/username) + guilds.join (add to server silently)
+  const scopes = _DISCORD_BOT_TOKEN && _DISCORD_GUILD_ID
+    ? 'identify guilds.join'
+    : 'identify';
+
   const params = new URLSearchParams({
     client_id:     _DISCORD_CLIENT_ID,
     redirect_uri:  _DISCORD_REDIRECT_URI,
     response_type: 'code',
-    scope:         'identify',
+    scope:         scopes,
     state,
     prompt:        'consent',
   });
@@ -2922,6 +2986,17 @@ app.get('/auth/discord/callback', async (req, res) => {
   const _disc         = discordUser.discriminator && discordUser.discriminator !== '0' ? '#' + discordUser.discriminator : '';
   const discordUsername = _baseUsername + _disc;
 
+  // ── Add user to guild via guilds.join scope + bot token ───────────────────────
+  // Uses the customer's OAuth access token (proof they authorized guilds.join)
+  // combined with the bot token (required by Discord's PUT /guilds/:id/members API).
+  // 201 = added to server, 204 = already a member — both are success.
+  const guildJoin = await _discordAddToGuild(discordId, accessToken);
+  const serverJoined = guildJoin.ok;
+  if (!guildJoin.ok) {
+    console.warn('[discord/oauth] guild join failed discord_id=%s error=%s — continuing',
+      discordId, guildJoin.error);
+  }
+
   // ── Persist to Phantom user account ──────────────────────────────────────────
   try {
     const raw   = await _redisGet('ghost:users');
@@ -2942,7 +3017,8 @@ app.get('/auth/discord/callback', async (req, res) => {
 
     const user = users[idx];
 
-    // ── Check if this user has qualifying paid orders (for pending role grant)
+    // ── Check if this user has qualifying paid orders (for role grant) ────────
+    // A qualifying order: payment completed/verified AND not yet role-granted.
     let hasQualifyingOrder = false;
     if (_redisConfigured()) {
       try {
@@ -2956,21 +3032,28 @@ app.get('/auth/discord/callback', async (req, res) => {
           hasQualifyingOrder = orders.some(o => {
             const ps = (o.payment_status || '').toLowerCase();
             const paid = ps === 'completed' || ps === 'verified' || ps === 'captured';
-            const email = user.email && o.email && o.email.toLowerCase() === user.email.toLowerCase();
+            const emailMatch = user.email && o.email && o.email.toLowerCase() === user.email.toLowerCase();
             const notGranted = !o.discord_role_granted;
-            return paid && email && notGranted;
+            return paid && emailMatch && notGranted;
           });
         }
       } catch (_) { /* non-fatal */ }
     }
 
+    const now = new Date().toISOString();
+
     users[idx] = {
       ...user,
-      discord_user_id:   discordId,
-      discord_username:  discordUsername,
-      discord_linked_at: new Date().toISOString(),
-      // If they have paid orders, mark role as pending so the bot task picks it up
-      discord_role_pending: hasQualifyingOrder ? true : Boolean(user.discord_role_pending),
+      discord_user_id:          discordId,
+      discord_username:         discordUsername,
+      discord_linked_at:        now,
+      discord_server_joined:    serverJoined,
+      discord_server_joined_at: serverJoined ? now : (user.discord_server_joined_at || null),
+      // Mark pending so the bot task picks it up on the next 2-min cycle
+      discord_role_pending:     hasQualifyingOrder ? true : Boolean(user.discord_role_pending),
+      // Preserve already-set role-assigned fields
+      discord_role_assigned:    user.discord_role_assigned || false,
+      discord_role_assigned_at: user.discord_role_assigned_at || null,
     };
 
     const saved = await _redisSet('ghost:users', users);
@@ -2979,8 +3062,10 @@ app.get('/auth/discord/callback', async (req, res) => {
       return res.redirect('/dashboard?discord=error&reason=save_failed');
     }
 
-    console.log('[discord/oauth] linked discord_id=%s username=%s to userId=%s hasQualifyingOrder=%s',
-      discordId, discordUsername, userId, hasQualifyingOrder);
+    console.log(
+      '[discord/oauth] linked discord_id=%s username=%s userId=%s server_joined=%s role_pending=%s',
+      discordId, discordUsername, userId, serverJoined, users[idx].discord_role_pending,
+    );
 
   } catch (err) {
     console.error('[discord/oauth] persist error:', err.message);
@@ -3007,10 +3092,14 @@ app.post('/api/account/discord/unlink', _requireCustomerSession, async (req, res
 
     users[idx] = {
       ...user,
-      discord_user_id:       null,
-      discord_username:      null,
-      discord_linked_at:     null,
-      discord_role_pending:  false,
+      discord_user_id:          null,
+      discord_username:         null,
+      discord_linked_at:        null,
+      discord_server_joined:    false,
+      discord_server_joined_at: null,
+      discord_role_pending:     false,
+      // Preserve role_assigned / role_assigned_at — role may still exist on Discord server
+      // The bot does NOT remove the role on unlink; that requires manual admin action.
     };
 
     const saved = await _redisSet('ghost:users', users);
@@ -3036,18 +3125,131 @@ app.get('/api/account/discord/status', _requireCustomerSession, async (req, res)
 
     if (user.discord_user_id) {
       return res.json({
-        ok:           true,
-        linked:       true,
-        user_id:      user.discord_user_id,
-        username:     user.discord_username || null,
-        linked_at:    user.discord_linked_at || null,
-        role_pending: Boolean(user.discord_role_pending),
+        ok:               true,
+        linked:           true,
+        user_id:          user.discord_user_id,
+        username:         user.discord_username || null,
+        linked_at:        user.discord_linked_at || null,
+        server_joined:    Boolean(user.discord_server_joined),
+        server_joined_at: user.discord_server_joined_at || null,
+        role_assigned:    Boolean(user.discord_role_assigned),
+        role_assigned_at: user.discord_role_assigned_at || null,
+        role_pending:     Boolean(user.discord_role_pending),
+        eligible:         Boolean(user.discord_role_assigned || user.discord_role_pending),
       });
     }
-    return res.json({ ok: true, linked: false, role_pending: Boolean(user.discord_role_pending) });
+    return res.json({
+      ok:           true,
+      linked:       false,
+      server_joined: false,
+      role_assigned: false,
+      role_pending: Boolean(user.discord_role_pending),
+      eligible:     false,
+    });
   } catch (err) {
     console.error('[discord/status] error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to load Discord status.' });
+  }
+});
+
+// ── POST /api/account/discord/retry-sync ─────────────────────────────────────
+// Retry guild join + trigger role assignment for linked accounts.
+// Useful when the initial guild join failed (bot not in server, API error, etc.)
+// or when a role was not yet assigned.
+// Security: uses the stored discord_user_id from the Phantom account — never
+// accepts a discord_id from the request body.
+app.post('/api/account/discord/retry-sync', _requireCustomerSession, async (req, res) => {
+  const { sub: userId, username } = req.customerClaims;
+  try {
+    const raw   = await _redisGet('ghost:users');
+    const users = Array.isArray(raw) ? raw : [];
+    const idx   = users.findIndex(u => u.id === userId || u.username === username);
+    if (idx === -1) return res.status(404).json({ ok: false, error: 'Account not found.' });
+
+    const user = users[idx];
+    if (!user.discord_user_id) {
+      return res.status(400).json({ ok: false, error: 'No Discord account linked. Please link your Discord account first.' });
+    }
+
+    const discordId = user.discord_user_id;
+
+    // ── Retry guild join ─────────────────────────────────────────────────────
+    // We no longer have the OAuth access token after the callback, so we must
+    // use the bot-only endpoint: PUT /guilds/:id/members/:user_id with bot token.
+    // This requires the guilds.join scope to have been granted at link time.
+    // Bot-only add is not possible without the OAuth token — instead we report
+    // the current server_joined state and advise the user if it failed.
+    let serverJoined = Boolean(user.discord_server_joined);
+    let joinAttempted = false;
+
+    if (!serverJoined && _DISCORD_BOT_TOKEN && _DISCORD_GUILD_ID) {
+      // Try a bot-only member check (GET) to see if they joined since last sync
+      try {
+        const { default: fetch } = await import('node-fetch');
+        const checkRes = await fetch(
+          `https://discord.com/api/v10/guilds/${_DISCORD_GUILD_ID}/members/${discordId}`,
+          { headers: { Authorization: `Bot ${_DISCORD_BOT_TOKEN}` } },
+        );
+        if (checkRes.status === 200) {
+          serverJoined = true;
+          joinAttempted = true;
+        } else if (checkRes.status === 404) {
+          // Not in server — cannot add without OAuth access token
+          joinAttempted = true;
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
+    // ── Check qualifying orders ──────────────────────────────────────────────
+    let hasQualifyingOrder = false;
+    if (_redisConfigured()) {
+      try {
+        const redis = _getRedisClient();
+        const ids   = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+        if (Array.isArray(ids) && ids.length) {
+          const recs = await Promise.all(
+            ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+          );
+          const orders = recs.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+          hasQualifyingOrder = orders.some(o => {
+            const ps = (o.payment_status || '').toLowerCase();
+            const paid = ps === 'completed' || ps === 'verified' || ps === 'captured';
+            const emailMatch = user.email && o.email && o.email.toLowerCase() === user.email.toLowerCase();
+            const notGranted = !o.discord_role_granted;
+            return paid && emailMatch && notGranted;
+          });
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
+    const now = new Date().toISOString();
+    const updated = {
+      ...user,
+      discord_server_joined:    serverJoined,
+      discord_server_joined_at: serverJoined && !user.discord_server_joined_at ? now : (user.discord_server_joined_at || null),
+      discord_role_pending:     hasQualifyingOrder ? true : Boolean(user.discord_role_pending),
+    };
+    users[idx] = updated;
+    await _redisSet('ghost:users', users).catch(() => {});
+
+    console.log('[discord/retry-sync] userId=%s discordId=%s server_joined=%s role_pending=%s',
+      userId, discordId, serverJoined, updated.discord_role_pending);
+
+    return res.json({
+      ok:            true,
+      server_joined: serverJoined,
+      role_pending:  updated.discord_role_pending,
+      role_assigned: Boolean(user.discord_role_assigned),
+      eligible:      Boolean(user.discord_role_assigned || updated.discord_role_pending),
+      message:       !serverJoined
+        ? 'You are not yet in the Discord server. Please join manually or re-link your Discord account.'
+        : hasQualifyingOrder
+          ? 'Server membership confirmed. Role assignment is queued and will be applied within 2 minutes.'
+          : 'Sync complete. No qualifying purchase was found for Customer role assignment.',
+    });
+  } catch (err) {
+    console.error('[discord/retry-sync] error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Sync failed. Please try again.' });
   }
 });
 
@@ -3135,14 +3337,20 @@ app.post('/api/admin/orders/:orderId/role-granted', _requireAdminSession, async 
       }
     }
 
-    // Clear discord_role_pending on the user account
+    // Clear discord_role_pending, set discord_role_assigned on the user account
     if (orderEmail) {
       try {
         const usersRaw = await _redisGet('ghost:users');
         const users    = Array.isArray(usersRaw) ? usersRaw : [];
         const idx      = users.findIndex(u => u.email && u.email.toLowerCase() === orderEmail.toLowerCase());
         if (idx !== -1) {
-          users[idx] = { ...users[idx], discord_role_pending: false, discord_role_assigned_at: new Date().toISOString() };
+          const now = new Date().toISOString();
+          users[idx] = {
+            ...users[idx],
+            discord_role_pending:     false,
+            discord_role_assigned:    true,
+            discord_role_assigned_at: users[idx].discord_role_assigned_at || now,
+          };
           await _redisSet('ghost:users', users);
         }
       } catch (_) { /* non-fatal */ }
