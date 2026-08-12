@@ -489,9 +489,10 @@ app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
     const todayStr  = now.toISOString().slice(0, 10);
     const monthStr  = now.toISOString().slice(0, 7);
 
-    const completed = ordersArr.filter(o =>
-      o.payment_status === 'COMPLETED' || o.payment_status === 'verified' || o.payment_verified === true
-    );
+    const completed = ordersArr.filter(o => {
+      const ps = (o.payment_status || '').toLowerCase();
+      return ps === 'completed' || ps === 'captured' || ps === 'verified' || o.payment_verified === true;
+    });
     const _amount = o => parseFloat(o.price_usd || o.amount || 0);
     const _date   = o => o.created_at || o.purchase_date || '';
     const revenueToday  = completed.filter(o => _date(o).startsWith(todayStr))

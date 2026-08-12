@@ -132,18 +132,30 @@ async function _redisGetInventory () {
   } catch (_) { return []; }
 }
 
-/** SET ghost:inventory — stores the full array */
+/** SET ghost:inventory — stores the full array.
+ *  Uses the same serialisation as server.js _redisSet() so that both
+ *  the @upstash/redis SDK (server.js) and the raw REST client (paypal.js)
+ *  can read what the other wrote.
+ *
+ *  The @upstash/redis SDK auto-JSON.stringify()s its input on write and
+ *  auto-JSON.parse()s on read.  The REST API sends the body as-is and
+ *  returns it as-is.  To be compatible we must store a JSON string of the
+ *  array (i.e. one level of serialisation) so that the SDK reads it back
+ *  as an array while the REST GET also returns a parseable JSON string.
+ */
 async function _redisSetInventory (inventory) {
   if (!_REDIS_URL || !_REDIS_TOKEN) return false;
   const { default: fetch } = await import('node-fetch');
   try {
+    // Store exactly one JSON.stringify — the SDK will parse it back to an array on read.
+    const body = JSON.stringify(inventory);
     const res = await fetch(`${_REDIS_URL}/SET/ghost:inventory`, {
       method:  'POST',
       headers: {
         Authorization:  `Bearer ${_REDIS_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(JSON.stringify(inventory)),
+      body,
     });
     return res.ok;
   } catch (_) { return false; }
@@ -657,7 +669,8 @@ async function captureOrder (req, res) {
   _captureInFlight.set(orderID, capturePromise);
 
   try {
-    const result  = await _doCaptureOrder({ orderID, email, discord, planId, plan });
+    const discordId = String((req.body && req.body.discord_id) || '').trim();
+    const result  = await _doCaptureOrder({ orderID, email, discord, planId, plan, discordId });
     resolveCapture(result);
     const status  = result.ok ? 200 : (result._status || 500);
     const payload = Object.assign({}, result);
@@ -687,7 +700,7 @@ async function captureOrder (req, res) {
 }
 
 
-async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
+async function _doCaptureOrder ({ orderID, email, discord, planId, plan, discordId }) {
   console.log(
     '[ghost/paypal] _doCaptureOrder START orderID=%s plan=%s email=%s env=%s',
     orderID, planId, email, PAYPAL_ENV,
@@ -796,7 +809,7 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
   // Stored as a string.  Only set if it looks like a valid snowflake
   // (17–19 digits) to avoid storing garbage.  The bot will independently
   // validate this before granting any role.
-  const rawDiscordId  = String(req.body && req.body.discord_id || '').trim();
+  const rawDiscordId  = String(discordId || '').trim();
   const resolvedDiscordId = /^\d{17,19}$/.test(rawDiscordId) ? rawDiscordId : '';
 
   const pendingOrderRecord = {

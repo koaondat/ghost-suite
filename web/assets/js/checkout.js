@@ -495,22 +495,19 @@
   }
 
   function wireRetryButtons () {
-    // "Try again" on failed / cancelled — resets to checkout form
+    // "Try again" on failed / cancelled — resets to checkout form.
+    // Always reset PayPal state fully so the user can click "Continue to Payment"
+    // again and get a fresh, single button set.
     ['failed-retry-btn', 'cancelled-retry-btn'].forEach(id => {
       document.getElementById(id)?.addEventListener('click', () => {
         showState('idle');
-        // Only fully reset PayPal state if it was never successfully rendered.
-        // If buttons are already present (window.paypal exists), keep _paypalRendered=true
-        // so that the payment section is restored as-is rather than re-initialized,
-        // which prevents both the false "not configured" banner and duplicate buttons.
-        if (!window.paypal) {
-          _paypalRendered = false;
-          _paypalSdkPromise = null;
-          _hide('co-payment-section');
-        } else {
-          // PayPal SDK is loaded — keep payment section visible and buttons intact
-          _show('co-payment-section');
-        }
+        // Reset PayPal state so _revealPaymentSection will re-render clean buttons.
+        // Clear the container immediately to prevent any stale rendered buttons.
+        const container = document.getElementById('paypal-button-container');
+        if (container) container.innerHTML = '';
+        _paypalRendered = false;
+        _paypalSdkPromise = window.paypal ? _paypalSdkPromise : null;
+        _hide('co-payment-section');
         _hide('co-free-checkout-section');
         _hide('co-payment-unconfigured');
         hideAlert();
@@ -956,8 +953,7 @@
     _capturedVals = { email, discord };
 
     if (_paypalRendered) {
-      // PayPal buttons already rendered — just make sure the section is visible
-      // and the submit button is hidden. No need to re-initialize.
+      // PayPal buttons already rendered — just make sure the section is visible.
       _hide('co-submit-btn-wrap');
       _show('co-payment-section');
       _hide('co-payment-unconfigured');
@@ -974,6 +970,10 @@
       _show('co-free-checkout-section');
       return;
     }
+
+    // Mark as rendering IMMEDIATELY (before any async ops) so a second concurrent
+    // call (e.g. rapid double-submit) hits the early-return guard at the top.
+    _paypalRendered = true;
 
     // Reveal the payment section immediately so the user sees feedback
     _hide('co-submit-btn-wrap');
@@ -996,6 +996,7 @@
 
     if (config === null && !configLoadError) {
       // Server explicitly said PayPal is not configured — show the banner.
+      _paypalRendered = false;
       _show('co-payment-unconfigured');
       _hide('co-payment-section');
       _show('co-submit-btn-wrap');
@@ -1004,6 +1005,7 @@
 
     if (!config) {
       // Network/server error — show a generic retry message, NOT "Payment not configured"
+      _paypalRendered = false;
       showAlert('error', 'Could not load payment options. Please refresh and try again.');
       _hide('co-payment-section');
       _show('co-submit-btn-wrap');
@@ -1015,13 +1017,12 @@
     try {
       paypalSdk = await _loadPayPalSDK(config.clientId);
     } catch (err) {
+      _paypalRendered = false;
       showAlert('error', 'Could not load the PayPal payment interface. Please refresh and try again.');
       _hide('co-payment-section');
       _show('co-submit-btn-wrap');
       return;
     }
-
-    _paypalRendered = true;
 
     // ── Render official PayPal Buttons ────────────────────────────────
     _renderPayPalButtons(paypalSdk);
