@@ -174,10 +174,15 @@ async def stats() -> dict:
 
 async def get_pending_customer_roles() -> list[dict]:
     """
-    Return orders that are fully paid, have a numeric discord_id, and have not
-    yet had the Customer role granted.  The API endpoint filters server-side so
-    only verified, ungranted records are returned — the bot never trusts client
-    input to decide who deserves a role.
+    Return orders that are paid, have a verified OAuth-linked Discord ID on the
+    associated Phantom account, and have not yet had the Customer role granted.
+
+    The server (Node.js /api/admin/pending-customer-roles) resolves the Discord ID
+    from the user's account record (written during OAuth callback) — never from
+    client-submitted data.  Only numeric 17–19 digit snowflakes pass through.
+
+    The bot must only use discord_id from this response to locate members.
+    Never use display names, usernames, or any text submitted by customers.
     """
     try:
         data = await _request(
@@ -191,23 +196,11 @@ async def get_pending_customer_roles() -> list[dict]:
 
 async def mark_customer_role_granted(order_id: str) -> dict:
     """
-    Tell the API that the Customer role has been successfully granted for this
-    order so it will no longer appear in the pending list.
+    Tell the server that CUSTOMER_ROLE_ID has been successfully granted for this
+    order.  The server marks the order (discord_role_granted=true) and clears
+    discord_role_pending on the linked user account so it won't appear again.
     """
     return await _request(
         "POST", f"/api/admin/orders/{order_id}/role-granted",
-        headers=_admin_headers(),
-    )
-
-
-async def link_discord_id(order_id: str, discord_id: int) -> dict:
-    """
-    Link a numeric Discord user ID to an existing order / customer account.
-    The server validates that the order belongs to the calling customer.
-    Called from the website's Discord OAuth linking flow, not from the bot.
-    """
-    return await _request(
-        "POST", "/api/link-discord",
-        json={"order_id": order_id, "discord_id": discord_id},
         headers=_admin_headers(),
     )

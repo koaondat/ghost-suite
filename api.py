@@ -641,6 +641,181 @@ def route_register():
     return resp, 201
 
 
+@app.route("/api/license/activate", methods=["POST"])
+@limiter.limit("20 per minute")
+def route_license_activate():
+    """
+    POST /api/license/activate { license_key }
+    ───────────────────────────────────────────
+    Key-only activation endpoint for the desktop application.
+    No account credentials required — the license key IS the identity.
+
+    Accepts keys from both storage backends:
+      • key_inventory.json  (4-char-segment keys: GHOST-XXXX-XXXX-XXXX-XXXX)
+      • issued_keys.json    (HMAC keys)
+
+    Returns:
+      200 { ok, status, product, expires_at, remaining_seconds, tier, key_masked }
+      400 { ok: false, error }   — missing/malformed key
+      402 { ok: false, error }   — expired key
+      403 { ok: false, error }   — revoked/banned key
+      404 { ok: false, error }   — key not found
+    """
+    data    = request.get_json(silent=True) or {}
+    raw_key = (data.get("license_key") or "").strip().upper()
+
+    if not raw_key:
+        return jsonify({"ok": False, "error": "License key is required"}), 400
+
+    # Basic format check — must start with GHOST- and have at least 2 more segments
+    parts = raw_key.split("-")
+    if len(parts) < 3 or parts[0] != "GHOST":
+        return jsonify({"ok": False, "error": "Invalid license key format"}), 400
+
+    _audit("license_activate_attempt", "desktop", raw_key[:12] + "…",
+           f"ip={request.remote_addr}")
+
+    # ── Path 1: inventory keys (GHOST-XXXX-XXXX-XXXX-XXXX, 4-char segments) ──
+    # In production, inventory is stored in Upstash Redis under "ghost:inventory".
+    # Fall back to the local key_inventory.json file when Redis is not configured.
+    _REDIS_INV_URL   = os.environ.get("UPSTASH_REDIS_REST_URL",   "").rstrip("/")
+    _REDIS_INV_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+    def _redis_get_inv_record(key: str) -> dict | None:
+        """Fetch a single inventory record from Upstash Redis ghost:inventory."""
+        if not (_REDIS_INV_URL and _REDIS_INV_TOKEN):
+            return None
+        import urllib.request as _ur, urllib.parse as _up
+        try:
+            url = f"{_REDIS_INV_URL}/GET/{_up.quote('ghost:inventory', safe='')}"
+            req = _ur.Request(url, headers={"Authorization": f"Bearer {_REDIS_INV_TOKEN}"})
+            with _ur.urlopen(req, timeout=8) as resp:
+                body = json.loads(resp.read().decode())
+            raw = body.get("result")
+            if not raw:
+                return None
+            records = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(records, list):
+                return None
+            clean = key.strip().upper()
+            return next((r for r in records if r.get("key", "").upper() == clean), None)
+        except Exception as exc:
+            log.warning("_redis_get_inv_record failed: %s", exc)
+            return None
+
+    inv_record = None
+    if all(len(p) == 4 for p in parts[1:]):
+        # Try Redis first (production), then local file (dev/fallback)
+        inv_record = _redis_get_inv_record(raw_key) or _inv.get_key(raw_key)
+
+    if inv_record is not None:
+        status = (inv_record.get("status") or "").lower()
+        if status == "revoked":
+            _audit("license_activate_fail", "desktop", raw_key[:12] + "…",
+                   "revoked (inventory)", ok=False)
+            return jsonify({"ok": False, "error": "This license has been revoked. "
+                            "Contact support if you believe this is an error."}), 403
+
+        # Expiration check
+        expiration_str = (inv_record.get("expiration") or "").strip()
+        expires_at     = None
+        remaining_secs = None
+        if expiration_str:
+            try:
+                exp_dt = datetime.datetime.fromisoformat(expiration_str.replace("Z", "+00:00"))
+                if exp_dt.tzinfo is None:
+                    exp_dt = exp_dt.replace(tzinfo=datetime.timezone.utc)
+                now_dt = datetime.datetime.now(datetime.timezone.utc)
+                if now_dt > exp_dt:
+                    _audit("license_activate_fail", "desktop", raw_key[:12] + "…",
+                           "expired (inventory)", ok=False)
+                    return jsonify({"ok": False, "error": "This license has expired. "
+                                    "Contact support to renew your subscription."}), 402
+                remaining_secs = int((exp_dt - now_dt).total_seconds())
+                expires_at     = exp_dt.strftime("%b %d, %Y")
+            except Exception:
+                pass   # malformed expiration — treat as no-expiry
+
+        if status not in ("sold", "activated", "available", "reserved"):
+            _audit("license_activate_fail", "desktop", raw_key[:12] + "…",
+                   f"inactive status={status}", ok=False)
+            return jsonify({"ok": False, "error": "This license is not active. "
+                            "Complete your purchase or contact support."}), 403
+
+        # Mark as activated
+        _inv.update_key(raw_key, {"status": "activated"})
+        _audit("license_activate_ok", "desktop", raw_key[:12] + "…",
+               f"plan={inv_record.get('plan', '')}")
+
+        plan      = inv_record.get("plan") or "Ghost"
+        key_parts = raw_key.split("-")
+        masked    = "-".join("XXXX" for _ in key_parts[:-1]) + "-" + key_parts[-1]
+        return jsonify({
+            "ok":                True,
+            "status":            "active",
+            "product":           "Ghost",
+            "plan":              plan,
+            "key_masked":        masked,
+            "expires_at":        expires_at or "Lifetime",
+            "remaining_seconds": remaining_secs,
+        })
+
+    # ── Path 2: HMAC-signed keys (issued_keys.json) ──────────────────────────
+    meta = keygen.validate_key(raw_key)
+    if not meta.get("valid") and not meta.get("expired"):
+        # Key not found in either database
+        _audit("license_activate_fail", "desktop", raw_key[:12] + "…",
+               "not_found", ok=False)
+        return jsonify({"ok": False, "error": "License key not found. "
+                        "Check your key and try again."}), 404
+
+    if keygen.is_banned(raw_key):
+        _audit("license_activate_fail", "desktop", raw_key[:12] + "…",
+               "banned", ok=False)
+        return jsonify({"ok": False, "error": "This license has been revoked. "
+                        "Contact support if you believe this is an error."}), 403
+
+    if meta.get("expired"):
+        _audit("license_activate_fail", "desktop", raw_key[:12] + "…",
+               "expired (hmac)", ok=False)
+        return jsonify({"ok": False, "error": "This license has expired. "
+                        "Contact support to renew your subscription."}), 402
+
+    # Valid HMAC key
+    expiry_raw     = str(meta.get("expiry") or "")
+    days_remaining = int(meta.get("days_remaining") or 0)
+    remaining_secs = days_remaining * 86400 if days_remaining > 0 else None
+
+    # Format expiry date for display
+    expires_at = None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.datetime.strptime(expiry_raw[:19], fmt[:len(fmt)])
+            expires_at = dt.strftime("%b %d, %Y")
+            break
+        except Exception:
+            continue
+    if not expires_at:
+        expires_at = expiry_raw[:10] or "Lifetime"
+
+    key_parts = raw_key.split("-")
+    masked    = "-".join("XXXX" for _ in key_parts[:-1]) + "-" + key_parts[-1]
+    tier      = (meta.get("tier") or "PRO").upper()
+
+    _audit("license_activate_ok", "desktop", raw_key[:12] + "…",
+           f"tier={tier} days={days_remaining}")
+    return jsonify({
+        "ok":                True,
+        "status":            "active",
+        "product":           "Ghost",
+        "plan":              tier,
+        "key_masked":        masked,
+        "expires_at":        expires_at,
+        "remaining_seconds": remaining_secs,
+    })
+
+
 @app.route("/api/auth/login", methods=["POST"])
 @limiter.limit("10 per minute")
 def route_login():
@@ -1664,23 +1839,26 @@ def route_order_role_granted(order_id: str):
 @limiter.limit("10 per hour")
 def route_link_discord():
     """
-    POST /api/link-discord  { discord_id: "123456789012345678" }
-    ─────────────────────────────────────────────────────────────
-    Stores a numeric Discord user ID against the authenticated customer's
-    account and all of their completed orders, then marks any ungranted
-    orders as pending so the bot will pick them up on its next poll.
+    DEPRECATED — superseded by the Discord OAuth2 flow in server.js.
 
-    Requires a valid customer JWT session (Authorization: Bearer <token>
-    or the ghost_token cookie).  The discord_id must be a string of 17-19
-    digits (standard Discord snowflake range).
+    This endpoint accepted a browser-submitted discord_id which could not
+    prove ownership of the Discord account.  It is kept here only for
+    backward compatibility with any in-flight clients but returns 410 Gone
+    to guide callers to the new OAuth flow.
 
-    Security:
-      • Authenticated: caller must have a valid session.
-      • The customer supplies only their OWN discord_id — they cannot set it
-        on another account.
-      • The role assignment decision is made entirely by the bot, which reads
-        the order record from the server — the customer never chooses the role.
+    The authoritative linking path is now:
+        GET /auth/discord  →  Discord OAuth  →  GET /auth/discord/callback
+    Discord IDs are obtained from the Discord API server-side only.
     """
+    return jsonify({
+        "ok":    False,
+        "error": "This endpoint is deprecated. Discord account linking now uses OAuth2. "
+                 "Direct to GET /auth/discord from the Dashboard.",
+    }), 410
+
+
+def _route_link_discord_legacy_body():
+    """Retained for reference only — no longer executed."""
     data       = request.get_json(silent=True) or {}
     discord_id = str(data.get("discord_id") or "").strip()
 

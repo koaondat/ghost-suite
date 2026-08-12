@@ -364,6 +364,8 @@
         purchases: purchases,
         downloads: downloads,
         counts:    counts,
+        // Discord linking state from server (sourced from OAuth — never from browser)
+        discord:   data.discord || { linked: false, role_pending: false },
       };
     },
 
@@ -736,6 +738,120 @@
     set('settings-username', account.username);
     set('settings-email',    account.email);
     set('settings-since',    _fmt(account.memberSince));
+  }
+
+  /** Hydrate the Discord linking card in Settings. */
+  function renderDiscord (account) {
+    const discord      = account.discord || {};
+    const notLinkedEl  = _el('discord-not-linked');
+    const linkedEl     = _el('discord-linked');
+    if (!notLinkedEl || !linkedEl) return;
+
+    if (discord.linked) {
+      notLinkedEl.hidden = true;
+      linkedEl.hidden    = false;
+
+      // Username
+      const usernameEl = _el('discord-linked-username');
+      if (usernameEl) usernameEl.textContent = discord.username ? '@' + discord.username.replace(/^@/, '') : '—';
+
+      // Masked Discord ID: show ********XXXX (last 4 digits)
+      const idEl = _el('discord-linked-id');
+      if (idEl) {
+        const id   = String(discord.user_id || '');
+        const mask = id.length > 4 ? '●●●●●●●●' + id.slice(-4) : id;
+        idEl.textContent = mask;
+      }
+
+      // Pending role badge
+      const pendingRow = _el('discord-pending-row');
+      if (pendingRow) pendingRow.hidden = !discord.role_pending;
+
+      // Unlink button
+      const unlinkBtn = _el('db-discord-unlink-btn');
+      if (unlinkBtn) {
+        const fresh = unlinkBtn.cloneNode(true);
+        unlinkBtn.parentNode.replaceChild(fresh, unlinkBtn);
+        fresh.addEventListener('click', async function () {
+          if (!confirm('Unlink your Discord account? Your licenses will not be affected.')) return;
+          fresh.disabled    = true;
+          fresh.textContent = 'Unlinking…';
+          try {
+            const token = localStorage.getItem('ghost_token') || '';
+            const r = await fetch('/api/account/discord/unlink', {
+              method:  'POST',
+              headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+            });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok && d.ok) {
+              toast('Discord unlinked.', 'success');
+              // Toggle back to not-linked view without full reload
+              linkedEl.hidden    = true;
+              notLinkedEl.hidden = false;
+            } else {
+              toast(d.error || 'Unlink failed. Please try again.', 'error');
+              fresh.disabled    = false;
+              fresh.textContent = 'Unlink';
+            }
+          } catch (_) {
+            toast('Network error. Please try again.', 'error');
+            fresh.disabled    = false;
+            fresh.textContent = 'Unlink';
+          }
+        });
+      }
+
+    } else {
+      notLinkedEl.hidden = false;
+      linkedEl.hidden    = true;
+
+      // Link button — navigates to server-side OAuth initiation endpoint
+      const linkBtn = _el('db-discord-link-btn');
+      if (linkBtn) {
+        const fresh = linkBtn.cloneNode(true);
+        linkBtn.parentNode.replaceChild(fresh, linkBtn);
+        fresh.addEventListener('click', function () {
+          const token = localStorage.getItem('ghost_token') || '';
+          // Pass token as URL param so the server can identify the customer.
+          // The server will read it and redirect to Discord.
+          // We use a temporary anchor approach: the GET /auth/discord endpoint
+          // reads the Authorization header, but since this is a browser navigation
+          // we carry the token in a query param (server strips it immediately).
+          // SECURITY: the server only uses this token to set up the state nonce;
+          //           the Discord ID is always fetched from Discord API server-side.
+          const url = '/auth/discord?_t=' + encodeURIComponent(token);
+          window.location.href = url;
+        });
+      }
+    }
+  }
+
+  /** Handle ?discord= result param after OAuth redirect back to dashboard. */
+  function _handleDiscordOAuthResult () {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('discord');
+    if (!result) return;
+
+    // Remove the param from the URL cleanly without reloading
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete('discord');
+    clean.searchParams.delete('reason');
+    window.history.replaceState({}, '', clean.toString());
+
+    if (result === 'linked') {
+      toast('Discord account linked successfully!', 'success');
+    } else if (result === 'cancelled') {
+      toast('Discord authorization was cancelled.', 'info');
+    } else if (result === 'error') {
+      const reason = params.get('reason') || '';
+      const msgs = {
+        already_linked_to_other: 'That Discord account is already linked to another Phantom account.',
+        state_mismatch:          'Security check failed. Please try linking again.',
+        token_exchange:          'Could not complete Discord authorization. Please try again.',
+        save_failed:             'Could not save Discord link. Please try again.',
+      };
+      toast(msgs[reason] || 'Discord linking failed. Please try again.', 'error');
+    }
   }
 
   /* ── Activity list ────────────────────────────────────────── */
@@ -1429,6 +1545,9 @@
       return;
     }
 
+    // Handle Discord OAuth result query params before rendering
+    _handleDiscordOAuthResult();
+
     initSidebar();
     initNav();
     initLogout();
@@ -1472,6 +1591,9 @@
 
       try { renderSettings(account); }
         catch (err) { console.error("renderSettings failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }
+
+      try { renderDiscord(account); }
+        catch (err) { console.error("renderDiscord failed:", err); console.error(err.stack); }
 
       try { renderActivity(account); }
         catch (err) { console.error("renderActivity failed:", err); console.error(err.stack); console.error("account snapshot:", JSON.stringify(account, null, 2)); throw err; }

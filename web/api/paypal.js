@@ -162,6 +162,42 @@ async function _redisSetInventory (inventory) {
 }
 
 
+/** GET ghost:users — returns parsed array or [] */
+async function _redisGetUsers () {
+  if (!_REDIS_URL || !_REDIS_TOKEN) return [];
+  const { default: fetch } = await import('node-fetch');
+  const key = encodeURIComponent('ghost:users');
+  try {
+    const res = await fetch(`${_REDIS_URL}/GET/${key}`, {
+      headers: { Authorization: `Bearer ${_REDIS_TOKEN}` },
+    });
+    if (!res.ok) return [];
+    const body = await res.json().catch(() => null);
+    if (!body || body.result === null || body.result === undefined) return [];
+    const raw = typeof body.result === 'string' ? JSON.parse(body.result) : body.result;
+    return Array.isArray(raw) ? raw : [];
+  } catch (_) { return []; }
+}
+
+/** SET ghost:users — stores the full array (same serialisation as _redisSetInventory) */
+async function _redisSetUsers (users) {
+  if (!_REDIS_URL || !_REDIS_TOKEN) return false;
+  const { default: fetch } = await import('node-fetch');
+  try {
+    const body = JSON.stringify(users);
+    const res = await fetch(`${_REDIS_URL}/SET/ghost:users`, {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${_REDIS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body,
+    });
+    return res.ok;
+  } catch (_) { return false; }
+}
+
+
 /* ── Duration → expiry-days mapping ─────────────────────────────────────── */
 const DURATION_DAYS = {
   day:      1,
@@ -460,6 +496,22 @@ async function fulfillOrder (orderId) {
 
   const orderSaved = await _redisSaveOrder(orderId, updatedOrder);
   console.log('[fulfill] order_saved=%s', String(orderSaved));
+
+  // ── If customer has linked Discord, mark role as pending so bot picks it up ─
+  // This is triggered on every fulfill (including admin retry).
+  // We do not grant the role here — that is the bot's job.
+  try {
+    const usersRaw = await _redisGetUsers();
+    const users    = Array.isArray(usersRaw) ? usersRaw : [];
+    const email    = (order.email || '').toLowerCase();
+    const idx      = users.findIndex(u => u.email && u.email.toLowerCase() === email);
+    if (idx !== -1 && users[idx].discord_user_id && !users[idx].discord_role_pending) {
+      users[idx] = { ...users[idx], discord_role_pending: true };
+      await _redisSetUsers(users);
+      console.log('[fulfill] discord_role_pending=true set for user email=%s', email);
+    }
+  } catch (_) { /* non-fatal — role pending state is advisory */ }
+
   console.log('[fulfill] final_status=delivered');
 
   return { ok: true, licenseKey: generatedKey, deliveryStatus: 'delivered' };

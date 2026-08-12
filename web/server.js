@@ -8,8 +8,9 @@
  *   • Admin session:        GET  /api/admin/session
  *   • Admin logout:         POST /api/admin/logout
  *   • All admin data endpoints handled INLINE (no proxy back to self)
- *   • Proxies /api/auth/*, /api/license/*, /api/purchases,
- *     /api/downloads/* to the Ghost shared Python backend (api.py)
+ *   • /api/license/activate handled NATIVELY (direct Redis — no proxy)
+ *   • Proxies /api/auth/*, /api/purchases, /api/downloads/* to the Ghost
+ *     shared Python backend (api.py) — /api/license/* is NOT proxied
  *
  * ── Authentication model ──────────────────────────────────────────────────────
  * 1.  Admin visits /admin — sees loading screen while session is checked.
@@ -2290,6 +2291,145 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+
+// ── POST /api/license/activate — desktop app key-only activation ─────────────
+// No account credentials required. The license key IS the identity.
+// Reads from Upstash Redis ghost:inventory (same store as all other inventory ops).
+//
+// Request:  { license_key: "GHOST-XXXX-XXXX-XXXX-XXXX" }
+// Response 200: { ok, status, product, plan, key_masked, expires_at, remaining_seconds }
+// Response 400: invalid/missing key
+// Response 402: expired key
+// Response 403: revoked key
+// Response 404: key not found
+app.post('/api/license/activate', async (req, res) => {
+  console.log('[license/activate] request received ip=%s', req.ip);
+
+  const rawKey = ((req.body && req.body.license_key) || '').trim().toUpperCase();
+
+  if (!rawKey) {
+    return res.status(400).json({ ok: false, status: 'invalid', message: 'License key is required.' });
+  }
+
+  // Basic format sanity: must start with GHOST- and have at least two segments
+  const parts = rawKey.split('-');
+  if (parts.length < 3 || parts[0] !== 'GHOST') {
+    return res.status(400).json({ ok: false, status: 'invalid', message: 'Invalid license key format.' });
+  }
+
+  // Mask key for safe logging: show first segment only
+  const _masked = rawKey.slice(0, 12) + '…[masked]';
+  console.log('[license/activate] normalized key=%s', _masked);
+
+  try {
+    // ── Read inventory from Redis ──────────────────────────────────────────
+    console.log('[license/activate] database lookup started');
+    const inventoryRaw = await _redisGet('ghost:inventory');
+    const inventory    = Array.isArray(inventoryRaw) ? inventoryRaw : [];
+    console.log('[license/activate] lookup complete records=%d', inventory.length);
+
+    // ── Find the record ────────────────────────────────────────────────────
+    const record = inventory.find(k => k && k.key && k.key.toUpperCase() === rawKey);
+
+    if (!record) {
+      console.log('[license/activate] result=invalid key=%s (not found)', _masked);
+      return res.status(404).json({
+        ok:      false,
+        status:  'invalid',
+        message: 'Invalid license key.',
+      });
+    }
+
+    const status = (record.status || '').toLowerCase();
+
+    // ── Revoked check ──────────────────────────────────────────────────────
+    if (status === 'revoked') {
+      console.log('[license/activate] result=revoked key=%s', _masked);
+      return res.status(403).json({
+        ok:      false,
+        status:  'revoked',
+        message: 'License revoked.',
+      });
+    }
+
+    // ── Expiration check ───────────────────────────────────────────────────
+    const expirationStr = record.expiration || null;
+    let expiresAt     = null;
+    let remainingSecs = null;
+
+    if (expirationStr) {
+      const expDate = new Date(expirationStr);
+      if (!isNaN(expDate.getTime())) {
+        const nowMs = Date.now();
+        if (expDate.getTime() < nowMs) {
+          console.log('[license/activate] result=expired key=%s', _masked);
+          return res.status(402).json({
+            ok:      false,
+            status:  'expired',
+            message: 'License expired.',
+          });
+        }
+        remainingSecs = Math.floor((expDate.getTime() - nowMs) / 1000);
+        expiresAt = expDate.toLocaleDateString('en-US', {
+          year: 'numeric', month: 'short', day: 'numeric',
+        });
+      }
+    }
+
+    // ── Status gate: must be a usable status ──────────────────────────────
+    const USABLE = new Set(['available', 'reserved', 'sold', 'activated']);
+    if (!USABLE.has(status)) {
+      console.log('[license/activate] result=invalid key=%s status=%s (not usable)', _masked, status);
+      return res.status(403).json({
+        ok:      false,
+        status:  'invalid',
+        message: 'Invalid license key.',
+      });
+    }
+
+    // ── Mark as activated (best-effort, non-blocking) ──────────────────────
+    if (status !== 'activated') {
+      const idx = inventory.findIndex(k => k && k.key && k.key.toUpperCase() === rawKey);
+      if (idx !== -1) {
+        inventory[idx] = {
+          ...inventory[idx],
+          status:       'activated',
+          activated_at: new Date().toISOString(),
+        };
+        _redisSet('ghost:inventory', inventory).catch(err =>
+          console.warn('[license/activate] status_update_failed key=%s: %s', _masked, err.message)
+        );
+      }
+    }
+
+    // ── Build masked key for response ──────────────────────────────────────
+    const keySegs    = rawKey.split('-');
+    const keyMasked  = keySegs.slice(0, -1).map(() => 'XXXX').join('-') + '-' + keySegs[keySegs.length - 1];
+    const plan       = record.plan || record.tier || 'Ghost';
+
+    console.log('[license/activate] result=active key=%s plan=%s', _masked, plan);
+    return res.json({
+      ok:                true,
+      status:            'active',
+      product:           'Ghost',
+      plan,
+      key_masked:        keyMasked,
+      expires_at:        expiresAt || 'Lifetime',
+      remaining_seconds: remainingSecs,
+    });
+
+  } catch (err) {
+    console.error('[license/activate] error key=%s name=%s message=%s',
+      _masked, err.name, err.message);
+    return res.status(500).json({
+      ok:      false,
+      status:  'error',
+      message: 'Activation service temporarily unavailable. Please try again.',
+    });
+  }
+});
+
+
 // ── GET /api/download/current — public download redirect ─────────────────────
 // ── GET /api/downloads/current — shared download config endpoint ──────────────
 // Returns the current configured download URL and filename from admin settings.
@@ -2363,9 +2503,13 @@ app.get('/dl/GhostConfig.exe', (_req, res) => {
 function _requireCustomerSession (req, res, next) {
   console.log('[customer] request_received path=%s ip=%s', req.path, req.ip);
   const authHeader = req.headers['authorization'] || '';
+  // Also accept _t query param for browser-navigation flows (e.g. /auth/discord redirect)
+  // The token is validated below; if invalid the request is rejected just like any other.
   const rawToken   = authHeader.startsWith('Bearer ')
     ? authHeader.slice(7).trim()
-    : (req.cookies && req.cookies['ghost_token']) || '';
+    : (req.cookies && req.cookies['ghost_token'])
+      || (req.query && req.query._t ? String(req.query._t) : '')
+      || '';
 
   const sessionPresent = Boolean(rawToken);
   console.log('[customer] session_present=%s', sessionPresent);
@@ -2514,6 +2658,23 @@ async function _serveDashboard (req, res) {
       receiptToken:  `rcpt:${(o.order_id || '').replace(/^#/, '')}`,
     }));
 
+    // ── Discord linking state ─────────────────────────────────────────────────
+    const discord = user.discord_user_id
+      ? {
+          linked:      true,
+          user_id:     user.discord_user_id,
+          username:    user.discord_username || null,
+          linked_at:   user.discord_linked_at || null,
+          role_pending: Boolean(user.discord_role_pending),
+        }
+      : {
+          linked:      false,
+          user_id:     null,
+          username:    null,
+          linked_at:   null,
+          role_pending: Boolean(user.discord_role_pending),
+        };
+
     const payload = {
       ok:       true,
       username: user.username,
@@ -2523,6 +2684,7 @@ async function _serveDashboard (req, res) {
       license,
       purchases,
       downloads,
+      discord,
       settings: {
         version:       settings.ghost_latest_version || 'v2.4.1',
         release_date:  settings.ghost_release_date   || '2025-07-01',
@@ -2584,13 +2746,428 @@ app.post('/api/auth/logout', (req, res) => {
   return res.json({ ok: true });
 });
 
+// ── Discord OAuth2 account linking ────────────────────────────────────────────
+// DISCORD_CLIENT_ID     — from Discord Developer Portal → OAuth2
+// DISCORD_CLIENT_SECRET — server-side ONLY, never logged or returned to browser
+// DISCORD_REDIRECT_URI  — must match exactly in the Developer Portal
+//
+// Flow:
+//   1. GET  /auth/discord         — redirect customer to Discord authorization
+//   2. GET  /auth/discord/callback — Discord redirects here; exchange code → token → user
+//   3. POST /api/account/discord/unlink — remove Discord link (license unaffected)
+//   4. GET  /api/account/discord/status — return current link state
+//
+// Security:
+//   • Customer must be logged in (Bearer token) before initiating OAuth.
+//   • A per-request cryptographic state token is issued and verified on callback
+//     to prevent CSRF.  State maps userId → nonce in Redis (30-min TTL).
+//   • DISCORD_CLIENT_SECRET never leaves the server.
+//   • Discord ID comes only from the Discord API response — never from the browser.
+//   • One Discord account silently overwriting another is prevented: if the Discord
+//     ID is already linked to a *different* Phantom account the link is refused.
+
+const _DISCORD_CLIENT_ID     = (process.env.DISCORD_CLIENT_ID     || '').trim();
+const _DISCORD_CLIENT_SECRET = (process.env.DISCORD_CLIENT_SECRET || '').trim();
+const _DISCORD_REDIRECT_URI  = (process.env.DISCORD_REDIRECT_URI  || '').trim();
+
+// ── GET /auth/discord — initiate OAuth2 flow ──────────────────────────────────
+// Requires: Authorization: Bearer <customer-token>
+// Returns:  302 redirect to Discord authorization URL
+app.get('/auth/discord', _requireCustomerSession, async (req, res) => {
+  if (!_DISCORD_CLIENT_ID || !_DISCORD_CLIENT_SECRET || !_DISCORD_REDIRECT_URI) {
+    return res.status(503).json({ ok: false, error: 'Discord OAuth is not configured on this server.' });
+  }
+
+  const userId = req.customerClaims.sub;
+
+  // Generate a cryptographically random state value and persist it (30 min TTL)
+  // Format: <userId>:<nonce> — lets us recover the userId on callback without
+  // relying on the browser to send it back (which would be forgeable).
+  const nonce = crypto.randomBytes(32).toString('hex');
+  const state = Buffer.from(JSON.stringify({ userId, nonce })).toString('base64url');
+
+  // Store nonce in Redis (key = ghost:discord:state:<userId>, value = nonce, TTL 30 min)
+  try {
+    if (_redisConfigured()) {
+      const redis = _getRedisClient();
+      await _withTimeout(redis.set(`ghost:discord:state:${userId}`, nonce, { ex: 1800 }));
+    } else {
+      // Fallback: in-memory state map (dev only)
+      _discordStateMap.set(userId, { nonce, expiresAt: Date.now() + 30 * 60 * 1000 });
+    }
+  } catch (err) {
+    console.error('[discord/oauth] failed to persist state nonce:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to initiate Discord linking. Please try again.' });
+  }
+
+  const params = new URLSearchParams({
+    client_id:     _DISCORD_CLIENT_ID,
+    redirect_uri:  _DISCORD_REDIRECT_URI,
+    response_type: 'code',
+    scope:         'identify',
+    state,
+    prompt:        'consent',
+  });
+
+  return res.redirect(`https://discord.com/oauth2/authorize?${params.toString()}`);
+});
+
+// In-memory fallback for state (dev without Redis)
+const _discordStateMap = new Map();
+
+// ── GET /auth/discord/callback — OAuth2 callback ──────────────────────────────
+// Discord redirects here after user authorizes (or denies).
+// Exchanges code for token, fetches Discord user, saves to Phantom account.
+app.get('/auth/discord/callback', async (req, res) => {
+  const { code, state: stateParam, error: oauthError } = req.query;
+
+  // User denied authorization on Discord
+  if (oauthError) {
+    console.log('[discord/oauth] user denied authorization: %s', oauthError);
+    return res.redirect('/dashboard?discord=cancelled');
+  }
+
+  if (!code || !stateParam) {
+    return res.redirect('/dashboard?discord=error&reason=missing_params');
+  }
+
+  // ── Decode + verify state ────────────────────────────────────────────────────
+  let statePayload;
+  try {
+    statePayload = JSON.parse(Buffer.from(stateParam, 'base64url').toString('utf8'));
+  } catch (_) {
+    return res.redirect('/dashboard?discord=error&reason=invalid_state');
+  }
+
+  const { userId, nonce } = statePayload || {};
+  if (!userId || !nonce) {
+    return res.redirect('/dashboard?discord=error&reason=invalid_state');
+  }
+
+  // Verify nonce matches stored value
+  let storedNonce = null;
+  try {
+    if (_redisConfigured()) {
+      const redis = _getRedisClient();
+      storedNonce = await _withTimeout(redis.get(`ghost:discord:state:${userId}`));
+      // Immediately delete so replay attacks fail
+      await _withTimeout(redis.del(`ghost:discord:state:${userId}`)).catch(() => {});
+    } else {
+      const entry = _discordStateMap.get(userId);
+      if (entry && entry.expiresAt > Date.now()) {
+        storedNonce = entry.nonce;
+      }
+      _discordStateMap.delete(userId);
+    }
+  } catch (err) {
+    console.error('[discord/oauth] state verification error:', err.message);
+    return res.redirect('/dashboard?discord=error&reason=state_error');
+  }
+
+  if (!storedNonce || storedNonce !== nonce) {
+    console.warn('[discord/oauth] state mismatch userId=%s — possible CSRF attempt', userId);
+    return res.redirect('/dashboard?discord=error&reason=state_mismatch');
+  }
+
+  // ── Exchange authorization code for access token ─────────────────────────────
+  let accessToken;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id:     _DISCORD_CLIENT_ID,
+        client_secret: _DISCORD_CLIENT_SECRET,
+        grant_type:    'authorization_code',
+        code,
+        redirect_uri:  _DISCORD_REDIRECT_URI,
+      }).toString(),
+    });
+    const tokenData = await tokenRes.json().catch(() => ({}));
+    if (!tokenRes.ok || !tokenData.access_token) {
+      console.error('[discord/oauth] token exchange failed status=%d error=%s', tokenRes.status, tokenData.error);
+      return res.redirect('/dashboard?discord=error&reason=token_exchange');
+    }
+    accessToken = tokenData.access_token;
+  } catch (err) {
+    console.error('[discord/oauth] token exchange exception:', err.message);
+    return res.redirect('/dashboard?discord=error&reason=token_exchange');
+  }
+
+  // ── Fetch authenticated Discord user ──────────────────────────────────────────
+  // This is the ONLY place we obtain the Discord ID — direct from Discord API.
+  // The browser never submits a Discord ID; we never trust client-supplied IDs.
+  let discordUser;
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const userRes = await fetch('https://discord.com/api/users/@me', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    discordUser = await userRes.json().catch(() => null);
+    if (!userRes.ok || !discordUser || !discordUser.id) {
+      console.error('[discord/oauth] fetch user failed status=%d', userRes.status);
+      return res.redirect('/dashboard?discord=error&reason=fetch_user');
+    }
+  } catch (err) {
+    console.error('[discord/oauth] fetch user exception:', err.message);
+    return res.redirect('/dashboard?discord=error&reason=fetch_user');
+  }
+
+  const discordId = discordUser.id;          // numeric snowflake string
+  // Build a display-friendly username.
+  // New Discord accounts have discriminator "0" or absent — just use username.
+  // Legacy accounts have a 4-digit discriminator — show "username#1234".
+  const _baseUsername = discordUser.username || discordUser.global_name || String(discordUser.id);
+  const _disc         = discordUser.discriminator && discordUser.discriminator !== '0' ? '#' + discordUser.discriminator : '';
+  const discordUsername = _baseUsername + _disc;
+
+  // ── Persist to Phantom user account ──────────────────────────────────────────
+  try {
+    const raw   = await _redisGet('ghost:users');
+    const users = Array.isArray(raw) ? raw : [];
+    const idx   = users.findIndex(u => u.id === userId);
+
+    if (idx === -1) {
+      console.error('[discord/oauth] user not found userId=%s', userId);
+      return res.redirect('/dashboard?discord=error&reason=user_not_found');
+    }
+
+    // ── Conflict check: is this Discord ID already linked to a *different* account?
+    const existingOwner = users.find(u => u.discord_user_id === discordId && u.id !== userId);
+    if (existingOwner) {
+      console.warn('[discord/oauth] discord_id=%s already linked to different account — refusing', discordId);
+      return res.redirect('/dashboard?discord=error&reason=already_linked_to_other');
+    }
+
+    const user = users[idx];
+
+    // ── Check if this user has qualifying paid orders (for pending role grant)
+    let hasQualifyingOrder = false;
+    if (_redisConfigured()) {
+      try {
+        const redis = _getRedisClient();
+        const ids   = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+        if (Array.isArray(ids) && ids.length) {
+          const recs = await Promise.all(
+            ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+          );
+          const orders = recs.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+          hasQualifyingOrder = orders.some(o => {
+            const ps = (o.payment_status || '').toLowerCase();
+            const paid = ps === 'completed' || ps === 'verified' || ps === 'captured';
+            const email = user.email && o.email && o.email.toLowerCase() === user.email.toLowerCase();
+            const notGranted = !o.discord_role_granted;
+            return paid && email && notGranted;
+          });
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
+    users[idx] = {
+      ...user,
+      discord_user_id:   discordId,
+      discord_username:  discordUsername,
+      discord_linked_at: new Date().toISOString(),
+      // If they have paid orders, mark role as pending so the bot task picks it up
+      discord_role_pending: hasQualifyingOrder ? true : Boolean(user.discord_role_pending),
+    };
+
+    const saved = await _redisSet('ghost:users', users);
+    if (!saved) {
+      console.error('[discord/oauth] failed to save user userId=%s', userId);
+      return res.redirect('/dashboard?discord=error&reason=save_failed');
+    }
+
+    console.log('[discord/oauth] linked discord_id=%s username=%s to userId=%s hasQualifyingOrder=%s',
+      discordId, discordUsername, userId, hasQualifyingOrder);
+
+  } catch (err) {
+    console.error('[discord/oauth] persist error:', err.message);
+    return res.redirect('/dashboard?discord=error&reason=save_failed');
+  }
+
+  return res.redirect('/dashboard?discord=linked');
+});
+
+// ── POST /api/account/discord/unlink ─────────────────────────────────────────
+// Remove the Discord link from the current account.
+// Does NOT delete licenses or orders. Sets discord_role_pending=false.
+// Whether to remove the Customer role from Discord is handled by the bot separately.
+app.post('/api/account/discord/unlink', _requireCustomerSession, async (req, res) => {
+  const { sub: userId, username } = req.customerClaims;
+  try {
+    const raw   = await _redisGet('ghost:users');
+    const users = Array.isArray(raw) ? raw : [];
+    const idx   = users.findIndex(u => u.id === userId || u.username === username);
+    if (idx === -1) return res.status(404).json({ ok: false, error: 'Account not found.' });
+
+    const user = users[idx];
+    const wasLinked = Boolean(user.discord_user_id);
+
+    users[idx] = {
+      ...user,
+      discord_user_id:       null,
+      discord_username:      null,
+      discord_linked_at:     null,
+      discord_role_pending:  false,
+    };
+
+    const saved = await _redisSet('ghost:users', users);
+    if (!saved) return res.status(500).json({ ok: false, error: 'Failed to save. Please try again.' });
+
+    console.log('[discord/unlink] userId=%s wasLinked=%s', userId, wasLinked);
+    return res.json({ ok: true, was_linked: wasLinked });
+  } catch (err) {
+    console.error('[discord/unlink] error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to unlink. Please try again.' });
+  }
+});
+
+// ── GET /api/account/discord/status ───────────────────────────────────────────
+// Returns current Discord link state for the logged-in customer.
+app.get('/api/account/discord/status', _requireCustomerSession, async (req, res) => {
+  const { sub: userId, username } = req.customerClaims;
+  try {
+    const raw   = await _redisGet('ghost:users');
+    const users = Array.isArray(raw) ? raw : [];
+    const user  = users.find(u => u.id === userId || u.username === username);
+    if (!user) return res.status(404).json({ ok: false, error: 'Account not found.' });
+
+    if (user.discord_user_id) {
+      return res.json({
+        ok:           true,
+        linked:       true,
+        user_id:      user.discord_user_id,
+        username:     user.discord_username || null,
+        linked_at:    user.discord_linked_at || null,
+        role_pending: Boolean(user.discord_role_pending),
+      });
+    }
+    return res.json({ ok: true, linked: false, role_pending: Boolean(user.discord_role_pending) });
+  } catch (err) {
+    console.error('[discord/status] error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load Discord status.' });
+  }
+});
+
+// ── GET /api/admin/pending-customer-roles ─────────────────────────────────────
+// Called by the Discord bot every 2 minutes.
+// Returns paid orders + the linked Discord ID from the Phantom user account.
+// Source of truth for Discord ID is the user record, NOT the order's discord_id.
+// An order is included if:
+//   1. payment is verified/completed/captured
+//   2. discord_role_granted is not true
+//   3. The customer's Phantom account has a linked discord_user_id  OR
+//      the order's own discord_role_pending flag is set (legacy fallback)
+app.get('/api/admin/pending-customer-roles', _requireAdminSession, async (req, res) => {
+  if (!_redisConfigured()) return res.json({ ok: true, orders: [] });
+
+  try {
+    const redis = _getRedisClient();
+    const ids   = await _withTimeout(redis.zrange('ghost:orders:index', 0, -1)).catch(() => []);
+    if (!Array.isArray(ids) || !ids.length) return res.json({ ok: true, orders: [] });
+
+    const recs = await Promise.all(
+      ids.map(id => _withTimeout(redis.get(`ghost:order:${id}`)).catch(() => null))
+    );
+    const allOrders = recs.filter(Boolean).map(r => typeof r === 'string' ? JSON.parse(r) : r);
+
+    // Load user accounts so we can resolve linked Discord IDs
+    const usersRaw = await _redisGet('ghost:users');
+    const users    = Array.isArray(usersRaw) ? usersRaw : [];
+
+    const pending = [];
+
+    for (const o of allOrders) {
+      const ps = (o.payment_status || '').toLowerCase();
+      const paid = ps === 'completed' || ps === 'verified' || ps === 'captured';
+      if (!paid || o.discord_role_granted) continue;
+
+      // Prefer discord_user_id from the linked Phantom account (verified OAuth link)
+      const customerUser = users.find(u =>
+        (u.email && o.email && u.email.toLowerCase() === o.email.toLowerCase()) ||
+        (u.licenseKey && o.license_key && u.licenseKey.toUpperCase() === o.license_key.toUpperCase())
+      );
+
+      const discordId = customerUser?.discord_user_id || null;
+
+      // Only include if we have a verified linked Discord ID
+      if (!discordId || !/^\d{17,19}$/.test(discordId)) continue;
+
+      pending.push({
+        order_id:    o.order_id,
+        discord_id:  discordId,
+        discord_user: customerUser?.discord_username || null,
+        license_key: o.license_key || null,
+        plan:        o.plan || null,
+        customer_id: customerUser?.id || o.email || o.order_id,
+        email:       o.email || null,
+      });
+    }
+
+    return res.json({ ok: true, orders: pending });
+  } catch (err) {
+    console.error('[admin/pending-customer-roles] error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to fetch pending roles.', orders: [] });
+  }
+});
+
+// ── POST /api/admin/orders/:orderId/role-granted ──────────────────────────────
+// Called by the Discord bot after successfully granting CUSTOMER_ROLE_ID.
+// Marks the order so it won't appear in the pending list again.
+// Also clears discord_role_pending on the user account.
+app.post('/api/admin/orders/:orderId/role-granted', _requireAdminSession, async (req, res) => {
+  const { orderId } = req.params;
+  try {
+    let orderEmail = null;
+
+    // Update order record and capture email in one fetch
+    if (_redisConfigured()) {
+      const redis = _getRedisClient();
+      const raw   = await _withTimeout(redis.get(`ghost:order:${orderId}`)).catch(() => null);
+      if (raw) {
+        const order = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        orderEmail = order.email || null;
+        order.discord_role_granted    = true;
+        order.discord_role_granted_at = new Date().toISOString();
+        await _withTimeout(redis.set(`ghost:order:${orderId}`, JSON.stringify(order)));
+      }
+    }
+
+    // Clear discord_role_pending on the user account
+    if (orderEmail) {
+      try {
+        const usersRaw = await _redisGet('ghost:users');
+        const users    = Array.isArray(usersRaw) ? usersRaw : [];
+        const idx      = users.findIndex(u => u.email && u.email.toLowerCase() === orderEmail.toLowerCase());
+        if (idx !== -1) {
+          users[idx] = { ...users[idx], discord_role_pending: false, discord_role_assigned_at: new Date().toISOString() };
+          await _redisSet('ghost:users', users);
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
+    console.log('[admin/role-granted] orderId=%s marked', orderId);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin/role-granted] error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to mark role as granted.' });
+  }
+});
+
 // ── Ghost shared Python API proxy routes ──────────────────────────────────────
 // Auth + customer-facing routes only — admin routes are handled natively above.
 // NOTE: /api/auth/register, /api/auth/login, /api/auth/logout are handled natively
 //       above. Remaining /api/auth/* sub-routes (if any) proxy to Python backend
 //       only if GHOST_API_URL is set.
+//
+// IMPORTANT: /api/license/* routes are intentionally NOT proxied here.
+// All license endpoints (/api/license/activate, etc.) are handled natively in
+// this file with direct Redis access. Adding a catch-all proxy for /api/license/*
+// caused a 508 Loop Detected: the proxy would forward the request back to this
+// same server when GHOST_API_URL points to this deployment.
 app.all('/api/auth/*',     (req, res) => _proxyToApi(req, res));
-app.all('/api/license/*',  (req, res) => _proxyToApi(req, res));
 app.all('/api/purchases',  (req, res) => _proxyToApi(req, res));
 app.all('/api/downloads*', (req, res) => _proxyToApi(req, res));
 
@@ -2602,6 +3179,13 @@ app.get('/:page(login|register|dashboard|pricing|checkout|changelog)', (req, res
     if (err) res.status(404).sendFile(path.join(WEB_ROOT, 'index.html'));
   }),
 );
+
+// discord-link result redirect — /discord-link forwards to dashboard with ?discord=... params
+// Needed if DISCORD_REDIRECT_URI points here and we want a clean path before redirecting
+app.get('/discord-link', (req, res) => {
+  const params = new URLSearchParams(req.query).toString();
+  return res.redirect(`/dashboard${params ? '?' + params : ''}`);
+});
 
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 

@@ -174,6 +174,27 @@
     if (pmRow) pmRow.hidden = isFree;
   }
 
+  /* ── Discord card — shown when user has no linked Discord account ─────────── */
+  function _checkAndShowDiscordCard() {
+    var token = typeof localStorage !== 'undefined' ? localStorage.getItem('ghost_token') : null;
+    if (!token) {
+      _show('os-discord-card');
+      return;
+    }
+    // Query the status endpoint; show the card if not linked
+    fetch('/api/account/discord/status', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    }).then(function(r) { return r.json().catch(function() { return {}; }); })
+      .then(function(d) {
+        if (!d.linked) {
+          _show('os-discord-card');
+        }
+      }).catch(function() {
+        // On error, show the card as a safe fallback (user can dismiss by navigating)
+        _show('os-discord-card');
+      });
+  }
+
   /* ── License states ─────────────────────────────────────────── */
   function _renderLicenseDelivered(licenseKey) {
     if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
@@ -189,6 +210,9 @@
     // Animate checkmark icon
     var icon = document.getElementById('os-check-icon');
     if (icon) icon.style.animation = 'osCheckPop .5s cubic-bezier(.34,1.56,.64,1) both';
+
+    // Show Discord card if the account has not yet linked Discord
+    _checkAndShowDiscordCard();
 
     setTimeout(launchConfetti, 200);
     toast('✔ License key ready', 'success', 4000);
