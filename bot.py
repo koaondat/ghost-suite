@@ -1,4 +1,4 @@
-from __future__ import annotations   
+from __future__ import annotations
 
 import asyncio
 import datetime as dt
@@ -17,6 +17,12 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 import api_client as api
+from permissions import (
+    PERMISSION_MAP,
+    get_role_ids,
+    has_permission,
+    require,
+)
 
 _ENV_PATH = Path(__file__).with_name(".env")
 
@@ -32,23 +38,20 @@ if not _ENV_PATH.exists():
         "Create it from .env.example before starting the bot."
     )
 
-
-
-
-
-
-    
 if not os.getenv("DISCORD_TOKEN", "").strip():
     raise SystemExit(
         f"[ghostkey] DISCORD_TOKEN is not set in {_ENV_PATH}\n"
         "Add your bot token and restart."
     )
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR  = Path(__file__).resolve().parent
 AUDIT_LOG = BASE_DIR / "discord_audit_log.json"
+BUYER_ROLE_LOG = BASE_DIR / "buyer_role_log.json"
 
-TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+TOKEN    = os.getenv("DISCORD_TOKEN", "").strip()
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
+
+# Legacy role/user ID sets — kept for backward compatibility.
 ADMIN_ROLE_IDS = {
     int(value.strip())
     for value in os.getenv("ADMIN_ROLE_IDS", "").split(",")
@@ -69,25 +72,20 @@ logging.basicConfig(
 logger = logging.getLogger("ghostkey.bot")
 
 intents = discord.Intents.default()
+intents.members = True   # required to fetch guild members for role assignment
 
 
+# ── Legacy is_admin helper (kept so existing callsites still compile) ─────────
 def is_admin(interaction: discord.Interaction) -> bool:
-    if interaction.user.id in ADMIN_USER_IDS:
-        return True
-    if isinstance(interaction.user, discord.Member):
-        return any(role.id in ADMIN_ROLE_IDS for role in interaction.user.roles)
-    return False
+    return has_permission(interaction.user, "admin")
 
 
 def admin_only():
-    async def predicate(interaction: discord.Interaction) -> bool:
-        if is_admin(interaction):
-            return True
-        raise app_commands.CheckFailure("You do not have permission to use this command.")
-
-    return app_commands.check(predicate)
+    """Legacy decorator alias — routes through the new permission system."""
+    return require("admin")
 
 
+# ── JSON helpers ──────────────────────────────────────────────────────────────
 def save_json(path: Path, data: list[dict]) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
@@ -104,23 +102,61 @@ def read_json(path: Path) -> list[dict]:
         return []
 
 
+# ── Command audit (staff actions) ────────────────────────────────────────────
 def audit(interaction: discord.Interaction, action: str, target: str, details: str = "") -> None:
     records = read_json(AUDIT_LOG)
     records.append(
         {
-            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "admin_id": interaction.user.id,
+            "timestamp":  dt.datetime.now(dt.timezone.utc).isoformat(),
+            "admin_id":   interaction.user.id,
             "admin_name": str(interaction.user),
-            "action": action,
-            "target": target,
-            "details": details,
+            "action":     action,
+            "target":     target,
+            "details":    details,
         }
     )
     save_json(AUDIT_LOG, records[-5000:])
 
 
+# ── Buyer-role assignment audit ───────────────────────────────────────────────
+def audit_role_assignment(
+    *,
+    discord_user: str,
+    discord_id: int | str,
+    customer_id: str,
+    license_key: str,
+    order_id: str,
+    plan: str,
+    role_id: int | str,
+    result: str,      # "success" | "already_had_role" | "failed:..." | "pending"
+    note: str = "",
+) -> None:
+    """
+    Append one record to buyer_role_log.json.
+    Never logs tokens, passwords, or bot secrets.
+    The license key is masked to show only the last 8 characters.
+    """
+    safe_key = ("*" * (len(license_key) - 8) + license_key[-8:]) if len(license_key) > 8 else "***"
+    records = read_json(BUYER_ROLE_LOG)
+    records.append(
+        {
+            "timestamp":    dt.datetime.now(dt.timezone.utc).isoformat(),
+            "discord_user": discord_user,
+            "discord_id":   str(discord_id),
+            "customer_id":  customer_id,
+            "license_key":  safe_key,
+            "order_id":     order_id,
+            "plan":         plan,
+            "role_id":      str(role_id),
+            "result":       result,
+            "note":         note,
+        }
+    )
+    save_json(BUYER_ROLE_LOG, records[-10_000:])
+
+
+# ── Utility ───────────────────────────────────────────────────────────────────
 def status_text(key_data: dict) -> str:
-    """Derive a status string from an API key info dict."""
     if key_data.get("banned"):
         return "Banned"
     if key_data.get("expired"):
@@ -131,7 +167,6 @@ def status_text(key_data: dict) -> str:
 
 
 def key_embed_from_data(info: dict) -> discord.Embed:
-    """Build a license embed from a /api/admin/license/<key> response."""
     lic    = info.get("license", {})
     record = info.get("record") or {}
     bound  = info.get("bound_user") or {}
@@ -158,6 +193,60 @@ def key_embed_from_data(info: dict) -> discord.Embed:
 _BOT_START_TIME = time.time()
 
 
+# ── Role hierarchy validation ─────────────────────────────────────────────────
+async def validate_role_config(guild: discord.Guild) -> None:
+    """
+    Validate that every configured role ID exists in the guild and that the
+    bot's own role is positioned above CUSTOMER_ROLE_ID in the hierarchy.
+    Logs a clear error for each misconfiguration — does NOT crash the bot.
+    """
+    role_ids = get_role_ids()
+    env_names = {
+        "customer":      "CUSTOMER_ROLE_ID",
+        "key_generator": "KEY_GENERATOR_ROLE_ID",
+        "key_manager":   "KEY_MANAGER_ROLE_ID",
+        "support":       "SUPPORT_ROLE_ID",
+        "bot_admin":     "BOT_ADMIN_ROLE_ID",
+    }
+    guild_role_ids = {r.id for r in guild.roles}
+
+    for key, env_var in env_names.items():
+        rid = role_ids.get(key)
+        if rid is None:
+            logger.warning("Role config: %s is not set in .env — related features disabled.", env_var)
+        elif rid not in guild_role_ids:
+            logger.error(
+                "Role config: %s=%d is NOT found in guild '%s'. "
+                "Check the ID in your .env file.",
+                env_var, rid, guild.name,
+            )
+        else:
+            logger.info("Role config: %s=%d ✓  (%s)", env_var, rid, env_var)
+
+    # Bot hierarchy check for CUSTOMER_ROLE_ID
+    customer_rid = role_ids.get("customer")
+    if customer_rid and customer_rid in guild_role_ids:
+        me = guild.me
+        customer_role = guild.get_role(customer_rid)
+        if customer_role and me:
+            bot_top = me.top_role.position
+            if bot_top <= customer_role.position:
+                logger.error(
+                    "Role hierarchy problem: Bot's highest role (position %d) is NOT above "
+                    "the Customer role '%s' (position %d).\n"
+                    "  → Cannot assign Customer role.\n"
+                    "  → Fix: Go to Discord Server Settings → Roles and drag the bot's role "
+                    "ABOVE the Customer role.",
+                    bot_top, customer_role.name, customer_role.position,
+                )
+            else:
+                logger.info(
+                    "Role hierarchy: Bot role (pos %d) is above Customer role '%s' (pos %d) ✓",
+                    bot_top, customer_role.name, customer_role.position,
+                )
+
+
+# ── Bot class ─────────────────────────────────────────────────────────────────
 class GhostKeyBot(commands.Bot):
     async def setup_hook(self) -> None:
         if GUILD_ID:
@@ -168,8 +257,8 @@ class GhostKeyBot(commands.Bot):
         else:
             synced = await self.tree.sync()
             logger.info("Globally synced %d commands", len(synced))
-        # Start the background API health-check loop
         api_health_check.start()
+        customer_role_task.start()
 
     async def on_disconnect(self) -> None:
         logger.warning("Bot disconnected from Discord gateway — will attempt to reconnect automatically")
@@ -185,13 +274,21 @@ bot = GhostKeyBot(command_prefix="!", intents=intents)
 async def on_ready() -> None:
     logger.info("Logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
     await bot.change_presence(activity=discord.Game(name="GHOST license management"))
+    if GUILD_ID:
+        guild = bot.get_guild(GUILD_ID)
+        if guild:
+            await validate_role_config(guild)
+        else:
+            logger.warning("GUILD_ID=%d not found in bot's guild list — role validation skipped.", GUILD_ID)
+    else:
+        logger.info("GUILD_ID not set — role validation will run against the first available guild.")
+        if bot.guilds:
+            await validate_role_config(bot.guilds[0])
 
 
-# ── Background health check against the shared API ────────────────────────────
-
+# ── Background: API health check ──────────────────────────────────────────────
 @tasks.loop(minutes=5)
 async def api_health_check() -> None:
-    """Ping the shared API /health endpoint every 5 minutes and log the result."""
     try:
         data = await api._request("GET", "/health")
         logger.debug("API health: %s", data)
@@ -204,10 +301,195 @@ async def _before_health_check() -> None:
     await bot.wait_until_ready()
 
 
+# ── Background: auto-assign Customer role for verified purchases ──────────────
+@tasks.loop(minutes=2)
+async def customer_role_task() -> None:
+    """
+    Every 2 minutes: ask the API for orders that have:
+      - payment_status = completed/verified
+      - discord_id set (numeric)
+      - discord_role_granted = false  (or missing)
+
+    For each, independently verify the license is still valid, then grant
+    CUSTOMER_ROLE_ID to that Discord member.  Never trusts client input —
+    the API record is the authoritative source of truth.
+    """
+    customer_rid = get_role_ids().get("customer")
+    if not customer_rid:
+        return   # CUSTOMER_ROLE_ID not configured — silently skip
+
+    guild = bot.get_guild(GUILD_ID) if GUILD_ID else (bot.guilds[0] if bot.guilds else None)
+    if not guild:
+        return
+
+    try:
+        pending = await api.get_pending_customer_roles()
+    except Exception as exc:
+        logger.warning("customer_role_task: could not fetch pending roles: %s", exc)
+        return
+
+    if not pending:
+        return
+
+    customer_role = guild.get_role(customer_rid)
+    if not customer_role:
+        logger.error(
+            "customer_role_task: CUSTOMER_ROLE_ID=%d not found in guild. "
+            "Check your .env and guild configuration.",
+            customer_rid,
+        )
+        return
+
+    for record in pending:
+        order_id    = record.get("order_id", "")
+        discord_id_raw = str(record.get("discord_id", "")).strip()
+        license_key = record.get("license_key", "") or ""
+        plan        = record.get("plan", "") or ""
+        customer_id = record.get("customer_id", "") or order_id
+
+        if not discord_id_raw.isdigit():
+            logger.info(
+                "customer_role_task: order=%s has no valid numeric discord_id — skipping.",
+                order_id,
+            )
+            audit_role_assignment(
+                discord_user="unknown",
+                discord_id=discord_id_raw or "none",
+                customer_id=customer_id,
+                license_key=license_key or "none",
+                order_id=order_id,
+                plan=plan,
+                role_id=customer_rid,
+                result="failed:discord_account_not_linked",
+                note="discord_id missing or non-numeric in order record",
+            )
+            continue
+
+        discord_id = int(discord_id_raw)
+
+        # Fetch the member — must be in the guild.
+        member = guild.get_member(discord_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(discord_id)
+            except discord.NotFound:
+                member = None
+            except Exception as exc:
+                logger.warning("customer_role_task: fetch_member(%d) failed: %s", discord_id, exc)
+
+        if member is None:
+            logger.info(
+                "customer_role_task: discord_id=%d not found in guild — will retry later.",
+                discord_id,
+            )
+            audit_role_assignment(
+                discord_user=f"<id:{discord_id}>",
+                discord_id=discord_id,
+                customer_id=customer_id,
+                license_key=license_key or "none",
+                order_id=order_id,
+                plan=plan,
+                role_id=customer_rid,
+                result="failed:member_not_in_server",
+                note="Member not found in guild; they may not have joined yet",
+            )
+            continue
+
+        discord_user_str = str(member)
+
+        # Already has the role — treat as success, mark resolved.
+        if customer_role in member.roles:
+            logger.info(
+                "customer_role_task: %s (%d) already has Customer role — marking resolved.",
+                discord_user_str, discord_id,
+            )
+            audit_role_assignment(
+                discord_user=discord_user_str,
+                discord_id=discord_id,
+                customer_id=customer_id,
+                license_key=license_key or "none",
+                order_id=order_id,
+                plan=plan,
+                role_id=customer_rid,
+                result="already_had_role",
+            )
+            try:
+                await api.mark_customer_role_granted(order_id)
+            except Exception as exc:
+                logger.warning("customer_role_task: could not mark order %s resolved: %s", order_id, exc)
+            continue
+
+        # Grant the role.
+        try:
+            await member.add_roles(
+                customer_role,
+                reason=f"Verified purchase — order {order_id} plan={plan}",
+            )
+            logger.info(
+                "customer_role_task: ✓ Granted Customer role to %s (%d) for order %s.",
+                discord_user_str, discord_id, order_id,
+            )
+            audit_role_assignment(
+                discord_user=discord_user_str,
+                discord_id=discord_id,
+                customer_id=customer_id,
+                license_key=license_key or "none",
+                order_id=order_id,
+                plan=plan,
+                role_id=customer_rid,
+                result="success",
+            )
+            try:
+                await api.mark_customer_role_granted(order_id)
+            except Exception as exc:
+                logger.warning("customer_role_task: could not mark order %s resolved: %s", order_id, exc)
+
+        except discord.Forbidden:
+            msg = (
+                f"Bot lacks Manage Roles permission, OR the bot's role is below the "
+                f"Customer role in Discord Server Settings → Roles. "
+                f"Move the bot role ABOVE the Customer role."
+            )
+            logger.error("customer_role_task: Forbidden assigning role to %s: %s", discord_user_str, msg)
+            audit_role_assignment(
+                discord_user=discord_user_str,
+                discord_id=discord_id,
+                customer_id=customer_id,
+                license_key=license_key or "none",
+                order_id=order_id,
+                plan=plan,
+                role_id=customer_rid,
+                result="failed:bot_forbidden",
+                note=msg,
+            )
+        except Exception as exc:
+            logger.error(
+                "customer_role_task: unexpected error granting role to %s (%d): %s",
+                discord_user_str, discord_id, exc,
+            )
+            audit_role_assignment(
+                discord_user=discord_user_str,
+                discord_id=discord_id,
+                customer_id=customer_id,
+                license_key=license_key or "none",
+                order_id=order_id,
+                plan=plan,
+                role_id=customer_rid,
+                result=f"failed:{type(exc).__name__}",
+                note=str(exc)[:200],
+            )
+
+
+@customer_role_task.before_loop
+async def _before_customer_role_task() -> None:
+    await bot.wait_until_ready()
+
+
+# ── Error handler ─────────────────────────────────────────────────────────────
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
     if isinstance(error, app_commands.CheckFailure):
-        message = str(error) or "You do not have permission to use this command."
+        message = str(error) or "❌ You don't have permission to use this command."
     else:
         logger.exception("Slash command failed", exc_info=error)
         message = "The command failed. Check the bot console for details."
@@ -218,10 +500,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 
 # ── License-card button row ───────────────────────────────────────────────────
-
 class LicenseCardView(discord.ui.View):
-    """Action buttons attached to every /genkey response."""
-
     def __init__(self, key: str) -> None:
         super().__init__(timeout=None)
         self.key = key
@@ -235,6 +514,11 @@ class LicenseCardView(discord.ui.View):
 
     @discord.ui.button(label="🔍  View Key Info", style=discord.ButtonStyle.primary)
     async def view_key_info(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not has_permission(interaction.user, "support"):
+            await interaction.response.send_message(
+                "❌ You don't have permission to use this command.", ephemeral=True
+            )
+            return
         try:
             info = await api.key_info(self.key)
             await interaction.response.send_message(embed=key_embed_from_data(info), ephemeral=True)
@@ -243,8 +527,13 @@ class LicenseCardView(discord.ui.View):
 
     @discord.ui.button(label="🗑️  Delete Key", style=discord.ButtonStyle.danger)
     async def delete_key(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not has_permission(interaction.user, "manage_keys"):
+            await interaction.response.send_message(
+                "❌ You don't have permission to use this command.", ephemeral=True
+            )
+            return
         try:
-            result = await api.delete_key(self.key)
+            await api.delete_key(self.key)
             audit(interaction, "delete_key_record", self.key, "via license card button")
             await interaction.response.send_message(
                 f"🗑️ Key `{self.key}` has been removed from the database.", ephemeral=True
@@ -253,11 +542,8 @@ class LicenseCardView(discord.ui.View):
             await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
 
 
-# ── Bulk-delete confirmation view ────────────────────────────────────────────
-
+# ── Bulk-delete confirmation view ─────────────────────────────────────────────
 class BulkDeleteView(discord.ui.View):
-    """Confirm / cancel view for /bulkdelete."""
-
     def __init__(self, keys: list[str], invoker_id: int) -> None:
         super().__init__(timeout=120)
         self.keys = keys
@@ -267,7 +553,7 @@ class BulkDeleteView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker_id:
             await interaction.response.send_message(
-                "Only the admin who invoked this command can use these buttons.",
+                "Only the staff member who invoked this command can use these buttons.",
                 ephemeral=True,
             )
             return False
@@ -338,7 +624,6 @@ class BulkDeleteView(discord.ui.View):
 
 
 # ── /genkey ───────────────────────────────────────────────────────────────────
-
 _GENKEY_EMBED_MAX = 5
 
 @bot.tree.command(name="genkey", description="Generate and save one or more GHOST license keys")
@@ -358,7 +643,7 @@ _GENKEY_EMBED_MAX = 5
     app_commands.Choice(name="25 keys", value=25),
     app_commands.Choice(name="50 keys", value=50),
 ])
-@admin_only()
+@require("generate")
 async def genkey(
     interaction: discord.Interaction,
     tier: Literal["TRIAL", "PRO", "ADMIN"],
@@ -452,8 +737,9 @@ async def genkey(
     await interaction.followup.send(embed=embed, file=file, ephemeral=True)
 
 
+# ── /keyinfo ──────────────────────────────────────────────────────────────────
 @bot.tree.command(name="keyinfo", description="View information about a license key")
-@admin_only()
+@require("support")
 async def keyinfo(interaction: discord.Interaction, key: str) -> None:
     await interaction.response.defer(ephemeral=True)
     try:
@@ -463,8 +749,9 @@ async def keyinfo(interaction: discord.Interaction, key: str) -> None:
         await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
 
 
+# ── /bankey ───────────────────────────────────────────────────────────────────
 @bot.tree.command(name="bankey", description="Ban a license key")
-@admin_only()
+@require("manage_keys")
 async def bankey(interaction: discord.Interaction, key: str, reason: app_commands.Range[str, 0, 200] = "") -> None:
     clean = key.strip().upper()
     try:
@@ -475,8 +762,9 @@ async def bankey(interaction: discord.Interaction, key: str, reason: app_command
         await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
 
 
+# ── /unbankey ─────────────────────────────────────────────────────────────────
 @bot.tree.command(name="unbankey", description="Remove a license key ban")
-@admin_only()
+@require("manage_keys")
 async def unbankey(interaction: discord.Interaction, key: str) -> None:
     clean = key.strip().upper()
     try:
@@ -488,8 +776,9 @@ async def unbankey(interaction: discord.Interaction, key: str) -> None:
         await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
 
 
+# ── /deletekey ────────────────────────────────────────────────────────────────
 @bot.tree.command(name="deletekey", description="Delete a key from the issued-key records")
-@admin_only()
+@require("manage_keys")
 async def deletekey(interaction: discord.Interaction, key: str) -> None:
     clean = key.strip().upper()
     try:
@@ -501,9 +790,10 @@ async def deletekey(interaction: discord.Interaction, key: str) -> None:
         await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
 
 
+# ── /extendkey ────────────────────────────────────────────────────────────────
 @bot.tree.command(name="extendkey", description="Extend a key by generating a replacement with new expiry")
 @app_commands.describe(key="The key to extend", days="New validity period in days")
-@admin_only()
+@require("manage_keys")
 async def extendkey(
     interaction: discord.Interaction,
     key: str,
@@ -521,8 +811,9 @@ async def extendkey(
         await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
 
 
+# ── /resetactivation ──────────────────────────────────────────────────────────
 @bot.tree.command(name="resetactivation", description="Reset HWID/device binding for a key")
-@admin_only()
+@require("manage_keys")
 async def resetactivation(interaction: discord.Interaction, key: str) -> None:
     clean = key.strip().upper()
     try:
@@ -534,9 +825,10 @@ async def resetactivation(interaction: discord.Interaction, key: str) -> None:
         await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
 
 
+# ── /listkeys ─────────────────────────────────────────────────────────────────
 @bot.tree.command(name="listkeys", description="List recently issued keys")
 @app_commands.describe(tier="Optional tier filter", limit="Number of keys to display")
-@admin_only()
+@require("support")
 async def listkeys(
     interaction: discord.Interaction,
     tier: Literal["ALL", "TRIAL", "PRO", "ADMIN"] = "ALL",
@@ -561,8 +853,9 @@ async def listkeys(
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# ── /userinfo ─────────────────────────────────────────────────────────────────
 @bot.tree.command(name="userinfo", description="View a registered user's license information")
-@admin_only()
+@require("support")
 async def userinfo(interaction: discord.Interaction, username: str) -> None:
     try:
         user = await api.user_info(username)
@@ -581,8 +874,9 @@ async def userinfo(interaction: discord.Interaction, username: str) -> None:
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# ── /deleteuser ───────────────────────────────────────────────────────────────
 @bot.tree.command(name="deleteuser", description="Delete a registered user account")
-@admin_only()
+@require("manage_keys")
 async def deleteuser(interaction: discord.Interaction, username: str) -> None:
     try:
         result = await api.delete_user(username)
@@ -593,8 +887,9 @@ async def deleteuser(interaction: discord.Interaction, username: str) -> None:
         await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
 
 
+# ── /stats ────────────────────────────────────────────────────────────────────
 @bot.tree.command(name="stats", description="Show license-system statistics")
-@admin_only()
+@require("manage_keys")
 async def stats(interaction: discord.Interaction) -> None:
     try:
         s = await api.stats()
@@ -616,10 +911,9 @@ async def stats(interaction: discord.Interaction) -> None:
 
 
 # ── /bulkdelete ───────────────────────────────────────────────────────────────
-
 @bot.tree.command(name="bulkdelete", description="Delete multiple license keys at once")
 @app_commands.describe(keys="Paste keys separated by commas or new lines")
-@admin_only()
+@require("manage_keys")
 async def bulkdelete(interaction: discord.Interaction, keys: str) -> None:
     raw_keys   = re.split(r"[,\n\r]+", keys)
     valid_keys = [k.strip().upper() for k in raw_keys if k.strip()]
@@ -660,15 +954,85 @@ async def bulkdelete(interaction: discord.Interaction, keys: str) -> None:
     )
 
 
+# ── /permissions ──────────────────────────────────────────────────────────────
+@bot.tree.command(name="permissions", description="Show the configured bot permission structure")
+@require("admin")
+async def permissions_cmd(interaction: discord.Interaction) -> None:
+    """Bot Admin-only: display the role permission map and role resolution status."""
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    role_ids = get_role_ids()
+
+    embed = discord.Embed(
+        title="🔐  GhostKey Permission Structure",
+        description=(
+            "Role → permission mapping.  Higher roles inherit lower permissions.\n"
+            "A ✅ means the role was found in this server; ❌ means it's missing or unconfigured."
+        ),
+        color=discord.Color.from_rgb(124, 58, 237),
+        timestamp=dt.datetime.now(dt.timezone.utc),
+    )
+
+    role_key_order = ["customer", "support", "key_generator", "key_manager", "bot_admin"]
+    for role_key in role_key_order:
+        info = PERMISSION_MAP[role_key]
+        rid  = role_ids.get(role_key)
+
+        if rid is None:
+            status = "❌ Not configured"
+        elif guild:
+            role_obj = guild.get_role(rid)
+            status = f"✅ <@&{rid}>" if role_obj else f"❌ ID `{rid}` not found in server"
+        else:
+            status = f"⚠️ ID `{rid}` (DM — cannot resolve)"
+
+        commands_str = ", ".join(info["commands"]) if info["commands"] else "*none*"
+        embed.add_field(
+            name=f"**{info['label']}**  ({info['env']})",
+            value=(
+                f"**Status:** {status}\n"
+                f"**Access:** {info['desc']}\n"
+                f"**Commands:** {commands_str}"
+            ),
+            inline=False,
+        )
+
+    # Additional overrides section
+    admin_uids = [
+        int(v.strip()) for v in os.getenv("ADMIN_USER_IDS", "").split(",")
+        if v.strip().isdigit()
+    ]
+    legacy_rids = [
+        int(v.strip()) for v in os.getenv("ADMIN_ROLE_IDS", "").split(",")
+        if v.strip().isdigit()
+    ]
+    overrides = []
+    if admin_uids:
+        overrides.append(f"ADMIN_USER_IDS: {len(admin_uids)} user(s) — full access override")
+    if legacy_rids:
+        overrides.append(f"ADMIN_ROLE_IDS (legacy): {len(legacy_rids)} role(s) — treated as Bot Admin")
+    overrides.append("Discord Administrator permission → full access")
+
+    embed.add_field(
+        name="Additional Overrides",
+        value="\n".join(f"• {o}" for o in overrides),
+        inline=False,
+    )
+    embed.set_footer(text="Role IDs are loaded exclusively from .env — never hard-coded.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("DISCORD_TOKEN is missing. Copy .env.example to .env and add your token.")
-    if not ADMIN_ROLE_IDS and not ADMIN_USER_IDS:
-        raise SystemExit("Set ADMIN_ROLE_IDS or ADMIN_USER_IDS in .env before starting the bot.")
+    if not ADMIN_ROLE_IDS and not ADMIN_USER_IDS and not any(get_role_ids().values()):
+        raise SystemExit(
+            "No role or user IDs configured. Set at least one of "
+            "ADMIN_USER_IDS, ADMIN_ROLE_IDS, or BOT_ADMIN_ROLE_ID in .env before starting the bot."
+        )
     if not api.ADMIN_KEY:
         raise SystemExit("GHOST_ADMIN_API_KEY is missing. Add it to .env before starting the bot.")
     logger.info("Starting GhostKey bot — API: %s", api.API_BASE)
-    # reconnect=True (default) — discord.py automatically reconnects on
-    # temporary gateway drops. Unrecoverable errors (bad token, etc.) raise
-    # and are propagated to the process supervisor for restart.
     bot.run(TOKEN, log_handler=None, reconnect=True)

@@ -465,7 +465,7 @@ const _captureInFlight = new Map();
    POST /api/paypal/create-order
   ──────────────────────────────────────────────────────────────────────────*/
 async function createOrder (req, res) {
-  const { plan: planRaw, email, discord, couponCode, finalPrice: clientFinalPrice } = req.body || {};
+  const { plan: planRaw, email, discord, discord_id: discordIdRaw, couponCode, finalPrice: clientFinalPrice } = req.body || {};
 
   const planId = (planRaw || '').trim().toLowerCase();
   const plan   = PLAN_CATALOGUE[planId];
@@ -550,6 +550,12 @@ async function createOrder (req, res) {
           plan:       planId,
           email:      email.trim(),
           discord:    discord.trim(),
+          // Only store discord_id if it looks like a valid snowflake.
+          // The capture-order handler reads it back from req.body directly,
+          // but webhooks (which have no req.body) read it from custom_id.
+          discord_id: /^\d{17,19}$/.test(String(discordIdRaw || '').trim())
+            ? String(discordIdRaw).trim()
+            : '',
           couponCode: resolvedCouponCode || '',
           discount:   resolvedDiscount,
           origPrice:  plan.priceUsd,
@@ -760,27 +766,36 @@ async function _doCaptureOrder ({ orderID, email, discord, planId, plan }) {
   const invoiceId    = `GHOST-INV-${_invoiceSufx}`;
 
   // ── Step 6: Persist order to Redis (payment confirmed, delivery pending) ──
+  // discord_id — numeric Discord snowflake supplied by the checkout page.
+  // Stored as a string.  Only set if it looks like a valid snowflake
+  // (17–19 digits) to avoid storing garbage.  The bot will independently
+  // validate this before granting any role.
+  const rawDiscordId  = String(req.body && req.body.discord_id || '').trim();
+  const resolvedDiscordId = /^\d{17,19}$/.test(rawDiscordId) ? rawDiscordId : '';
+
   const pendingOrderRecord = {
-    order_id:          captureId,
-    paypal_order_id:   orderID,
-    paypal_capture_id: captureId,
-    invoice_id:        invoiceId,
-    plan:              planId,
-    plan_label:        plan.label,
-    tier:              plan.tier,
-    email:             resolvedEmail,
-    discord:           resolvedDiscord,
-    price_usd:         parseFloat(capturedAmount),
-    original_price:    _origPrice,
-    coupon_code:       _couponCode || null,
-    coupon_discount:   _couponDiscount || 0,
-    currency:          capturedCurrency,
-    created_at:        purchaseDateNow,
-    payment_status:    'completed',
-    payment_verified:  true,
-    delivery_status:   'pending',
-    license_key:       null,
-    license_status:    'pending',
+    order_id:              captureId,
+    paypal_order_id:       orderID,
+    paypal_capture_id:     captureId,
+    invoice_id:            invoiceId,
+    plan:                  planId,
+    plan_label:            plan.label,
+    tier:                  plan.tier,
+    email:                 resolvedEmail,
+    discord:               resolvedDiscord,
+    discord_id:            resolvedDiscordId || null,
+    discord_role_granted:  false,
+    price_usd:             parseFloat(capturedAmount),
+    original_price:        _origPrice,
+    coupon_code:           _couponCode || null,
+    coupon_discount:       _couponDiscount || 0,
+    currency:              capturedCurrency,
+    created_at:            purchaseDateNow,
+    payment_status:        'completed',
+    payment_verified:      true,
+    delivery_status:       'pending',
+    license_key:           null,
+    license_status:        'pending',
   };
 
   const savedToRedis = await _redisSaveOrder(captureId, pendingOrderRecord);
@@ -1038,26 +1053,33 @@ async function handleWebhook (req, res) {
   // If the webhook fires first (race), write a minimal record so fulfillOrder can find it.
   const existing = await _redisGetOrder(captureId).catch(() => null);
   if (!existing) {
-    const invoiceRaw  = captureId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
-    const invoiceSufx = invoiceRaw.slice(-8).padStart(8, '0');
+    const invoiceRaw   = captureId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    const invoiceSufx  = invoiceRaw.slice(-8).padStart(8, '0');
+    // discord_id may have been stored in custom_id at create-order time.
+    const webhookDiscordId = customId.discord_id
+      ? (String(customId.discord_id).trim())
+      : '';
+    const resolvedWebhookDiscordId = /^\d{17,19}$/.test(webhookDiscordId) ? webhookDiscordId : '';
     await _redisSaveOrder(captureId, {
-      order_id:          captureId,
-      paypal_order_id:   orderId,
-      paypal_capture_id: captureId,
-      invoice_id:        `GHOST-INV-${invoiceSufx}`,
-      plan:              _normalizePlan(plan),
-      plan_label:        planMeta.label,
-      tier:              planMeta.tier,
+      order_id:             captureId,
+      paypal_order_id:      orderId,
+      paypal_capture_id:    captureId,
+      invoice_id:           `GHOST-INV-${invoiceSufx}`,
+      plan:                 _normalizePlan(plan),
+      plan_label:           planMeta.label,
+      tier:                 planMeta.tier,
       email,
       discord,
-      price_usd:         parseFloat(amount),
+      discord_id:           resolvedWebhookDiscordId || null,
+      discord_role_granted: false,
+      price_usd:            parseFloat(amount),
       currency,
-      created_at:        new Date().toISOString(),
-      payment_status:    'completed',
-      payment_verified:  true,
-      delivery_status:   'pending',
-      license_key:       null,
-      license_status:    'pending',
+      created_at:           new Date().toISOString(),
+      payment_status:       'completed',
+      payment_verified:     true,
+      delivery_status:      'pending',
+      license_key:          null,
+      license_status:       'pending',
     }).catch(() => {});
   }
 

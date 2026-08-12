@@ -1457,6 +1457,318 @@ def route_admin_downloads_rollback():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Bot integration — Customer-role assignment
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The Discord bot polls GET /api/admin/pending-customer-roles every 2 minutes.
+# For each returned order it independently verifies the payment record, grants
+# the Customer Discord role, then calls POST /api/admin/orders/<id>/role-granted
+# to mark the order resolved.
+#
+# Security model:
+#   • Both endpoints require X-Admin-Key (same key the bot uses for all admin calls).
+#   • The bot NEVER trusts a client-submitted discord_id — it only reads from the
+#     server-side order record stored here.
+#   • The customer cannot influence which role is granted; the role ID comes
+#     exclusively from the bot's .env (CUSTOMER_ROLE_ID), not from this API.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Redis helpers re-used from license_delivery — we import lazily to avoid a
+# circular dep at module level.
+_REDIS_URL_BOT   = os.environ.get("UPSTASH_REDIS_REST_URL",   "").rstrip("/")
+_REDIS_TOKEN_BOT = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+
+def _bot_redis_configured() -> bool:
+    return bool(_REDIS_URL_BOT and _REDIS_TOKEN_BOT)
+
+
+def _bot_redis_get_order(order_id: str) -> dict | None:
+    """Fetch a single order from Upstash Redis.  Returns None on any error."""
+    import urllib.request as _ur
+    import urllib.parse   as _up
+    key = f"ghost:order:{order_id}"
+    url = f"{_REDIS_URL_BOT}/GET/{_up.quote(key, safe='')}"
+    req = _ur.Request(url, headers={"Authorization": f"Bearer {_REDIS_TOKEN_BOT}"})
+    try:
+        with _ur.urlopen(req, timeout=8) as resp:
+            body = json.loads(resp.read().decode())
+        raw = body.get("result")
+        if raw is None:
+            return None
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        log.error("_bot_redis_get_order(%s) failed: %s", order_id, exc)
+        return None
+
+
+def _bot_redis_set_order(order_id: str, record: dict) -> bool:
+    """Write an order record back to Redis.  Returns True on success."""
+    import urllib.request as _ur
+    key     = f"ghost:order:{order_id}"
+    payload = json.dumps([
+        ["SET", key, json.dumps(record, default=str)],
+    ]).encode()
+    req = _ur.Request(
+        f"{_REDIS_URL_BOT}/pipeline",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {_REDIS_TOKEN_BOT}",
+            "Content-Type":  "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with _ur.urlopen(req, timeout=8) as resp:
+            result = json.loads(resp.read().decode())
+        for item in (result if isinstance(result, list) else []):
+            if isinstance(item, dict) and "error" in item:
+                raise RuntimeError(item["error"])
+        return True
+    except Exception as exc:
+        log.error("_bot_redis_set_order(%s) failed: %s", order_id, exc)
+        return False
+
+
+def _load_order_record(order_id: str) -> dict | None:
+    """Load an order from Redis (production) or orders.json (dev fallback)."""
+    if _bot_redis_configured():
+        return _bot_redis_get_order(order_id)
+    orders = _load_orders()
+    return next((o for o in orders if o.get("order_id") == order_id), None)
+
+
+def _save_order_record(order_id: str, record: dict) -> bool:
+    """Persist an order record update."""
+    if _bot_redis_configured():
+        return _bot_redis_set_order(order_id, record)
+    # File fallback: patch orders.json in-place
+    orders = _load_orders()
+    for i, o in enumerate(orders):
+        if o.get("order_id") == order_id:
+            orders[i] = record
+            tmp = ORDERS_DB.with_suffix(".tmp")
+            tmp.write_text(json.dumps(orders, indent=2, default=str), "utf-8")
+            tmp.replace(ORDERS_DB)
+            return True
+    return False
+
+
+def _scan_pending_role_orders() -> list[dict]:
+    """
+    Return all paid orders that:
+      1. Have discord_id set to a non-empty string of digits.
+      2. Have discord_role_granted != True.
+      3. Have payment_status in (completed, captured, verified).
+
+    Works with both Redis and the local orders.json fallback.
+    """
+    if _bot_redis_configured():
+        import urllib.request as _ur
+        # Read the sorted-set index to get all order IDs, then fetch each.
+        url = f"{_REDIS_URL_BOT}/ZRANGE/ghost:orders:index/0/-1"
+        req = _ur.Request(url, headers={"Authorization": f"Bearer {_REDIS_TOKEN_BOT}"})
+        try:
+            with _ur.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode())
+            order_ids = body.get("result") or []
+        except Exception as exc:
+            log.error("_scan_pending_role_orders ZRANGE failed: %s", exc)
+            return []
+        results = []
+        for oid in order_ids:
+            rec = _bot_redis_get_order(oid)
+            if rec and _is_pending_role_order(rec):
+                results.append(rec)
+        return results
+    # File fallback
+    return [o for o in _load_orders() if _is_pending_role_order(o)]
+
+
+def _is_pending_role_order(order: dict) -> bool:
+    ps = (order.get("payment_status") or "").lower()
+    paid = ps in ("completed", "captured", "verified")
+    discord_id = str(order.get("discord_id") or "").strip()
+    has_discord = discord_id.isdigit()
+    already_granted = order.get("discord_role_granted") is True
+    has_key = bool(order.get("license_key"))
+    return paid and has_discord and not already_granted and has_key
+
+
+@app.route("/api/admin/pending-customer-roles", methods=["GET"])
+@require_admin
+def route_pending_customer_roles():
+    """
+    GET /api/admin/pending-customer-roles
+    ─────────────────────────────────────
+    Returns all verified, paid orders that:
+      • Have a numeric discord_id stored
+      • Have NOT yet had the Customer Discord role granted
+      • Have a license_key (delivery succeeded)
+
+    Called every 2 minutes by the Discord bot background task.
+    Requires X-Admin-Key authentication — never accessible to customers.
+    """
+    try:
+        pending = _scan_pending_role_orders()
+    except Exception as exc:
+        log.error("pending-customer-roles scan failed: %s", exc)
+        return jsonify({"ok": False, "error": "Failed to scan orders"}), 500
+
+    # Return only the fields the bot needs — never return payment secrets.
+    safe = []
+    for o in pending:
+        safe.append({
+            "order_id":   o.get("order_id", ""),
+            "discord_id": str(o.get("discord_id", "") or ""),
+            "license_key": o.get("license_key", ""),
+            "plan":        o.get("plan", ""),
+            "customer_id": o.get("email", "") or o.get("order_id", ""),
+        })
+
+    _audit("bot_pending_role_query", getattr(g, "actor", "__bot__"), f"{len(safe)} orders")
+    return jsonify({"ok": True, "orders": safe, "total": len(safe)})
+
+
+@app.route("/api/admin/orders/<order_id>/role-granted", methods=["POST"])
+@require_admin
+def route_order_role_granted(order_id: str):
+    """
+    POST /api/admin/orders/<order_id>/role-granted
+    ─────────────────────────────────────────────
+    Mark an order's Discord Customer role as granted.
+    Called by the bot after successfully calling member.add_roles().
+
+    Sets discord_role_granted = True in the order record.
+    Idempotent: calling it more than once is harmless.
+    """
+    order = _load_order_record(order_id)
+    if not order:
+        return jsonify({"ok": False, "error": "Order not found"}), 404
+
+    order["discord_role_granted"]    = True
+    order["discord_role_granted_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    saved = _save_order_record(order_id, order)
+    if not saved:
+        log.error("route_order_role_granted: could not save order %s", order_id)
+        return jsonify({"ok": False, "error": "Failed to update order record"}), 500
+
+    _audit("discord_role_granted", getattr(g, "actor", "__bot__"), order_id,
+           f"discord_id={order.get('discord_id', '')}")
+    return jsonify({"ok": True, "order_id": order_id, "discord_role_granted": True})
+
+
+@app.route("/api/link-discord", methods=["POST"])
+@require_session
+@limiter.limit("10 per hour")
+def route_link_discord():
+    """
+    POST /api/link-discord  { discord_id: "123456789012345678" }
+    ─────────────────────────────────────────────────────────────
+    Stores a numeric Discord user ID against the authenticated customer's
+    account and all of their completed orders, then marks any ungranted
+    orders as pending so the bot will pick them up on its next poll.
+
+    Requires a valid customer JWT session (Authorization: Bearer <token>
+    or the ghost_token cookie).  The discord_id must be a string of 17-19
+    digits (standard Discord snowflake range).
+
+    Security:
+      • Authenticated: caller must have a valid session.
+      • The customer supplies only their OWN discord_id — they cannot set it
+        on another account.
+      • The role assignment decision is made entirely by the bot, which reads
+        the order record from the server — the customer never chooses the role.
+    """
+    data       = request.get_json(silent=True) or {}
+    discord_id = str(data.get("discord_id") or "").strip()
+
+    # Validate: Discord snowflake — 17 to 19 digits.
+    if not discord_id.isdigit() or not (17 <= len(discord_id) <= 19):
+        return jsonify({
+            "ok":    False,
+            "error": "discord_id must be a valid Discord user ID (17–19 digit snowflake)",
+        }), 400
+
+    # Update user record in users.json
+    users = keygen._load_json(keygen.USERS_DB)
+    updated_user = False
+    for u in users:
+        if u.get("username", "").lower() == g.user.lower():
+            u["discord_id"] = discord_id
+            updated_user = True
+            break
+    if updated_user:
+        keygen._save_json(keygen.USERS_DB, users)
+
+    # Patch all completed orders for this user to include discord_id and
+    # reset discord_role_granted so the bot re-evaluates them.
+    if _bot_redis_configured():
+        import urllib.request as _ur
+        try:
+            url = f"{_REDIS_URL_BOT}/ZRANGE/ghost:orders:index/0/-1"
+            req = _ur.Request(url, headers={"Authorization": f"Bearer {_REDIS_TOKEN_BOT}"})
+            with _ur.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode())
+            order_ids = body.get("result") or []
+        except Exception:
+            order_ids = []
+
+        patched = 0
+        for oid in order_ids:
+            rec = _bot_redis_get_order(oid)
+            if not rec:
+                continue
+            # Match by email or existing discord_id (username)
+            rec_email = (rec.get("email") or "").lower()
+            rec_discord_uname = (rec.get("discord") or "").lower()
+            user_email = next(
+                (u.get("email", "") for u in users if u.get("username", "").lower() == g.user.lower()),
+                ""
+            ).lower()
+            if rec_email and rec_email == user_email:
+                ps = (rec.get("payment_status") or "").lower()
+                if ps in ("completed", "captured", "verified"):
+                    rec["discord_id"] = discord_id
+                    if not rec.get("discord_role_granted"):
+                        rec["discord_role_granted"] = False  # ensure bot will pick it up
+                    _bot_redis_set_order(oid, rec)
+                    patched += 1
+    else:
+        # File fallback
+        orders = _load_orders()
+        patched = 0
+        user_rec = next(
+            (u for u in users if u.get("username", "").lower() == g.user.lower()), {}
+        )
+        user_email = (user_rec.get("email") or "").lower()
+        for o in orders:
+            if (o.get("email") or "").lower() == user_email:
+                ps = (o.get("payment_status") or "").lower()
+                if ps in ("completed", "captured", "verified"):
+                    o["discord_id"] = discord_id
+                    if not o.get("discord_role_granted"):
+                        o["discord_role_granted"] = False
+                    patched += 1
+        if patched:
+            tmp = ORDERS_DB.with_suffix(".tmp")
+            tmp.write_text(json.dumps(orders, indent=2, default=str), "utf-8")
+            tmp.replace(ORDERS_DB)
+
+    _audit("link_discord", g.user, discord_id, f"patched_orders={patched}")
+    return jsonify({
+        "ok":             True,
+        "discord_id":     discord_id,
+        "orders_patched": patched,
+        "message":        (
+            "Discord account linked. The Customer role will be assigned automatically "
+            "within the next few minutes if you have a qualifying purchase."
+        ),
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Releases  (auto-update system)
 # ─────────────────────────────────────────────────────────────────────────────
 #

@@ -168,3 +168,46 @@ async def stats() -> dict:
         "tiers":      tiers,
         "users":      len(users),
     }
+
+
+# ── Customer-role assignment helpers (used by bot.py background task) ──────────
+
+async def get_pending_customer_roles() -> list[dict]:
+    """
+    Return orders that are fully paid, have a numeric discord_id, and have not
+    yet had the Customer role granted.  The API endpoint filters server-side so
+    only verified, ungranted records are returned — the bot never trusts client
+    input to decide who deserves a role.
+    """
+    try:
+        data = await _request(
+            "GET", "/api/admin/pending-customer-roles",
+            headers=_admin_headers(),
+        )
+        return data.get("orders", [])
+    except APIError:
+        return []
+
+
+async def mark_customer_role_granted(order_id: str) -> dict:
+    """
+    Tell the API that the Customer role has been successfully granted for this
+    order so it will no longer appear in the pending list.
+    """
+    return await _request(
+        "POST", f"/api/admin/orders/{order_id}/role-granted",
+        headers=_admin_headers(),
+    )
+
+
+async def link_discord_id(order_id: str, discord_id: int) -> dict:
+    """
+    Link a numeric Discord user ID to an existing order / customer account.
+    The server validates that the order belongs to the calling customer.
+    Called from the website's Discord OAuth linking flow, not from the bot.
+    """
+    return await _request(
+        "POST", "/api/link-discord",
+        json={"order_id": order_id, "discord_id": discord_id},
+        headers=_admin_headers(),
+    )

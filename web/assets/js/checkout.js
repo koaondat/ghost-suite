@@ -528,12 +528,32 @@
      The client secret is NEVER returned by this endpoint.
   ─────────────────────────────────────────────────────────────── */
   async function _fetchPayPalConfig () {
-    const res  = await fetch('/api/paypal/config');
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.configured) {
-      return null;
+    // Retry up to 2 times on transient network failures.
+    // Only return null (→ show "unconfigured" banner) when the server
+    // explicitly responds with configured:false — not on network errors.
+    const MAX_TRIES = 3;
+    let lastErr;
+    for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
+      try {
+        const res  = await fetch('/api/paypal/config');
+        const data = await res.json().catch(() => ({}));
+        // Server deliberately says PayPal is not configured
+        if (res.status === 503 && data.configured === false) return null;
+        // Any 2xx with configured:true → good
+        if (res.ok && data.configured) return data;
+        // Unexpected server error — retry
+        lastErr = new Error('config endpoint returned ' + res.status);
+      } catch (err) {
+        lastErr = err;
+      }
+      if (attempt < MAX_TRIES - 1) {
+        await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+      }
     }
-    return data;
+    // After all retries, if we couldn't confirm configured:false, throw so the
+    // caller can show a generic "could not load payment" error rather than the
+    // misleading "Payment not configured" banner.
+    throw lastErr || new Error('Could not reach payment config endpoint.');
   }
 
   /* ── Load the PayPal JS SDK ─────────────────────────────────────
@@ -937,18 +957,30 @@
     _show('co-sdk-loading');
 
     // ── Fetch PayPal configuration from the backend ───────────────────
+    // _fetchPayPalConfig() returns null ONLY when the server says configured:false.
+    // It throws on network errors so we don't falsely show "Payment not configured".
     let config;
+    let configLoadError = false;
     try {
       config = await _fetchPayPalConfig();
     } catch (err) {
       config = null;
+      configLoadError = true;
     }
 
     _hide('co-sdk-loading');
 
-    if (!config) {
-      // Show the pre-built unconfigured banner and disable the payment section
+    if (config === null && !configLoadError) {
+      // Server explicitly said PayPal is not configured — show the banner.
       _show('co-payment-unconfigured');
+      _hide('co-payment-section');
+      _show('co-submit-btn-wrap');
+      return;
+    }
+
+    if (!config) {
+      // Network/server error — show a generic retry message, NOT "Payment not configured"
+      showAlert('error', 'Could not load payment options. Please refresh and try again.');
       _hide('co-payment-section');
       _show('co-submit-btn-wrap');
       return;

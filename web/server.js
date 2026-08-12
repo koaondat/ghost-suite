@@ -1833,28 +1833,56 @@ app.post('/api/paypal/capture-order',     paypal.captureOrder);
 app.post('/api/paypal/webhook',           paypal.handleWebhook);
 app.post('/api/paypal/retry-fulfillment', paypal.retryFulfillment);
 
-// ── Order access token store (in-memory, short-lived) ────────────────────────
+// ── Order access tokens — persisted to Redis so they survive across serverless instances ─
+// In-memory map kept as a fast path; Redis is the durable fallback.
 // Maps  token → { orderId, expiresAt }
 // Tokens are generated during capture and passed to the success page URL.
 // They expire after 2 hours — enough to cover any reasonable session.
 const _orderAccessTokens = new Map();
-const _ORDER_TOKEN_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const _ORDER_TOKEN_TTL_MS    = 2 * 60 * 60 * 1000; // 2 hours
+const _ORDER_TOKEN_TTL_SECS  = 2 * 60 * 60;         // same, in seconds for Redis EXPIRE
 
-function _issueOrderToken (orderId) {
+async function _issueOrderToken (orderId) {
   const token = crypto.randomBytes(32).toString('hex');
-  _orderAccessTokens.set(token, { orderId, expiresAt: Date.now() + _ORDER_TOKEN_TTL_MS });
+  const expiresAt = Date.now() + _ORDER_TOKEN_TTL_MS;
+  // Store in-memory (fast path for same instance)
+  _orderAccessTokens.set(token, { orderId, expiresAt });
+  // Persist to Redis so other serverless instances can verify it
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      await _withTimeout(
+        redis.set(`ghost:order-token:${token}`, orderId, { ex: _ORDER_TOKEN_TTL_SECS })
+      ).catch(() => null);
+    } catch (_) { /* non-fatal — in-memory fallback still works on same instance */ }
+  }
   return token;
 }
 
-function _verifyOrderToken (token, orderId) {
+async function _verifyOrderToken (token, orderId) {
+  if (!token) return false;
+  // Fast path: in-memory check first
   const entry = _orderAccessTokens.get(token);
-  if (!entry) return false;
-  if (Date.now() > entry.expiresAt) { _orderAccessTokens.delete(token); return false; }
-  // Token must match the requested orderId
-  return entry.orderId === orderId;
+  if (entry) {
+    if (Date.now() > entry.expiresAt) { _orderAccessTokens.delete(token); }
+    else if (entry.orderId === orderId) return true;
+  }
+  // Durable path: check Redis (required on Vercel where each request may be a different instance)
+  if (_redisConfigured()) {
+    try {
+      const redis = _getRedisClient();
+      const storedOrderId = await _withTimeout(redis.get(`ghost:order-token:${token}`)).catch(() => null);
+      if (storedOrderId && storedOrderId === orderId) {
+        // Warm the in-memory cache for subsequent requests on this instance
+        _orderAccessTokens.set(token, { orderId, expiresAt: Date.now() + _ORDER_TOKEN_TTL_MS });
+        return true;
+      }
+    } catch (_) { /* Redis unavailable — fall through to false */ }
+  }
+  return false;
 }
 
-// Periodically clean up expired tokens (every 30 minutes)
+// Periodically clean up expired in-memory tokens (every 30 minutes)
 setInterval(() => {
   const now = Date.now();
   for (const [t, e] of _orderAccessTokens) {
@@ -1865,6 +1893,7 @@ setInterval(() => {
 // ── POST /api/order/:orderId/issue-token ──────────────────────────────────────
 // Called immediately after capture to obtain a short-lived access token for the
 // success page.  Order existence is verified in Redis before the token is issued.
+// Token is stored in Redis so it survives across serverless instances.
 app.post('/api/order/:orderId/issue-token', async (req, res) => {
   const orderId = req.params.orderId;
   if (!orderId) return res.status(400).json({ ok: false, error: 'orderId required.' });
@@ -1880,7 +1909,7 @@ app.post('/api/order/:orderId/issue-token', async (req, res) => {
   }
   if (!found) return res.status(404).json({ ok: false, error: 'Order not found.' });
 
-  const token = _issueOrderToken(orderId);
+  const token = await _issueOrderToken(orderId);
   return res.json({ ok: true, token });
 });
 
@@ -1896,7 +1925,7 @@ app.get('/api/order/:orderId', async (req, res) => {
   // ── Determine whether the caller has elevated access ─────────────────────
   const hasAdminCookie = !!req.cookies?.[ADMIN_COOKIE_NAME];
   const adminOk = hasAdminCookie && _verifyAdminSession(req.cookies[ADMIN_COOKIE_NAME]);
-  const tokenOk = token && _verifyOrderToken(token, orderId);
+  const tokenOk = token ? await _verifyOrderToken(token, orderId) : false;
   const fullAccess = adminOk || tokenOk;   // can see license_key + sensitive fields
 
   // Read directly from Redis — single source of truth
@@ -1917,6 +1946,70 @@ app.get('/api/order/:orderId', async (req, res) => {
     } catch (_) {}
   }
   return res.status(404).json({ ok: false, error: 'Order not found.' });
+});
+
+// ── POST /api/order/:orderId/recover-license ──────────────────────────────────
+// Called from the success page when a verified, paid order has no license key yet.
+// Requires a valid order token (same as GET /api/order/:orderId with full access).
+// Idempotent: if a license already exists, returns it; otherwise generates one.
+// NEVER generates a license for failed/canceled/pending/unverified orders.
+app.post('/api/order/:orderId/recover-license', async (req, res) => {
+  const orderId = req.params.orderId;
+  const token   = req.body?.token || req.query.token || '';
+
+  if (!orderId) return res.status(400).json({ ok: false, error: 'orderId required.' });
+
+  // Require a valid order token to prevent unauthorized license generation
+  const hasAdminCookie = !!req.cookies?.[ADMIN_COOKIE_NAME];
+  const adminOk = hasAdminCookie && _verifyAdminSession(req.cookies[ADMIN_COOKIE_NAME]);
+  const tokenOk = token ? await _verifyOrderToken(token, orderId) : false;
+  if (!adminOk && !tokenOk) {
+    return res.status(403).json({ ok: false, error: 'Valid order token required.' });
+  }
+
+  if (!_redisConfigured()) {
+    return res.status(503).json({ ok: false, error: 'Storage not configured.' });
+  }
+
+  try {
+    const redis = _getRedisClient();
+    const raw = await _withTimeout(redis.get(`ghost:order:${orderId}`)).catch(() => null);
+    if (!raw) {
+      return res.status(404).json({ ok: false, error: 'Order not found.' });
+    }
+    const record = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+    // Only recover for verified, completed payments
+    const ps = (record.payment_status || '').toLowerCase();
+    if (ps !== 'completed' && ps !== 'captured' && ps !== 'verified') {
+      console.warn('[ghost/order/recover] Payment not completed — orderId=%s payment_status=%s', orderId, ps);
+      return res.status(402).json({ ok: false, error: 'Payment not confirmed for this order.' });
+    }
+
+    // Run idempotent fulfillment (returns existing key if already delivered)
+    const result = await fulfillOrder(orderId);
+
+    if (!result.ok) {
+      console.error('[ghost/order/recover] fulfillOrder failed orderId=%s reason=%s', orderId, result.reason);
+      return res.status(500).json({
+        ok: false,
+        error: result.reason === 'payment_not_completed'
+          ? 'Payment not confirmed for this order.'
+          : 'License generation failed. Please contact support.',
+        reason: result.reason,
+      });
+    }
+
+    console.log('[ghost/order/recover] license recovered/confirmed orderId=%s', orderId);
+    return res.json({
+      ok: true,
+      licenseKey: result.licenseKey,
+      deliveryStatus: result.deliveryStatus,
+    });
+  } catch (err) {
+    console.error('[ghost/order/recover] error orderId=%s: %s', orderId, err.message);
+    return res.status(500).json({ ok: false, error: 'Internal error. Please contact support.' });
+  }
 });
 
 // ── GET /api/order/:orderId/download ──────────────────────────────────────────
