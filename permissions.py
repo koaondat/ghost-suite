@@ -157,23 +157,24 @@ PERMISSION_MAP: dict[str, dict] = {
     "support": {
         "env":   "SUPPORT_ROLE_ID",
         "label": "Support",
-        "desc":  "Read-only license & support commands. Cannot generate or revoke keys.",
-        "commands": ["/keyinfo", "/userinfo", "/listkeys (read-only)"],
+        "desc":  "Read-only lookup and support commands. Cannot generate or revoke keys.",
+        "commands": ["/keyinfo", "/lookup", "/licenseinfo", "/userinfo", "/listkeys", "/customer", "/order", "/status", "/appstatus", "/sync"],
     },
     "key_generator": {
         "env":   "KEY_GENERATOR_ROLE_ID",
         "label": "Key Generator",
         "desc":  "Can generate keys. Cannot manage or revoke.",
-        "commands": ["/genkey", "/bulkdelete (own keys)"],
+        "commands": ["/genkey", "/bulkgen"],
     },
     "key_manager": {
         "env":   "KEY_MANAGER_ROLE_ID",
         "label": "Key Manager",
         "desc":  "Full license management. Inherits Generator + Support.",
         "commands": [
-            "/genkey", "/bulkdelete", "/keyinfo", "/bankey", "/unbankey",
-            "/deletekey", "/extendkey", "/resetactivation", "/listkeys",
-            "/userinfo", "/deleteuser", "/stats",
+            "/genkey", "/bulkgen", "/bulkdelete", "/lookup", "/licenseinfo",
+            "/revoke", "/keyinfo", "/bankey", "/unbankey", "/deletekey",
+            "/extendkey", "/resetactivation", "/listkeys", "/userinfo",
+            "/deleteuser", "/customer", "/order", "/sync", "/status", "/appstatus",
         ],
     },
     "bot_admin": {

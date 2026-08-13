@@ -124,26 +124,36 @@ function _requireAdminSession (req, res, next) {
 }
 
 // ── Bot / server-to-server middleware ─────────────────────────────────────────
-// Accepts EITHER the HttpOnly admin cookie (browser admin panel) OR the
-// X-Admin-Key request header (Discord bot / server-to-server callers).
-// The two bot-facing Discord endpoints use this instead of _requireAdminSession
-// because the bot cannot set a browser cookie — it uses the API key header.
+// Accepts ANY of:
+//   a) The HttpOnly __Host-ghost_admin_session cookie (browser admin panel)
+//   b) X-Admin-Key: <GHOST_ADMIN_API_KEY>      (legacy bot header)
+//   c) Authorization: Bearer <GHOST_ADMIN_API_KEY>  (standard bot header)
+// The Discord bot cannot set browser cookies — it sends the API key in a header.
 // GHOST_ADMIN_API_KEY is read fresh on every call (Vercel cold-start safe).
 function _requireAdminKeyOrSession (req, res, next) {
   // 1. Cookie path — same as _requireAdminSession
   const cookieToken = req.cookies && req.cookies[ADMIN_COOKIE_NAME];
   if (cookieToken && _verifyAdminSession(cookieToken)) return next();
 
-  // 2. API-key path — X-Admin-Key header (bot / machine callers)
   const serverKey = (process.env.GHOST_ADMIN_API_KEY || '').trim();
   if (serverKey) {
-    const clientKey = (req.headers['x-admin-key'] || '').trim();
-    if (clientKey) {
+    // 2. X-Admin-Key header (legacy / direct header callers)
+    const xAdminKey = (req.headers['x-admin-key'] || '').trim();
+    if (xAdminKey) {
       let match = false;
-      try {
-        match = crypto.timingSafeEqual(Buffer.from(clientKey), Buffer.from(serverKey));
-      } catch (_) { /* length mismatch = wrong key */ }
+      try { match = crypto.timingSafeEqual(Buffer.from(xAdminKey), Buffer.from(serverKey)); } catch (_) {}
       if (match) return next();
+    }
+
+    // 3. Authorization: Bearer <key> (standard server-to-server / Discord bot path)
+    const authHeader = (req.headers['authorization'] || '').trim();
+    if (authHeader.startsWith('Bearer ')) {
+      const bearerKey = authHeader.slice(7).trim();
+      if (bearerKey) {
+        let match = false;
+        try { match = crypto.timingSafeEqual(Buffer.from(bearerKey), Buffer.from(serverKey)); } catch (_) {}
+        if (match) return next();
+      }
     }
   }
 
@@ -585,7 +595,7 @@ app.get('/api/admin/dashboard', _requireAdminSession, async (req, res) => {
 });
 
 // ── GET /api/admin/stats ──────────────────────────────────────────────────────
-app.get('/api/admin/stats', _requireAdminSession, async (req, res) => {
+app.get('/api/admin/stats', _requireAdminKeyOrSession, async (req, res) => {
   return res.redirect(307, '/api/admin/dashboard');
 });
 
@@ -640,7 +650,7 @@ function _normalizePlan (plan) {
   return _PLAN_ALIASES[key] || key;
 }
 
-app.get('/api/admin/inventory', _requireAdminSession, async (req, res) => {
+app.get('/api/admin/inventory', _requireAdminKeyOrSession, async (req, res) => {
   const raw = await _redisGet('ghost:inventory');
 
   // Defensive normalization: Redis may return an object, string, null, or
@@ -674,7 +684,7 @@ app.get('/api/admin/inventory', _requireAdminSession, async (req, res) => {
   return res.json({ ok: true, items: inventory, total: inventory.length });
 });
 
-app.get('/api/admin/inventory/stats', _requireAdminSession, async (req, res) => {
+app.get('/api/admin/inventory/stats', _requireAdminKeyOrSession, async (req, res) => {
   const _raw = await _redisGet('ghost:inventory');
   const inventory = Array.isArray(_raw) ? _raw : [];
   const counts = { available: 0, reserved: 0, sold: 0, activated: 0, revoked: 0, expired: 0 };
@@ -832,7 +842,7 @@ app.post('/api/admin/inventory/import', _requireAdminSession, async (req, res) =
 // Response: { ok, generated, duplicates, keys[], availableInventory }
 //
 // Performance target: 100 keys < 500 ms, 1000 keys < 2 s
-app.post('/api/admin/inventory/generate', _requireAdminSession, async (req, res) => {
+app.post('/api/admin/inventory/generate', _requireAdminKeyOrSession, async (req, res) => {
   const t0 = Date.now();
   let _responded = false;
   const _guard = setTimeout(() => {
@@ -1063,7 +1073,7 @@ app.get('/api/admin/storage-test', _requireAdminSession, async (req, res) => {
   }
 });
 
-app.post('/api/admin/inventory/bulk-delete', _requireAdminSession, async (req, res) => {
+app.post('/api/admin/inventory/bulk-delete', _requireAdminKeyOrSession, async (req, res) => {
   const { keys } = req.body || {};
   if (!Array.isArray(keys)) return res.status(400).json({ ok: false, error: 'keys array required.' });
   const set = new Set(keys.map(k => String(k).trim().toUpperCase()));
@@ -1074,7 +1084,7 @@ app.post('/api/admin/inventory/bulk-delete', _requireAdminSession, async (req, r
   return res.json({ ok: true, deleted: deleted.map(k => k.key) });
 });
 
-app.delete('/api/admin/inventory/:key', _requireAdminSession, async (req, res) => {
+app.delete('/api/admin/inventory/:key', _requireAdminKeyOrSession, async (req, res) => {
   const target = req.params.key.toUpperCase();
   let inventory = await _redisGet('ghost:inventory') || [];
   const before = inventory.length;
@@ -1083,7 +1093,7 @@ app.delete('/api/admin/inventory/:key', _requireAdminSession, async (req, res) =
   return res.json({ ok: true, deleted: before - inventory.length });
 });
 
-app.patch('/api/admin/inventory/:key', _requireAdminSession, async (req, res) => {
+app.patch('/api/admin/inventory/:key', _requireAdminKeyOrSession, async (req, res) => {
   const target = req.params.key.toUpperCase();
   const inventory = await _redisGet('ghost:inventory') || [];
   const idx = inventory.findIndex(k => k.key === target);
@@ -1093,7 +1103,7 @@ app.patch('/api/admin/inventory/:key', _requireAdminSession, async (req, res) =>
   return res.json({ ok: true, entry: inventory[idx] });
 });
 
-app.post('/api/admin/inventory/:key/revoke', _requireAdminSession, async (req, res) => {
+app.post('/api/admin/inventory/:key/revoke', _requireAdminKeyOrSession, async (req, res) => {
   const target = req.params.key.toUpperCase();
   const inventory = await _redisGet('ghost:inventory') || [];
   const idx = inventory.findIndex(k => k.key === target);
@@ -1103,7 +1113,7 @@ app.post('/api/admin/inventory/:key/revoke', _requireAdminSession, async (req, r
   return res.json({ ok: true, entry: inventory[idx] });
 });
 
-app.post('/api/admin/inventory/:key/extend', _requireAdminSession, async (req, res) => {
+app.post('/api/admin/inventory/:key/extend', _requireAdminKeyOrSession, async (req, res) => {
   const target = req.params.key.toUpperCase();
   const { days = 30 } = req.body || {};
   const inventory = await _redisGet('ghost:inventory') || [];
@@ -1120,7 +1130,7 @@ app.post('/api/admin/inventory/:key/extend', _requireAdminSession, async (req, r
 // The delivery backend is the authoritative store for all orders (ghost:order:{id}).
 // The Node server never writes order records — it only reads them via these proxies.
 
-app.get('/api/admin/orders', _requireAdminSession, async (req, res) => {
+app.get('/api/admin/orders', _requireAdminKeyOrSession, async (req, res) => {
   // Read directly from Redis — single source of truth.
   let redisOrders = [];
   if (_redisConfigured()) {
@@ -1141,7 +1151,7 @@ app.get('/api/admin/orders', _requireAdminSession, async (req, res) => {
   return res.json({ ok: true, orders: redisOrders, total: redisOrders.length });
 });
 
-app.get('/api/admin/orders/:orderId', _requireAdminSession, async (req, res) => {
+app.get('/api/admin/orders/:orderId', _requireAdminKeyOrSession, async (req, res) => {
   const orderId = req.params.orderId;
   try {
     const redis = _redisConfigured() ? _getRedisClient() : null;
@@ -1232,7 +1242,7 @@ app.get('/api/admin/customer-licenses', _requireAdminSession, async (req, res) =
 });
 
 // ── Customers endpoints ───────────────────────────────────────────────────────
-app.get('/api/admin/customers', _requireAdminSession, async (req, res) => {
+app.get('/api/admin/customers', _requireAdminKeyOrSession, async (req, res) => {
   // Build customer list from inventory (sold keys) + Redis orders — single source of truth
   const inventoryRaw = await _redisGet('ghost:inventory');
   const inventory = Array.isArray(inventoryRaw) ? inventoryRaw : [];
@@ -1323,7 +1333,7 @@ app.post('/api/admin/customers/:email/reset-hwid', _requireAdminSession, async (
 });
 
 // ── Downloads endpoints ───────────────────────────────────────────────────────
-app.get('/api/admin/downloads', _requireAdminSession, async (req, res) => {
+app.get('/api/admin/downloads', _requireAdminKeyOrSession, async (req, res) => {
   const dl = await _redisGet('ghost:downloads') || {
     version: 'v2', filename: 'GhostConfig.exe', url: '/downloads/GhostConfig-v2.exe',
     changelog: '', release_date: '', download_count: 0, history: [],
